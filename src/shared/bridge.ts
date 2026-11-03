@@ -72,7 +72,12 @@ export interface KeystoreCertificate {
   signSchemes: string[];
   decryptSchemes: string[];
   canAgree: boolean;
+  /** The key can also sign the user in somewhere: the user is asked per use. */
+  askEachUse: boolean;
 }
+
+/** Whether this origin may use the keystore at all. `app` is standalone. */
+export type KeystoreAccessState = 'app' | 'policy' | 'stored' | 'off';
 
 export type KeystoreSignScheme =
   | { scheme: 'rsa-pkcs1'; hash: KeystoreHash }
@@ -123,6 +128,8 @@ export const CHANNEL = {
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',
   keystoreAgree: 'bulwark:keystore.agree',
+  keystoreAccess: 'bulwark:keystore.access',
+  keystoreRevoke: 'bulwark:keystore.revoke',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */

@@ -29,6 +29,8 @@ export interface NativeCertificate {
   signSchemes: string[];
   decryptSchemes: string[];
   canAgree: boolean;
+  /** The key can also sign the user in somewhere: consent per use, not per session. */
+  askEachUse: boolean;
 }
 
 export type HelloResult = 'verified' | 'cancelled' | 'busy' | 'unavailable' | 'timeout' | 'invalid' | 'failed';
@@ -61,6 +63,9 @@ export type KeystoreErrorCode = (typeof KEYSTORE_ERRORS)[number];
 /** A stuck card driver mustn't hold mail forever. Longer than anyone types a PIN. */
 export const KEYSTORE_CAP_MS = 5 * 60_000;
 export const HELLO_TIMEOUT_MS = 2 * 60_000;
+
+/** Key operations waiting behind the running one. More than this fail fast. */
+const MAX_QUEUED = 8;
 
 const MAX_ID = 64;
 const MAX_DIGEST = 64;
@@ -122,24 +127,74 @@ function record(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+function lockedError(): Error {
+  return new Error('keystore:locked');
+}
+
+export interface SerialQueue {
+  <T>(job: () => Promise<T>): Promise<T>;
+  /** A job passed the cap and its native call hasn't ended. */
+  stuck(): boolean;
+}
+
 /**
- * Runs jobs one at a time, so one PIN dialog holds one libuv thread, and two dialogs
- * never stack up. A job that passes the cap rejects and the next one goes; its
- * thread stays with the driver, which can't be interrupted.
+ * Runs jobs one at a time, so one PIN dialog holds one libuv thread and two dialogs never
+ * stack up. A job past the cap rejects, and so does what waited behind it, but its native
+ * call can't be interrupted and still holds its thread. So nothing new starts until it
+ * really ends: new calls fail fast. That's also why UV_THREADPOOL_SIZE stays as it is:
+ * this holds one thread at most, and on Windows libuv doesn't read the variable once the
+ * process runs.
  */
-export function serialQueue(capMs: number): <T>(job: () => Promise<T>) => Promise<T> {
-  let tail: Promise<unknown> = Promise.resolve();
-  return <T>(job: () => Promise<T>): Promise<T> => {
-    const run = tail.then(
-      () =>
-        new Promise<T>((resolve, reject) => {
-          const timer = setTimeout(() => reject(new Error('keystore:failed the operation took too long')), capMs);
-          job().then(resolve, reject).finally(() => clearTimeout(timer));
-        }),
+export function serialQueue(capMs: number, maxWaiting = MAX_QUEUED): SerialQueue {
+  interface Entry {
+    job: () => Promise<unknown>;
+    resolve: (value: never) => void;
+    reject: (error: Error) => void;
+  }
+  const waiting: Entry[] = [];
+  let running = false;
+  let stuck = false;
+
+  const start = (entry: Entry): void => {
+    running = true;
+    let capped = false;
+    const timer = setTimeout(() => {
+      capped = true;
+      stuck = true;
+      entry.reject(lockedError());
+      for (const behind of waiting.splice(0)) behind.reject(lockedError());
+    }, capMs);
+    const finish = (settle: () => void): void => {
+      clearTimeout(timer);
+      if (!capped) settle();
+      running = false;
+      stuck = false;
+      const next = waiting.shift();
+      if (next) start(next);
+    };
+    let native: Promise<unknown>;
+    try {
+      native = entry.job();
+    } catch (error) {
+      native = Promise.reject(error);
+    }
+    native.then(
+      (value) => finish(() => entry.resolve(value as never)),
+      (error) => finish(() => entry.reject(error as Error)),
     );
-    tail = run.catch(() => undefined);
-    return run;
   };
+
+  const run = <T>(job: () => Promise<T>): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      if (stuck || waiting.length >= maxWaiting) {
+        reject(lockedError());
+        return;
+      }
+      const entry: Entry = { job, resolve: resolve as (value: never) => void, reject };
+      if (running) waiting.push(entry);
+      else start(entry);
+    });
+  return Object.assign(run, { stuck: () => stuck });
 }
 
 export interface NativeHelper {
@@ -151,6 +206,8 @@ export interface NativeHelper {
   keystore: {
     /** Whether this build and system have an OS keystore to offer. */
     readonly available: boolean;
+    /** An operation passed the cap and still holds its thread. Key calls fail fast now. */
+    stuck(): boolean;
     list(): Promise<NativeCertificate[]>;
     sign(id: unknown, digest: unknown, scheme: unknown, windowHandle?: Buffer | null): Promise<Uint8Array>;
     decrypt(id: unknown, data: unknown, scheme: unknown, windowHandle?: Buffer | null): Promise<Uint8Array>;
@@ -168,6 +225,7 @@ export function wrapHelper(
 ): NativeHelper {
   const { platform = process.platform, capMs = KEYSTORE_CAP_MS, warn = console.warn } = options;
   const queue = serialQueue(capMs);
+  let listing: Promise<NativeCertificate[]> | null = null;
   const keyed = async <T>(run: (module: NativeModule) => Promise<T>): Promise<T> => {
     if (!native || !keystoreOffered) throw new Error('keystore:unsupported');
     try {
@@ -201,8 +259,15 @@ export function wrapHelper(
     },
     keystore: {
       available: Boolean(native) && keystoreOffered,
-      // Never prompts, so it doesn't wait behind a PIN dialog.
-      list: () => keyed((module) => module.keystoreList()),
+      stuck: () => queue.stuck(),
+      // Never prompts, so it doesn't wait behind a PIN dialog. Calls at once share one
+      // trip, so none of them can eat the pool either.
+      list: () => {
+        listing ??= keyed((module) => module.keystoreList()).finally(() => {
+          listing = null;
+        });
+        return listing;
+      },
       sign: (id, digest, scheme, windowHandle) =>
         keyed((module) => {
           const name = identifier(id);

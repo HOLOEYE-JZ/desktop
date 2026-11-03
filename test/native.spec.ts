@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { helperFile, loadHelperModule, type NativeCertificate, type NativeModule } from '../src/main/native-loader';
+import { readPe } from './pe-reader';
 import { TestCerts, type TestCert } from './test-certs';
 
 /**
@@ -37,6 +38,21 @@ test.describe('what the binary exports', () => {
 
   test('all of them are functions, so nothing hangs off a constant', () => {
     for (const value of Object.values(load())) expect(typeof value).toBe('function');
+  });
+});
+
+test.describe('what the binary needs from Windows', () => {
+  test.skip(process.platform !== 'win32', 'reads a PE file');
+
+  test('no Visual C++ runtime: it would not load on a machine without one', () => {
+    const { imports } = readPe(FILE);
+    expect(imports.filter((name) => /^(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)/.test(name))).toEqual([]);
+    // The rest is Windows itself.
+    for (const name of imports) expect(name, name).toMatch(/^(kernel32|kernelbase|ntdll|advapi32|bcrypt|bcryptprimitives|crypt32|ncrypt|user32|ole32|oleaut32|combase|ws2_32|userenv|api-ms-win-[a-z0-9-]+)\.dll$/);
+  });
+
+  test('what it loads comes from System32 only, not from a folder beside the app', () => {
+    expect(readPe(FILE).dependentLoadFlags).toBe(0x800);
   });
 });
 
@@ -114,6 +130,12 @@ test.describe('the keystore on real certificates', () => {
     made.encryptOnly = certs.create({ name: 'rsa-encrypt-only', args: `-Type Custom ${rsa} -KeyUsage KeyEncipherment ${MAIL}` });
     made.clientAuth = certs.create({ name: 'rsa-client-auth-only', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.2')` });
     made.codeSigning = certs.create({ name: 'rsa-code-signing-only', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3')` });
+    made.caSigning = certs.create({ name: 'ca-with-digital-signature', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature,CertSign -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.4','2.5.29.19={text}CA=true')` });
+    made.caFlagOnly = certs.create({ name: 'ca-flag-only', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.4','2.5.29.19={text}CA=true')` });
+    made.crlSign = certs.create({ name: 'crl-signer', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature,CRLSign ${MAIL}` });
+    made.anyUse = certs.create({ name: 'any-eku', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}2.5.29.37.0')` });
+    made.mailAndLogin = certs.create({ name: 'mail-and-client-auth', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.4,1.3.6.1.5.5.7.3.2')` });
+    made.mailAndSmartcard = certs.create({ name: 'mail-and-smartcard-logon', args: `-Type Custom ${rsa} -KeyUsage DigitalSignature -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.4,1.3.6.1.4.1.311.20.2.2')` });
     made.root = certs.create({ name: 'chain-root', args: `-Type Custom ${rsa} -KeyUsage CertSign,CRLSign -TextExtension @('2.5.29.19={text}CA=true')` });
     made.intermediate = certs.create({ name: 'chain-intermediate', args: certs.signedArgs(made.root, `-Type Custom ${rsa} -KeyUsage CertSign,CRLSign -TextExtension @('2.5.29.19={text}CA=true')`) });
     made.ecdh = certs.create({ name: 'ecdh-p256', args: certs.signedArgs(made.root, `-Type Custom -KeyExportPolicy NonExportable -KeyAlgorithm ECDH_P256 -KeyUsage KeyAgreement ${MAIL}`) });
@@ -164,6 +186,20 @@ test.describe('the keystore on real certificates', () => {
     expect(subjects).not.toContain(made.root.subject);
     expect(subjects).not.toContain(made.intermediate.subject);
     expect(subjects).toContain(made.leaf.subject);
+  });
+
+  test('a CA is refused however it presents itself, also with digitalSignature', () => {
+    const subjects = list.map((certificate) => certificate.subject);
+    expect(subjects).not.toContain(made.caSigning.subject);
+    expect(subjects, 'cA=true with an ordinary key usage').not.toContain(made.caFlagOnly.subject);
+    expect(subjects, 'cRLSign').not.toContain(made.crlSign.subject);
+  });
+
+  test('a certificate that also works for sign-in asks each time, a mail-only one does not', () => {
+    expect(entry('rsa').askEachUse).toBe(false);
+    expect(entry('anyUse').askEachUse).toBe(true);
+    expect(entry('mailAndLogin').askEachUse).toBe(true);
+    expect(entry('mailAndSmartcard').askEachUse).toBe(true);
   });
 
   test('a certificate without a private key is not listed', async () => {
@@ -258,10 +294,25 @@ test.describe('the keystore on real certificates', () => {
     expect(Buffer.compare(await native.keystoreDecrypt(certificate.id, data, { scheme: 'rsa-pkcs1' }), plain)).toBe(0);
   });
 
-  test('an answer past the size of a content key is refused', async () => {
+  test('v1.5 answers only with the size of a content key, and every failure reads the same', async () => {
     const certificate = entry('rsa');
-    const data = publicEncrypt({ key: publicKeyOf(certificate), padding: constants.RSA_PKCS1_PADDING }, randomBytes(65));
-    await expect(native.keystoreDecrypt(certificate.id, data, { scheme: 'rsa-pkcs1' })).rejects.toThrow(/keystore:unsupported/);
+    const key = publicKeyOf(certificate);
+    const wrap = (size: number) => publicEncrypt({ key, padding: constants.RSA_PKCS1_PADDING }, randomBytes(size));
+    for (const size of [16, 24, 32]) expect(await native.keystoreDecrypt(certificate.id, wrap(size), { scheme: 'rsa-pkcs1' })).toHaveLength(size);
+    const message = (promise: Promise<unknown>) => promise.then(() => 'answered', (error: Error) => error.message);
+    const wrongSizes = await Promise.all([1, 20, 31, 33, 65].map((size) => message(native.keystoreDecrypt(certificate.id, wrap(size), { scheme: 'rsa-pkcs1' }))));
+    const badPadding = await message(native.keystoreDecrypt(certificate.id, randomBytes(256), { scheme: 'rsa-pkcs1' }));
+    expect(new Set([...wrongSizes, badPadding]).size, 'one message, so it says nothing about the padding').toBe(1);
+    expect(badPadding).toMatch(/^keystore:failed/);
+  });
+
+  test('OAEP refuses an answer past 64 bytes with that same message', async () => {
+    const certificate = entry('rsa');
+    const key = publicKeyOf(certificate);
+    const data = publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha1' }, randomBytes(65));
+    await expect(native.keystoreDecrypt(certificate.id, data, { scheme: 'rsa-oaep', hash: 'SHA-1' })).rejects.toThrow(/^keystore:failed/);
+    const small = publicEncrypt({ key, padding: constants.RSA_PKCS1_OAEP_PADDING, oaepHash: 'sha1' }, randomBytes(20));
+    expect(await native.keystoreDecrypt(certificate.id, small, { scheme: 'rsa-oaep', hash: 'SHA-1' })).toHaveLength(20);
   });
 
   test('ECDH gives the same secret Node computes from the other side, big-endian', async () => {

@@ -215,14 +215,97 @@ test.describe('one key operation at a time', () => {
     await expect(next).resolves.toBe('next');
   });
 
-  test('past the cap it fails and the next one goes, and the wait behind it does not count', async () => {
+  test('past the cap the caller is told, and new calls fail fast until the native call really ends', async () => {
     const queue = serialQueue(30);
-    const stuck = queue(() => new Promise<string>(() => undefined));
-    const next = queue(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      return 'next';
+    const stuck = later();
+    let started = 0;
+    const first = queue(() => {
+      started += 1;
+      return stuck.promise;
     });
-    await expect(stuck).rejects.toThrow(/keystore:failed/);
-    await expect(next).resolves.toBe('next');
+    const behind = queue(async () => {
+      started += 1;
+      return 'behind';
+    });
+    await expect(first).rejects.toThrow(/^keystore:locked$/);
+    // What waited behind it is told too, and never ran.
+    await expect(behind).rejects.toThrow(/^keystore:locked$/);
+    expect(queue.stuck()).toBe(true);
+
+    // The native call still holds its thread. Nothing new may start beside it.
+    const refused = queue(async () => {
+      started += 1;
+      return 'refused';
+    });
+    await expect(refused).rejects.toThrow(/^keystore:locked$/);
+    expect(started).toBe(1);
+
+    stuck.resolve('late, and nobody wants it');
+    await tick();
+    expect(queue.stuck()).toBe(false);
+    await expect(queue(async () => 'works again')).resolves.toBe('works again');
+  });
+
+  test('the queue has a limit, and past it calls fail fast', async () => {
+    const queue = serialQueue(60_000, 2);
+    const first = later();
+    const running = queue(() => first.promise);
+    const waiting = [queue(async () => 'a'), queue(async () => 'b')];
+    await expect(queue(async () => 'c')).rejects.toThrow(/^keystore:locked$/);
+    first.resolve('done');
+    await expect(running).resolves.toBe('done');
+    await expect(Promise.all(waiting)).resolves.toEqual(['a', 'b']);
+  });
+
+  test('a job that throws before it returns a promise leaves no timer behind', async () => {
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const live = new Set<unknown>();
+    globalThis.setTimeout = ((callback: () => void, ms: number) => {
+      const timer = realSet(callback, ms);
+      live.add(timer);
+      return timer;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((timer: NodeJS.Timeout) => {
+      live.delete(timer);
+      realClear(timer);
+    }) as typeof clearTimeout;
+    try {
+      const queue = serialQueue(60_000);
+      await expect(queue(() => { throw new Error('keystore:invalid'); })).rejects.toThrow('keystore:invalid');
+      await expect(queue(async () => 'ok')).resolves.toBe('ok');
+      expect(live.size).toBe(0);
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+  });
+
+  test('the wrapper says when it is stuck, so nobody asks the user for a call that cannot run', async () => {
+    const stuck = later();
+    const { keystore } = wrapHelper(fakeModule({ keystoreSign: () => stuck.promise as unknown as Promise<Buffer> }), { platform: 'win32', capMs: 20, warn: quiet });
+    expect(keystore.stuck()).toBe(false);
+    await expect(keystore.sign('id', Buffer.alloc(32), { scheme: 'ecdsa', hash: 'SHA-256' })).rejects.toThrow(/^keystore:locked$/);
+    expect(keystore.stuck()).toBe(true);
+    stuck.resolve('');
+    await tick();
+    expect(keystore.stuck()).toBe(false);
+  });
+
+  test('lists at the same time share one trip to the store', async () => {
+    let trips = 0;
+    const answer = later();
+    const { keystore } = wrapHelper(fakeModule({
+      keystoreList: () => {
+        trips += 1;
+        return answer.promise.then(() => []);
+      },
+    }), { platform: 'win32', warn: quiet });
+    const both = [keystore.list(), keystore.list()];
+    answer.resolve('');
+    await Promise.all(both);
+    expect(trips).toBe(1);
+    await keystore.list();
+    expect(trips).toBe(2);
   });
 });

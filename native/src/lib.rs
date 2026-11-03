@@ -120,6 +120,8 @@ pub struct KeystoreCertificate {
     pub sign_schemes: Vec<String>,
     pub decrypt_schemes: Vec<String>,
     pub can_agree: bool,
+    /// The key can also sign the user in somewhere: consent per use, not per session.
+    pub ask_each_use: bool,
 }
 
 fn to_js(listed: Listed) -> KeystoreCertificate {
@@ -147,6 +149,7 @@ fn to_js(listed: Listed) -> KeystoreCertificate {
         sign_schemes: listed.sign_schemes,
         decrypt_schemes: listed.decrypt_schemes,
         can_agree: listed.can_agree,
+        ask_each_use: listed.ask_each_use,
     }
 }
 
@@ -228,7 +231,8 @@ pub struct DecryptScheme {
     pub label: Option<Buffer>,
 }
 
-/// Unwraps a CMS content key with RSA. Answers of more than 64 bytes are refused.
+/// Unwraps a CMS content key with RSA. v1.5 answers only with 16, 24 or 32 bytes, OAEP
+/// with up to 64, and every failure reads the same.
 #[napi]
 pub fn keystore_decrypt(id: String, data: Buffer, scheme: DecryptScheme, hwnd: Option<Buffer>) -> Result<AsyncTask<BytesTask>> {
     let facts = keystore::known(&id).map_err(thrown)?;
@@ -237,7 +241,7 @@ pub fn keystore_decrypt(id: String, data: Buffer, scheme: DecryptScheme, hwnd: O
     let plan: DecryptPlan =
         keystore::check_decrypt(&facts, &data, &scheme.scheme, scheme.hash.as_deref(), label.as_deref()).map_err(thrown)?;
     let hwnd = hwnd.map(|window| window.to_vec());
-    Ok(bytes_task(move || keystore::check_decrypted(os::decrypt(&id, &data, &plan, hwnd.as_deref())?)))
+    Ok(bytes_task(move || keystore::check_decrypted(os::decrypt(&id, &data, &plan, hwnd.as_deref()), &plan)))
 }
 
 /// ECDH: the raw shared secret Z, big-endian, as long as the curve's field, like

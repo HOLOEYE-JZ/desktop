@@ -13,6 +13,18 @@ pub const MAX_PEER_KEY: usize = 256;
 /// What `decrypt` hands back is a CMS content key: AES-256 and ChaCha20 are 32 bytes.
 /// A longer result means someone is using the key for something else.
 pub const MAX_DECRYPTED: usize = 64;
+/// v1.5 unwraps AES-128, 3DES and AES-256 keys. The padding has no integrity, so a wrong
+/// guess often decodes to some other length: refusing those keeps it from being an oracle.
+const PKCS1_KEY_SIZES: [usize; 3] = [16, 24, 32];
+
+/// Zeroes bytes in a way the compiler can't drop because nothing reads them afterwards.
+pub fn wipe(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        // SAFETY: a reference to a live byte is valid for a write.
+        unsafe { std::ptr::write_volatile(byte, 0) };
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum KeystoreError {
@@ -108,6 +120,7 @@ pub struct Listed {
     pub sign_schemes: Vec<String>,
     pub decrypt_schemes: Vec<String>,
     pub can_agree: bool,
+    pub ask_each_use: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -160,7 +173,8 @@ pub fn remember(found: Vec<Found>) -> Vec<Listed> {
             vec![]
         };
         let can_agree = facts.may_agree() && allows.agree;
-        out.push(Listed { found: item, certificate, sign_schemes, decrypt_schemes, can_agree });
+        let ask_each_use = certificate.ask_each_use();
+        out.push(Listed { found: item, certificate, sign_schemes, decrypt_schemes, can_agree, ask_each_use });
     }
     *KNOWN.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(known);
     out
@@ -229,11 +243,23 @@ pub fn check_decrypt(
     Ok(plan)
 }
 
-/// The size limit is on the answer, so it can only be checked after the operation.
-pub fn check_decrypted(mut plain: Vec<u8>) -> Result<Vec<u8>, KeystoreError> {
-    if plain.len() > MAX_DECRYPTED {
-        plain.fill(0);
-        return Err(KeystoreError::Unsupported);
+/// What a decryption's outcome may say. A bad padding and an answer of the wrong size
+/// read exactly the same, so a caller can't tell them apart and use the key as an oracle.
+/// Not the OS's error code either. An answer that's refused is wiped here.
+pub fn check_decrypted(answer: Result<Vec<u8>, KeystoreError>, plan: &DecryptPlan) -> Result<Vec<u8>, KeystoreError> {
+    let refused = || KeystoreError::Failed("decrypt".into());
+    let mut plain = match answer {
+        Ok(plain) => plain,
+        Err(KeystoreError::Failed(_)) => return Err(refused()),
+        Err(other) => return Err(other),
+    };
+    let fits = match plan {
+        DecryptPlan::RsaPkcs1 => PKCS1_KEY_SIZES.contains(&plain.len()),
+        DecryptPlan::RsaOaep { .. } => plain.len() <= MAX_DECRYPTED,
+    };
+    if !fits {
+        wipe(&mut plain);
+        return Err(refused());
     }
     Ok(plain)
 }
@@ -337,10 +363,45 @@ mod tests {
     }
 
     #[test]
-    fn a_long_answer_is_refused_and_wiped() {
-        assert_eq!(check_decrypted(vec![1; 32]), Ok(vec![1; 32]));
-        assert_eq!(check_decrypted(vec![1; MAX_DECRYPTED]), Ok(vec![1; MAX_DECRYPTED]));
-        assert_eq!(check_decrypted(vec![1; MAX_DECRYPTED + 1]), Err(KeystoreError::Unsupported));
+    fn wipe_zeroes_the_bytes() {
+        let mut bytes = vec![0xaa; 32];
+        wipe(&mut bytes);
+        assert_eq!(bytes, vec![0; 32]);
+        let mut part = [1u8, 2, 3, 4];
+        wipe(&mut part[1..3]);
+        assert_eq!(part, [1, 0, 0, 4]);
+    }
+
+    fn oaep() -> DecryptPlan {
+        DecryptPlan::RsaOaep { hash: Hash::Sha256, label: None }
+    }
+
+    #[test]
+    fn v1_5_answers_only_with_a_content_key_size() {
+        for size in [16, 24, 32] {
+            assert_eq!(check_decrypted(Ok(vec![1; size]), &DecryptPlan::RsaPkcs1), Ok(vec![1; size]));
+        }
+        for size in [0, 1, 15, 17, 23, 25, 31, 33, 64, 65] {
+            assert_eq!(check_decrypted(Ok(vec![1; size]), &DecryptPlan::RsaPkcs1), Err(KeystoreError::Failed("decrypt".into())), "{size}");
+        }
+    }
+
+    #[test]
+    fn oaep_answers_up_to_the_limit() {
+        assert_eq!(check_decrypted(Ok(vec![1; 20]), &oaep()), Ok(vec![1; 20]));
+        assert_eq!(check_decrypted(Ok(vec![1; MAX_DECRYPTED]), &oaep()), Ok(vec![1; MAX_DECRYPTED]));
+        assert_eq!(check_decrypted(Ok(vec![1; MAX_DECRYPTED + 1]), &oaep()), Err(KeystoreError::Failed("decrypt".into())));
+    }
+
+    #[test]
+    fn every_decrypt_failure_reads_the_same_but_a_person_saying_no_stays_itself() {
+        let bad_padding = check_decrypted(Err(KeystoreError::Failed("0x80090027".into())), &DecryptPlan::RsaPkcs1);
+        let wrong_size = check_decrypted(Ok(vec![1; 20]), &DecryptPlan::RsaPkcs1);
+        assert_eq!(bad_padding, wrong_size);
+        assert_eq!(bad_padding.unwrap_err().to_string(), "keystore:failed decrypt");
+        assert_eq!(check_decrypted(Err(KeystoreError::Cancelled), &oaep()), Err(KeystoreError::Cancelled));
+        assert_eq!(check_decrypted(Err(KeystoreError::Locked), &oaep()), Err(KeystoreError::Locked));
+        assert_eq!(check_decrypted(Err(KeystoreError::Unsupported), &oaep()), Err(KeystoreError::Unsupported));
     }
 
     #[test]

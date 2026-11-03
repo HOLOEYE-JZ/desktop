@@ -49,8 +49,9 @@ if (probe.status !== 0) {
   process.exit(1);
 }
 
-const manifest = path.join(ROOT, 'native', 'Cargo.toml');
-const built = spawnSync('cargo', ['build', '--release', '--locked', '--manifest-path', manifest, '--target', triple], {
+// In native/, because cargo reads .cargo/config.toml from where it runs.
+const built = spawnSync('cargo', ['build', '--release', '--locked', '--target', triple], {
+  cwd: path.join(ROOT, 'native'),
   stdio: 'inherit',
   shell: process.platform === 'win32',
 });

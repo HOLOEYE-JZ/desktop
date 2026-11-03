@@ -82,22 +82,40 @@ fn dialog_windows() -> Vec<isize> {
     list
 }
 
+/// How long after asking a new dialog counts as ours when it has no owner.
+const OWNERLESS_WINDOW: Duration = Duration::from_secs(3);
+
+fn owner_of(handle: isize) -> isize {
+    let dialog = HWND(handle as *mut core::ffi::c_void);
+    unsafe { GetWindow(dialog, GW_OWNER) }.map_or(0, |owner| owner.0 as isize)
+}
+
+/// Which dialog to close on a timeout. Owned by our window: that's ours, whatever else is
+/// up. Owned by another window: never. With no owner it could be anyone's, so only the
+/// one dialog that appeared right after we asked, and only if it was the only one.
+fn dialog_to_close(owned_by: &[(isize, isize)], ours: isize, seen_alone: Option<isize>) -> Option<isize> {
+    if let Some((handle, _)) = owned_by.iter().find(|(_, owner)| *owner == ours) {
+        return Some(*handle);
+    }
+    seen_alone.filter(|handle| owned_by.iter().any(|(other, owner)| other == handle && *owner == 0))
+}
+
 /// Cancelling the operation doesn't close the dialog: seen on Windows 11 25H2, where
-/// it stayed up with the PIN box after the operation had ended. So the dialogs that
-/// weren't there before this prompt get a close message. Another app's dialog that
-/// opened meanwhile is told apart by its owner, where it has one.
-fn close_new_dialogs(before: &[isize], ours: HWND) {
-    for handle in dialog_windows() {
-        if before.contains(&handle) {
-            continue;
-        }
-        let dialog = HWND(handle as *mut core::ffi::c_void);
-        if let Ok(owner) = unsafe { GetWindow(dialog, GW_OWNER) } {
-            if !owner.is_invalid() && owner != ours {
-                continue;
-            }
-        }
-        let _ = unsafe { PostMessageW(Some(dialog), WM_CLOSE, WPARAM(0), LPARAM(0)) };
+/// it stayed up with the PIN box after the operation had ended. So it gets a close
+/// message. Under the opt-in test flag this says which case applied.
+fn close_our_dialog(before: &[isize], ours: HWND, seen_alone: Option<isize>) {
+    let new: Vec<(isize, isize)> = dialog_windows().into_iter().filter(|handle| !before.contains(handle)).map(|handle| (handle, owner_of(handle))).collect();
+    let target = dialog_to_close(&new, ours.0 as isize, seen_alone);
+    if std::env::var_os("BULWARK_TEST_HELLO_PROMPT").is_some() {
+        let case = match target {
+            Some(handle) if owner_of(handle) == ours.0 as isize => "owned by our window",
+            Some(_) => "ownerless, the one seen right after asking",
+            None => "none closed",
+        };
+        eprintln!("hello dialog on timeout: {case} (new: {new:?})");
+    }
+    if let Some(handle) = target {
+        let _ = unsafe { PostMessageW(Some(HWND(handle as *mut core::ffi::c_void)), WM_CLOSE, WPARAM(0), LPARAM(0)) };
     }
 }
 
@@ -108,15 +126,28 @@ pub fn hello_verify(reason: &str, hwnd: &[u8], timeout: Duration) -> &'static st
         return "unavailable";
     }
     let before = dialog_windows();
+    let seen_alone = std::cell::Cell::new(None);
     let run = || -> Result<Option<UserConsentVerificationResult>, WinError> {
         let interop = factory::<UserConsentVerifier, IUserConsentVerifierInterop>()?;
         let op: IAsyncOperation<UserConsentVerificationResult> =
             unsafe { interop.RequestVerificationForWindowAsync(window, &HSTRING::from(reason)) }?;
-        wait(&op, timeout)
+        // Wait the first seconds in small steps, to note the dialog that opens for us.
+        let asked = Instant::now();
+        while asked.elapsed() < OWNERLESS_WINDOW.min(timeout) {
+            if !matches!(op.Status()?, AsyncStatus::Started) {
+                break;
+            }
+            let new: Vec<isize> = dialog_windows().into_iter().filter(|handle| !before.contains(handle)).collect();
+            if let (None, [only]) = (seen_alone.get(), new.as_slice()) {
+                seen_alone.set(Some(*only));
+            }
+            sleep(POLL);
+        }
+        wait(&op, timeout.saturating_sub(asked.elapsed()))
     };
     match run() {
         Ok(None) => {
-            close_new_dialogs(&before, window);
+            close_our_dialog(&before, window, seen_alone.get());
             "timeout"
         }
         Ok(Some(UserConsentVerificationResult::Verified)) => "verified",
@@ -347,6 +378,18 @@ fn key_usage_of(key: &KeyHandle) -> Option<KeyAllows> {
 
 // ─── Keystore ────────────────────────────────────────────────
 
+/// Microsoft's own providers that keep keys on disk.
+const SOFTWARE_PROVIDERS: [&str; 8] = [
+    "Microsoft Software Key Storage Provider",
+    "Microsoft Enhanced RSA and AES Cryptographic Provider",
+    "Microsoft RSA SChannel Cryptographic Provider",
+    "Microsoft Enhanced Cryptographic Provider v1.0",
+    "Microsoft Strong Cryptographic Provider",
+    "Microsoft Base Cryptographic Provider v1.0",
+    "Microsoft Base DSS and Diffie-Hellman Cryptographic Provider",
+    "Microsoft Enhanced DSS and Diffie-Hellman Cryptographic Provider",
+];
+
 pub fn enumerate(wanted: impl Fn(&[u8]) -> bool) -> Result<Vec<Found>, KeystoreError> {
     let store = Store::open()?;
     let mut certificates = store.certificates();
@@ -358,11 +401,12 @@ pub fn enumerate(wanted: impl Fn(&[u8]) -> bool) -> Result<Vec<Found>, KeystoreE
             continue;
         }
         let Some(id) = sha256_id(certificate) else { continue };
-        let smartcard = provider.to_ascii_lowercase().contains("smart card");
+        let software = SOFTWARE_PROVIDERS.contains(&provider.as_str());
         let mut allows = None;
-        // A card stays untouched while listing. A software key is checked silently:
-        // the certificate can outlive its key, and then it isn't a key we have.
-        if !smartcard {
+        // Only a provider known to be software is opened here, silently: the certificate
+        // can outlive its key, and then it isn't a key we have. Anything else may be a
+        // token, whatever its name, and stays untouched while listing.
+        if software {
             let flags = CRYPT_ACQUIRE_FLAGS(CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG.0 | CRYPT_ACQUIRE_SILENT_FLAG.0);
             match acquire(certificate, flags, None) {
                 Ok(key) => allows = key_usage_of(&key),
@@ -370,10 +414,10 @@ pub fn enumerate(wanted: impl Fn(&[u8]) -> bool) -> Result<Vec<Found>, KeystoreE
                 Err(_) => {}
             }
         }
-        let source = if smartcard {
-            "smartcard"
-        } else if provider.contains("Software") || provider.contains("Cryptographic Provider") {
+        let source = if software {
             "software"
+        } else if provider.to_ascii_lowercase().contains("smart card") {
+            "smartcard"
         } else {
             "unknown"
         };
@@ -478,11 +522,11 @@ fn algorithm_of(key: &KeyHandle) -> Option<String> {
             NCRYPT_ALGORITHM_PROPERTY,
             Some(&mut bytes),
             &mut size,
-            windows::Win32::Security::OBJECT_SECURITY_INFORMATION(0),
+            windows::Win32::Security::OBJECT_SECURITY_INFORMATION(NCRYPT_SILENT_FLAG.0),
         )
     }
     .ok()?;
-    let units: Vec<u16> = bytes[..size as usize].chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).take_while(|unit| *unit != 0).collect();
+    let units: Vec<u16> = bytes.get(..size as usize)?.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).take_while(|unit| *unit != 0).collect();
     Some(String::from_utf16_lossy(&units))
 }
 
@@ -541,4 +585,39 @@ pub fn agree(id: &str, peer: &PeerKey, hwnd: Option<&[u8]>) -> Result<Vec<u8>, K
 
 pub fn policy_is_forced(_key: &str) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OURS: isize = 100;
+
+    #[test]
+    fn a_dialog_owned_by_our_window_is_ours() {
+        assert_eq!(dialog_to_close(&[(1, 200), (2, OURS)], OURS, None), Some(2));
+    }
+
+    #[test]
+    fn a_dialog_owned_by_another_window_is_never_closed() {
+        assert_eq!(dialog_to_close(&[(1, 200)], OURS, None), None);
+        assert_eq!(dialog_to_close(&[(1, 200)], OURS, Some(1)), None, "even if it was the one seen");
+    }
+
+    #[test]
+    fn an_ownerless_dialog_only_if_it_is_the_one_seen_right_after_asking() {
+        assert_eq!(dialog_to_close(&[(1, 0)], OURS, Some(1)), Some(1));
+        assert_eq!(dialog_to_close(&[(1, 0)], OURS, None), None, "nothing seen in time");
+        assert_eq!(dialog_to_close(&[(2, 0)], OURS, Some(1)), None, "another app's, opened later");
+        assert_eq!(dialog_to_close(&[(2, 0), (1, 0)], OURS, Some(1)), Some(1));
+        assert_eq!(dialog_to_close(&[], OURS, Some(1)), None, "already gone");
+    }
+
+    #[test]
+    fn a_software_provider_is_named_exactly() {
+        assert!(SOFTWARE_PROVIDERS.contains(&"Microsoft Software Key Storage Provider"));
+        assert!(!SOFTWARE_PROVIDERS.contains(&"Microsoft Platform Crypto Provider"), "a TPM");
+        assert!(!SOFTWARE_PROVIDERS.contains(&"Microsoft Smart Card Key Storage Provider"));
+        assert!(!SOFTWARE_PROVIDERS.contains(&"Acme Software Token Cryptographic Provider"), "a name proves nothing");
+    }
 }

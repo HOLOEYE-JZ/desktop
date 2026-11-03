@@ -163,7 +163,11 @@ pub fn decrypt(id: &str, data: &[u8], plan: &DecryptPlan, _hwnd: Option<&[u8]>) 
         DecryptPlan::RsaOaep { hash: Hash::Sha384, .. } => Algorithm::RSAEncryptionOAEPSHA384,
         DecryptPlan::RsaOaep { hash: Hash::Sha512, .. } => Algorithm::RSAEncryptionOAEPSHA512,
     };
-    private_key(id)?.decrypt_data(algorithm, data).map_err(|error| map_error(&error))
+    // A bad padding can come back as errSecParam. It must read like any other failure.
+    private_key(id)?.decrypt_data(algorithm, data).map_err(|error| match error.code() as i64 {
+        ERR_PARAM => KeystoreError::Failed("decrypt".into()),
+        _ => map_error(&error),
+    })
 }
 
 fn public_key_from(peer: &PeerKey) -> Result<SecKey, KeystoreError> {

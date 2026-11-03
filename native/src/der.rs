@@ -7,6 +7,9 @@ pub const OID_RSA_PSS: &str = "1.2.840.113549.1.1.10";
 pub const OID_EC: &str = "1.2.840.10045.2.1";
 const OID_KEY_USAGE: &str = "2.5.29.15";
 const OID_EXT_KEY_USAGE: &str = "2.5.29.37";
+const OID_BASIC_CONSTRAINTS: &str = "2.5.29.19";
+const OID_CLIENT_AUTH: &str = "1.3.6.1.5.5.7.3.2";
+const OID_SMARTCARD_LOGON: &str = "1.3.6.1.4.1.311.20.2.2";
 pub const OID_ANY_EKU: &str = "2.5.29.37.0";
 pub const OID_EMAIL_PROTECTION: &str = "1.3.6.1.5.5.7.3.4";
 
@@ -93,6 +96,8 @@ pub struct Certificate {
     pub key_usage: Option<u16>,
     /// None when the certificate has no extendedKeyUsage extension: any use.
     pub extended_key_usage: Option<Vec<String>>,
+    /// basicConstraints says cA=true.
+    pub is_ca: bool,
 }
 
 impl Certificate {
@@ -102,14 +107,27 @@ impl Certificate {
         KEY_USAGE_NAMES.iter().filter(|(bit, _)| bits & bit != 0).map(|(_, name)| name.to_string()).collect()
     }
 
-    /// RFC 8550: with an extendedKeyUsage, it has to name mail or any use.
+    /// RFC 8550: with an extendedKeyUsage, it has to name mail or any use. A CA is never
+    /// fit, however its key usage reads: signing with it could issue certificates.
     pub fn allowed_for_mail(&self) -> bool {
+        if self.is_ca || self.key_usage.is_some_and(|bits| bits & (KU_KEY_CERT_SIGN | KU_CRL_SIGN) != 0) {
+            return false;
+        }
         let eku = match &self.extended_key_usage {
             None => true,
             Some(list) => list.iter().any(|oid| oid == OID_EMAIL_PROTECTION || oid == OID_ANY_EKU),
         };
         let wanted = KU_DIGITAL_SIGNATURE | KU_NON_REPUDIATION | KU_KEY_ENCIPHERMENT | KU_KEY_AGREEMENT;
         eku && self.key_usage.is_none_or(|bits| bits & wanted != 0)
+    }
+
+    /// This key can do more than mail: it may also sign the user in somewhere. Signing a
+    /// digest for a page could be a login, so consent is per operation, not per session.
+    pub fn ask_each_use(&self) -> bool {
+        match &self.extended_key_usage {
+            None => true,
+            Some(list) => list.iter().any(|oid| oid == OID_ANY_EKU || oid == OID_CLIENT_AUTH || oid == OID_SMARTCARD_LOGON),
+        }
     }
 }
 
@@ -312,6 +330,13 @@ fn key_usage_bits(value: &[u8]) -> Option<u16> {
     Some(out)
 }
 
+fn basic_constraints_ca(value: &[u8]) -> Option<bool> {
+    let mut reader = Reader::new(value);
+    let mut sequence = Reader::new(reader.expect(SEQUENCE)?);
+    // cA defaults to false. In DER it's only there when true.
+    Some(sequence.optional(0x01).is_some_and(|flag| flag.first().is_some_and(|byte| *byte != 0)))
+}
+
 fn extended_key_usage(value: &[u8]) -> Option<Vec<String>> {
     let mut reader = Reader::new(value);
     let mut list = Reader::new(reader.expect(SEQUENCE)?);
@@ -360,6 +385,7 @@ pub fn parse_certificate(der: &[u8]) -> Option<Certificate> {
 
     let mut key_usage = None;
     let mut eku = None;
+    let mut is_ca = false;
     if let Some(wrapper) = tbs.optional(0xa3) {
         let mut wrapper = Reader::new(wrapper);
         let mut extensions = Reader::new(wrapper.expect(SEQUENCE)?);
@@ -371,6 +397,7 @@ pub fn parse_certificate(der: &[u8]) -> Option<Certificate> {
             match oid.as_str() {
                 OID_KEY_USAGE => key_usage = Some(key_usage_bits(value)?),
                 OID_EXT_KEY_USAGE => eku = Some(extended_key_usage(value)?),
+                OID_BASIC_CONSTRAINTS => is_ca = basic_constraints_ca(value)?,
                 _ => {}
             }
         }
@@ -386,6 +413,7 @@ pub fn parse_certificate(der: &[u8]) -> Option<Certificate> {
         key,
         key_usage,
         extended_key_usage: eku,
+        is_ca,
     })
 }
 
@@ -512,9 +540,8 @@ mod tests {
         assert_eq!(der[2] as usize, der.len() - 3);
     }
 
-    #[test]
-    fn mail_use_follows_the_extensions() {
-        let certificate = |key_usage, eku: Option<&[&str]>| Certificate {
+    fn certificate(key_usage: Option<u16>, eku: Option<&[&str]>, is_ca: bool) -> Certificate {
+        Certificate {
             subject: String::new(),
             issuer: String::new(),
             serial: String::new(),
@@ -524,12 +551,42 @@ mod tests {
             key: KeyKind::Rsa { bits: 2048, pss_only: false },
             key_usage,
             extended_key_usage: eku.map(|list| list.iter().map(|oid| oid.to_string()).collect()),
-        };
-        assert!(certificate(None, None).allowed_for_mail());
-        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION])).allowed_for_mail());
-        assert!(certificate(None, Some(&[OID_ANY_EKU])).allowed_for_mail());
-        assert!(!certificate(None, Some(&["1.3.6.1.5.5.7.3.2"])).allowed_for_mail(), "client authentication only");
-        assert!(!certificate(None, Some(&["1.3.6.1.5.5.7.3.3"])).allowed_for_mail(), "code signing only");
-        assert!(!certificate(Some(KU_KEY_CERT_SIGN | KU_CRL_SIGN), None).allowed_for_mail(), "a CA");
+            is_ca,
+        }
+    }
+
+    #[test]
+    fn mail_use_follows_the_extensions() {
+        assert!(certificate(None, None, false).allowed_for_mail());
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION]), false).allowed_for_mail());
+        assert!(certificate(None, Some(&[OID_ANY_EKU]), false).allowed_for_mail());
+        assert!(!certificate(None, Some(&[OID_CLIENT_AUTH]), false).allowed_for_mail(), "client authentication only");
+        assert!(!certificate(None, Some(&["1.3.6.1.5.5.7.3.3"]), false).allowed_for_mail(), "code signing only");
+    }
+
+    #[test]
+    fn a_ca_is_never_fit_for_mail() {
+        assert!(!certificate(Some(KU_KEY_CERT_SIGN | KU_CRL_SIGN), None, false).allowed_for_mail());
+        assert!(!certificate(Some(KU_DIGITAL_SIGNATURE | KU_KEY_CERT_SIGN), None, false).allowed_for_mail(), "keyCertSign beside digitalSignature");
+        assert!(!certificate(Some(KU_DIGITAL_SIGNATURE | KU_CRL_SIGN), None, false).allowed_for_mail(), "cRLSign beside digitalSignature");
+        assert!(!certificate(Some(KU_DIGITAL_SIGNATURE), Some(&[OID_EMAIL_PROTECTION]), true).allowed_for_mail(), "cA=true");
+        assert!(!certificate(None, None, true).allowed_for_mail(), "cA=true and nothing else");
+    }
+
+    #[test]
+    fn basic_constraints_read_the_flag() {
+        // SEQUENCE { BOOLEAN TRUE }, an empty SEQUENCE, and garbage.
+        assert_eq!(basic_constraints_ca(&[0x30, 0x03, 0x01, 0x01, 0xff]), Some(true));
+        assert_eq!(basic_constraints_ca(&[0x30, 0x00]), Some(false));
+        assert_eq!(basic_constraints_ca(&[0x01]), None);
+    }
+
+    #[test]
+    fn a_key_that_can_sign_in_asks_each_time() {
+        assert!(!certificate(None, Some(&[OID_EMAIL_PROTECTION]), false).ask_each_use());
+        assert!(certificate(None, None, false).ask_each_use(), "no extended key usage: any use");
+        assert!(certificate(None, Some(&[OID_ANY_EKU]), false).ask_each_use());
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_CLIENT_AUTH]), false).ask_each_use());
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_SMARTCARD_LOGON]), false).ask_each_use());
     }
 }

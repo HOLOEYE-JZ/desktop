@@ -16,6 +16,7 @@ import {
   CHANNEL,
   PRELOAD_ARG,
   type KeystoreDecryptScheme,
+  type KeystoreAccessState,
   type KeystoreCertificate,
   type KeystoreResult,
   type KeystoreSignScheme,
@@ -123,6 +124,8 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
             keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme)),
           agree: (id: string, peerPublicKey: Uint8Array) =>
             keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
+          accessState: (): Promise<KeystoreAccessState> => ipcRenderer.invoke(CHANNEL.keystoreAccess),
+          revokeAccess: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreRevoke),
         },
       }
     : {};

@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { fakeOsIntegration, launch, opened, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
+import { fakeOsIntegration, launch, opened, prompts, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
 
 const INSTANCE = 'https://bulwark.internal.bulwarkmail.org';
 
@@ -49,13 +49,67 @@ test('the bridge is there on the instance, but without the standalone parts', as
   expect(keys.filter((key) => key !== 'keystore')).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'version', 'windows']);
 });
 
-test('the OS keystore is on the instance too, as narrow as in standalone', async () => {
+test.describe('the OS keystore on an instance', () => {
   test.skip(process.platform !== 'win32', 'the helper is built on Windows here');
-  const keystore = await page.evaluate(() => {
-    const member = (window as unknown as { bulwarkDesktop: { keystore?: object } }).bulwarkDesktop.keystore;
-    return member ? Object.keys(member).sort() : null;
+
+  type Member = { list(): Promise<unknown[]>; accessState(): Promise<string>; revokeAccess(): Promise<void> };
+  const call = (target: Page, method: keyof Member) =>
+    target.evaluate(async (name) => {
+      const member = (window as unknown as { bulwarkDesktop: { keystore: Member } }).bulwarkDesktop.keystore;
+      try {
+        const out = await member[name]();
+        return Array.isArray(out) ? 'listed' : (out ?? 'done');
+      } catch (error) {
+        return (error as Error).message;
+      }
+    }, method);
+  const stored = (target: ElectronApplication) => target.evaluate(({ app: electronApp }) => {
+    const { readFileSync } = process.getBuiltinModule('node:fs');
+    const { join } = process.getBuiltinModule('node:path');
+    return JSON.parse(readFileSync(join(electronApp.getPath('userData'), 'shell-state.json'), 'utf8')).keystoreOrigins ?? [];
   });
-  expect(keystore).toEqual(['agree', 'decrypt', 'list', 'sign']);
+
+  test('is off until the user says yes: Deny sticks and stores nothing', async () => {
+    expect(await call(page, 'accessState')).toBe('off');
+    await fakeOsIntegration(app, 1);
+    expect(await call(page, 'list')).toBe('keystore:cancelled');
+    expect(await call(page, 'list')).toBe('keystore:cancelled');
+    const asked = await prompts(app);
+    expect(asked).toHaveLength(1);
+    expect(`${asked[0].message} ${asked[0].detail}`).toContain(new URL(INSTANCE).host);
+    expect((asked[0] as unknown as { buttons: string[] }).buttons).toHaveLength(2);
+    expect(await call(page, 'accessState')).toBe('off');
+  });
+
+  test('yes is stored per origin, survives a restart, and can be taken back', async () => {
+    const own = tempProfile('instance-keystore');
+    let second = await launch(own, `--instance=${INSTANCE}`);
+    try {
+      let shown = await shownPage(second);
+      await fakeOsIntegration(second, 0);
+      expect(await call(shown, 'list')).toBe('listed');
+      expect((await prompts(second)).length, 'one question, not two').toBe(1);
+      expect(await call(shown, 'accessState')).toBe('stored');
+      await expect.poll(() => stored(second)).toEqual([INSTANCE]);
+
+      await second.close();
+      second = await launch(own, `--instance=${INSTANCE}`);
+      shown = await shownPage(second);
+      expect(await call(shown, 'accessState')).toBe('stored');
+      await fakeOsIntegration(second, 2);
+      // The first-use question is gone. The session's list grant still applies on top.
+      expect(await call(shown, 'list')).toBe('keystore:cancelled');
+      expect((await prompts(second)).length).toBe(1);
+      expect((await prompts(second))[0].message).toContain('see your certificates');
+
+      expect(await call(shown, 'revokeAccess')).toBe('done');
+      expect(await call(shown, 'accessState')).toBe('off');
+      await expect.poll(() => stored(second)).toEqual([]);
+    } finally {
+      await second.close().catch(() => undefined);
+      removeProfile(own);
+    }
+  });
 });
 
 test('the same preload on a foreign origin exposes no bridge', async () => {
