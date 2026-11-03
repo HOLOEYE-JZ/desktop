@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "fetch-webmail": "node scripts/fetch-webmail.mjs",
     "start": "node build.mjs && node scripts/run-electron.mjs .",
-    "test": "node build.mjs && playwright test",
+    "test": "node build.mjs --test && playwright test",
     "pack:dir": "node build.mjs && electron-builder --dir"
   },
   "devDependencies": {
@@ -27,5 +27,8 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.11"
+  },
+  "optionalDependencies": {
+    "@vscode/policy-watcher": "^1.7.0"
   }
 }

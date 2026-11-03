@@ -4,7 +4,7 @@
  * first and says who it's from and what it may do, so script in a page can't
  * install anything on its own, and Cancel is what Enter does.
  *
- * `checkPolicy` is the hook for step 6's PluginsMode and PluginAllowlist: main
+ * `checkPolicy` is PluginsMode and PluginAllowlist (features/policies.ts): main
  * refuses here, and the webmail enforces the same in its install path.
  */
 

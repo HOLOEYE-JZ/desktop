@@ -12,6 +12,9 @@ files:
   - package.json
 # The webmail server stays unpacked: it needs a real cwd, and Next reads its own files.
 extraResources:
+  # ADMX, ADML and samples from the webmail, for IT. See scripts/fetch-webmail.mjs.
+  - from: policies
+    to: policies
   - from: webmail
     to: server
     filter:
@@ -20,6 +23,10 @@ extraResources:
       - '!node_modules/**'
 # node_modules: see scripts/after-pack.cjs.
 afterPack: scripts/after-pack.cjs
+# INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL. The NSIS side is build/installer.nsh.
+msiProjectCreated: scripts/msi-policies.cjs
+# policy-watcher is N-API, so what `npm ci` built loads in Electron as it is.
+npmRebuild: false
 electronFuses:
   runAsNode: false
   enableCookieEncryption: true

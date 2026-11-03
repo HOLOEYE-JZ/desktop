@@ -15,17 +15,20 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 'electron';
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
+import { parseInstanceUrl } from '../shared/policy-schema';
 import { instancePartition, setupAppSession } from './app-session';
 import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { askToRestart, policies } from './features/policies';
 import { createChannels, registerBridge } from './ipc';
 import { LocalAdmin } from './local-admin';
 import { installMenu } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
 import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
-import { profilePaths, seedProfile, serverEnv } from './profile';
+import { decideStart, restartKey, type StartDecision } from './policy-start';
+import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
@@ -75,7 +78,14 @@ app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.exit(0);
 
+// Before `ready`: Chromium takes the auth lists from its command line at start.
+if (gotLock) {
+  await policies.start({ argv: process.argv, isPackaged: app.isPackaged });
+  policies.applySwitches(app.commandLine);
+}
+
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
+policies.attachState(stateFile);
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
@@ -123,7 +133,7 @@ function watchForReplacedCertificate(window: BrowserWindow): void {
   });
 }
 
-function createWindowManager(mode: Mode, origin: string, session: Electron.Session, theme: ThemeController): WindowManager {
+function createWindowManager(mode: Mode, origin: string, session: Electron.Session, theme: ThemeController, startUrl: string): WindowManager {
   const guard: GuardOptions = { mode, origin, windows: () => windowManager! };
   windowManager = new WindowManager({
     state: stateFile,
@@ -135,7 +145,7 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     devTools,
     attachGuards: (window) => attachWindowGuards(window, guard),
   });
-  appStartUrl = mode === 'instance' ? validInstanceUrl(argValue('instance')) ?? validInstanceUrl(stateFile.data.instanceUrl) ?? `${origin}/` : `${origin}/`;
+  appStartUrl = startUrl;
   windowManager.on('stayed', () => {
     switching = false;
     quitFlushed = false;
@@ -193,7 +203,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     throw error;
   }
 
-  seedProfile(profile);
+  seedProfile(profile, pluginFeatures(policies.snapshot.PluginsMode.value));
 
   const launchSecret = randomBytes(32).toString('base64url');
   const mainSecret = randomBytes(32).toString('base64url');
@@ -221,13 +231,19 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
         secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
         trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin),
+        policy: policies.serverPolicy(),
       },
     });
   let server = spawnServer(false);
-  const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins) });
+  const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins), isAllowedByPolicy: policies.serverAllowed });
+  // config-manager notices the changed file by itself, within seconds.
+  policies.on('changed', (snapshot) => {
+    server.sendPolicy(policies.serverPolicy());
+    seedProfile(profile, pluginFeatures(snapshot.PluginsMode.value));
+  });
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
-  const windows = createWindowManager('standalone', APP_ORIGIN, session, theme);
+  const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
   signIn = new LoopbackSignIn(() => windows.focus());
   const ctx: FeatureContext = {
     mode: 'standalone',
@@ -240,7 +256,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     localAdmin,
     ...createChannels(APP_ORIGIN),
   };
-  registerBridge(ctx, { origin: APP_ORIGIN, signIn });
+  registerBridge(ctx, { origin: APP_ORIGIN, signIn, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
   try {
@@ -281,26 +297,15 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const origin = new URL(instanceUrl).origin;
   const session = electronSession.fromPartition(instancePartition(origin));
   applyPermissionPolicy(session, origin);
-  const windows = createWindowManager('instance', origin, session, theme);
+  const windows = createWindowManager('instance', origin, session, theme, instanceUrl);
   const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, ...createChannels(origin) };
   registerBridge(ctx, { origin });
   setupFeatures(ctx);
   windows.open({ type: 'main', url: instanceUrl });
 }
 
-function validInstanceUrl(url: unknown): string | null {
-  if (typeof url !== 'string') return null;
-  try {
-    const parsed = new URL(url.trim());
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
-    return parsed.origin + parsed.pathname.replace(/\/+$/, '') + '/';
-  } catch {
-    return null;
-  }
-}
-
-/** The first run asks which of the two the user wants. Step 6's forced InstanceUrl policy skips this. */
-function showWelcome(theme: ThemeController): void {
+/** The first run asks which of the two the user wants. A forced InstanceUrl skips this. */
+function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { kind: 'welcome' }>): void {
   const colours = theme.colours();
   const window = new BrowserWindow({
     width: 620,
@@ -310,7 +315,15 @@ function showWelcome(theme: ThemeController): void {
     autoHideMenuBar: true,
     backgroundColor: colours.background,
     title: 'Bulwark',
-    webPreferences: { preload: WELCOME_PRELOAD, sandbox: true, contextIsolation: true, nodeIntegration: false, devTools },
+    webPreferences: {
+      preload: WELCOME_PRELOAD,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools,
+      // Encoded: quotes don't survive Chromium's command line on Windows.
+      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked }))}`],
+    },
   });
   window.once('ready-to-show', () => window.show());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -319,15 +332,17 @@ function showWelcome(theme: ThemeController): void {
   ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
     if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
     if (choice?.mode === 'standalone') {
+      if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
       stateFile.data.mode = 'standalone';
     } else if (choice?.mode === 'instance') {
-      const instanceUrl = validInstanceUrl(choice.url);
-      if (!instanceUrl) return { ok: false, error: 'invalid_url' };
+      const parsed = parseInstanceUrl(decision.urlLocked ? decision.instanceUrl : choice.url, policies.snapshot.AllowInsecureInstance.value);
+      if (!parsed.ok) return { ok: false, error: 'invalid_url' };
       stateFile.data.mode = 'instance';
-      stateFile.data.instanceUrl = instanceUrl;
+      stateFile.data.instanceUrl = parsed.value;
     } else {
       return { ok: false, error: 'invalid_choice' };
     }
+    stateFile.data.askConnection = undefined;
     stateFile.save();
     ipcMain.removeHandler(CHANNEL.welcomeChoose);
     await boot(theme);
@@ -338,20 +353,53 @@ function showWelcome(theme: ThemeController): void {
   void window.loadURL(`data:text/html;charset=utf-8;base64,${readFileSync(WELCOME_PAGE).toString('base64')}`);
 }
 
+function startDecision(): StartDecision {
+  return decideStart(policies.snapshot, policies.problem, {
+    mode: stateFile.data.mode,
+    instanceUrl: stateFile.data.instanceUrl,
+    askConnection: stateFile.data.askConnection,
+    devInstance: DEV ? argValue('instance') : null,
+    devStandalone: DEV && process.argv.includes('--standalone'),
+  });
+}
+
+/** The policy fails closed: this is all the user gets, with no way around it. */
+async function showPolicyError(decision: Extract<StartDecision, { kind: 'policy-error' }>): Promise<void> {
+  const text = strings();
+  const reason = text.policyReasons[decision.reason] ?? text.policyReasons.other;
+  await showErrorPage(text.policyErrorTitle, text.policyErrorBody(decision.policy, reason, decision.raw));
+}
+
+let bootedKey = '';
+let askedKey = '';
+
 async function boot(theme: ThemeController): Promise<void> {
-  const forcedInstance = DEV ? validInstanceUrl(argValue('instance')) : null;
-  const mode: Mode | undefined = forcedInstance ? 'instance' : DEV && process.argv.includes('--standalone') ? 'standalone' : stateFile.data.mode;
-  if (mode === 'instance') {
-    const url = forcedInstance ?? validInstanceUrl(stateFile.data.instanceUrl);
-    if (url) {
-      await bootInstance(url, theme);
+  const decision = startDecision();
+  bootedKey = restartKey(decision, policies.snapshot);
+  installMenu({ switchMode: decision.canSwitch ? switchMode : undefined, devTools });
+  if (decision.kind === 'policy-error') await showPolicyError(decision);
+  else if (decision.kind === 'instance') await bootInstance(decision.url, theme);
+  else if (decision.kind === 'standalone') await bootStandalone(theme);
+  else showWelcome(theme, decision);
+}
+
+/** A change that needs a restart asks for one, once for each outcome. */
+function watchPolicyForRestart(): void {
+  policies.on('changed', () => {
+    const key = restartKey(startDecision(), policies.snapshot);
+    if (key === bootedKey) {
+      askedKey = '';
       return;
     }
-  } else if (mode === 'standalone') {
-    await bootStandalone(theme);
-    return;
-  }
-  showWelcome(theme);
+    if (key === askedKey) return;
+    askedKey = key;
+    const text = strings();
+    void askToRestart(text.policyChangedTitle, text.policyChangedDetail, text.policyRestart, text.policyLater).then((restart) => {
+      if (!restart || askedKey !== key) return;
+      app.relaunch();
+      app.quit();
+    });
+  });
 }
 
 // Quitting closes the windows, and each may ask first. Nothing is forgotten until all
@@ -366,6 +414,7 @@ function switchMode(): void {
 function finishSwitch(): void {
   stateFile.data.mode = undefined;
   stateFile.data.instanceUrl = undefined;
+  stateFile.data.askConnection = true;
   stateFile.save();
   app.relaunch();
 }
@@ -412,9 +461,10 @@ if (gotLock) {
   });
 
   app.whenReady().then(async () => {
-    installMenu({ switchMode, devTools });
     const theme = new ThemeController(stateFile);
     await boot(theme);
+    policies.watch();
+    watchPolicyForRestart();
   }).catch((error) => {
     console.error(error);
     dialog.showErrorBox('Bulwark', String(error instanceof Error ? error.message : error));

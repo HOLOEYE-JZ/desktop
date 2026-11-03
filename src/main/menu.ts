@@ -11,7 +11,8 @@ import type { MenuState } from '../shared/bridge';
 import { strings } from './strings';
 
 export interface MenuHooks {
-  switchMode: () => void;
+  /** Left out while a policy forces the connection. */
+  switchMode?: () => void;
   devTools: boolean;
 }
 
@@ -23,8 +24,9 @@ function buildTemplate(hooks: MenuHooks): MenuItemConstructorOptions[] {
     {
       label: text.menuFile,
       submenu: [
-        { label: text.menuSwitchMode, click: hooks.switchMode },
-        { type: 'separator' },
+        ...(hooks.switchMode
+          ? ([{ label: text.menuSwitchMode, click: hooks.switchMode }, { type: 'separator' }] as MenuItemConstructorOptions[])
+          : []),
         { role: 'close' },
         ...(mac ? [] : [{ role: 'quit' } as MenuItemConstructorOptions]),
       ],

@@ -29,9 +29,19 @@ const fill = { title: 'title', intro: 'intro', 'standalone-title': 'standaloneTi
 for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
 document.title = text.title;
 
-byId('standalone').addEventListener('click', () => {
-  void window.bulwarkWelcome.choose({ mode: 'standalone' });
-});
+const { allowStandalone, instanceUrl, urlLocked } = window.bulwarkWelcome.options;
+if (instanceUrl) byId('url').value = instanceUrl;
+if (urlLocked) byId('url').readOnly = true;
+if (!allowStandalone || instanceUrl) byId('form').classList.add('open');
+
+// Not `hidden`: the page's own `button { display: block }` would win.
+if (allowStandalone) {
+  byId('standalone').addEventListener('click', () => {
+    void window.bulwarkWelcome.choose({ mode: 'standalone' });
+  });
+} else {
+  byId('standalone').remove();
+}
 byId('instance').addEventListener('click', () => {
   byId('form').classList.add('open');
   byId('url').focus();

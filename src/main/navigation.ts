@@ -85,7 +85,7 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
   contents.on('did-create-window', (child, details) => {
     const parsed = parse(details.url);
     const windows = options.windows();
-    if (sameOrigin(parsed, options.origin) && parsed!.protocol === 'https:') {
+    if (sameOrigin(parsed, options.origin)) {
       const key = details.frameName && details.frameName !== '_blank' ? details.frameName : details.url;
       windows.adopt(child, windowTypeOf(parsed!.pathname), key, details.url);
       return;

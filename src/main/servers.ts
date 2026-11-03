@@ -22,8 +22,8 @@ export interface ServerRegistryOptions {
   /** Sends the approved list to the embedded server. */
   sendTrusted: (origins: string[]) => void;
   /**
-   * Step 6's `AllowedJmapServers` policy goes here: false refuses the server before
-   * anyone is asked. Everything is allowed until a policy says otherwise.
+   * `AllowStandalone` and `AllowedJmapServers` (features/policies.ts): false refuses
+   * the server before anyone is asked. Everything is allowed until a policy says otherwise.
    */
   isAllowedByPolicy?: (origin: string) => boolean;
 }
@@ -67,7 +67,7 @@ export class ServerRegistry {
   async prepare(serverUrl: unknown, parent: BrowserWindow | null): Promise<ServerPrepareResult> {
     const origin = serverOrigin(serverUrl);
     if (!origin) return { ok: false, reason: 'invalid' };
-    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return { ok: false, reason: 'declined' };
+    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return { ok: false, reason: 'policy' };
     const { protocol, hostname, host } = new URL(origin);
     const plainHttp = protocol === 'http:';
     const needsApproval = plainHttp || (await isPrivateHost(hostname));
@@ -107,6 +107,7 @@ export class ServerRegistry {
   async noteSession(serverUrl: unknown, urls: SessionUrls | undefined, parent: BrowserWindow | null): Promise<void> {
     const origin = serverOrigin(serverUrl);
     if (!origin || !this.known(origin)) return;
+    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return;
     const { state, cors } = this.options;
 
     if (this.pendingApproved.delete(origin)) {

@@ -3,6 +3,8 @@ dist/
 release/
 # The webmail build, from scripts/fetch-webmail.mjs. Never committed.
 webmail/
+# The policy templates, also from there.
+/policies/
 test-results/
 playwright-report/
 *.log

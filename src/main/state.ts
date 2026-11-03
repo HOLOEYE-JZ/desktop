@@ -31,6 +31,10 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** "Change Connection" was chosen: ask once, also over a recommended server. */
+  askConnection?: boolean;
+  /** WipeOfflineData values already acted on, so each deletes once, across restarts. */
+  policyWipes?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };
