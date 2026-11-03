@@ -9,11 +9,15 @@ const ARCH = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64', 4: 'universal' };
 
 exports.default = async function afterPack(context) {
   const { projectDir } = context.packager;
-  // A test feed in a shipped build would let anyone with a shortcut pick where updates come
-  // from. Only scripts/build-update-fixtures.mjs and pack-test.mjs may package one.
+  // A test build reads a policy root anyone can write to and takes any switch, and a test
+  // feed would let anyone with a shortcut pick where updates come from. They can't ship:
+  // only scripts/pack-test.mjs and build-update-fixtures.mjs may package one.
   const main = path.join(projectDir, 'dist', 'main.mjs');
-  if (process.env.BULWARK_TEST_PACK !== '1' && existsSync(main) && readFileSync(main, 'utf8').includes('bulwark-test-update-feed')) {
-    throw new Error('dist/ has the updater test switches in it: run `node build.mjs` first');
+  if (process.env.BULWARK_TEST_PACK !== '1') {
+    if (existsSync(path.join(projectDir, 'dist', 'test-build.json'))) throw new Error('dist/ is a test build: run `node build.mjs` first');
+    if (existsSync(main) && readFileSync(main, 'utf8').includes('bulwark-test-update-feed')) {
+      throw new Error('dist/ has the updater test switches in it: run `node build.mjs` first');
+    }
   }
 
   const resources =

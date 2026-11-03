@@ -273,7 +273,7 @@ jobs:
         run: node scripts/build-native.mjs
 
       - name: Build the policy watcher
-        run: node scripts/build-policy-watcher.mjs
+        run: node scripts/build-policy-watcher.mjs --optional
 
       # On a test pack: production refuses --user-data-dir and --no-sandbox and an unpacked
       # folder has no SUID helper. The sandbox is not what this tests. It's thrown away.

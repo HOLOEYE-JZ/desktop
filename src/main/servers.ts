@@ -22,8 +22,8 @@ export interface ServerRegistryOptions {
   /** Sends the approved list to the embedded server. */
   sendTrusted: (origins: string[]) => void;
   /**
-   * Step 6's `AllowedJmapServers` policy goes here: false refuses the server before
-   * anyone is asked. Everything is allowed until a policy says otherwise.
+   * `AllowStandalone` and `AllowedJmapServers` (features/policies.ts): false refuses
+   * the server before anyone is asked. Everything is allowed until a policy says otherwise.
    */
   isAllowedByPolicy?: (origin: string) => boolean;
 }
@@ -45,11 +45,38 @@ export class ServerRegistry {
       state.data.approvedServers = cleanApproved;
       state.touch();
     }
-    cors.set(cleanCors);
+    cors.set(this.allowedByPolicy(cleanCors));
   }
 
+  private allowedByPolicy(origins: readonly string[]): string[] {
+    const allowed = this.options.isAllowedByPolicy;
+    return allowed ? origins.filter((origin) => allowed(origin)) : [...origins];
+  }
+
+  /**
+   * What a policy no longer allows stays stored, for when it's back, but goes out of the
+   * app's reach: the server stops forwarding to it, and it gets no CORS headers.
+   */
   trustedOrigins(): string[] {
-    return [...new Set([...this.options.state.data.approvedServers.map((server) => server.origin), ...this.pendingApproved])];
+    return this.allowedByPolicy([...new Set([...this.options.state.data.approvedServers.map((server) => server.origin), ...this.pendingApproved])]);
+  }
+
+  /** The policy changed. */
+  applyPolicy(): void {
+    const { state, cors, sendTrusted } = this.options;
+    cors.set(this.allowedByPolicy(state.data.corsOrigins));
+    sendTrusted(this.trustedOrigins());
+  }
+
+  /** For the request gate: a stored server the policy refuses gets nothing from a page. */
+  refusesRequest(url: string): boolean {
+    const allowed = this.options.isAllowedByPolicy;
+    if (!allowed) return false;
+    const origin = serverOrigin(url);
+    if (!origin) return false;
+    const { approvedServers, corsOrigins } = this.options.state.data;
+    const stored = corsOrigins.includes(origin) || approvedServers.some((server) => server.origin === origin);
+    return stored && !allowed(origin);
   }
 
   isApproved(origin: string): boolean {
@@ -67,7 +94,7 @@ export class ServerRegistry {
   async prepare(serverUrl: unknown, parent: BrowserWindow | null): Promise<ServerPrepareResult> {
     const origin = serverOrigin(serverUrl);
     if (!origin) return { ok: false, reason: 'invalid' };
-    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return { ok: false, reason: 'declined' };
+    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return { ok: false, reason: 'policy' };
     const { protocol, hostname, host } = new URL(origin);
     const plainHttp = protocol === 'http:';
     const needsApproval = plainHttp || (await isPrivateHost(hostname));
@@ -107,6 +134,7 @@ export class ServerRegistry {
   async noteSession(serverUrl: unknown, urls: SessionUrls | undefined, parent: BrowserWindow | null): Promise<void> {
     const origin = serverOrigin(serverUrl);
     if (!origin || !this.known(origin)) return;
+    if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return;
     const { state, cors } = this.options;
 
     if (this.pendingApproved.delete(origin)) {

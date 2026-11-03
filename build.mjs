@@ -13,9 +13,26 @@ const common = { bundle: true, platform: 'node', target: 'node22', sourcemap: fa
 
 // BULWARK_UPDATER_TEST_BUILD=1 keeps the updater's test switches. In any other build the
 // constant is false and the code behind it is gone (test/updater-rules.spec.ts checks).
-const define = { __BULWARK_UPDATER_TEST__: process.env.BULWARK_UPDATER_TEST_BUILD === '1' ? 'true' : 'false' };
+const updaterTest = process.env.BULWARK_UPDATER_TEST_BUILD === '1';
+// `--test` lets the app read a stand-in policy root. A package is never built with it:
+// scripts/after-pack.cjs fails on one. It has to be the build, not a run-time check,
+// since Electron decides app.isPackaged by the name of the exe, and anyone can rename it.
+const testBuild = process.argv.includes('--test');
+// Behaves as production, with its profile compiled in: a test of what production does
+// mustn't touch the real profile, and no switch may move it. See scripts/pack-test.mjs.
+const bakedProfile = process.argv.find((arg) => arg.startsWith('--baked-profile='))?.slice('--baked-profile='.length) ?? '';
 
-await build({ ...common, define, minifySyntax: true, entryPoints: ['src/main/index.ts'], outfile: 'dist/main.mjs', format: 'esm', external: ['electron'] });
+await build({
+  ...common,
+  entryPoints: ['src/main/index.ts'],
+  outfile: 'dist/main.mjs',
+  format: 'esm',
+  // A native module, loaded at run time from node_modules.
+  external: ['electron', '@vscode/policy-watcher'],
+  define: { __BULWARK_TEST_BUILD__: String(testBuild), __BULWARK_TEST_PROFILE__: JSON.stringify(bakedProfile), __BULWARK_UPDATER_TEST__: String(updaterTest) },
+  // Takes out what's behind the false above, and the functions only it used.
+  minifySyntax: true,
+});
 // electron-updater in a file of its own, loaded some time after the window is up. Bundled
 // so that a package has no node_modules for this, and the first paint doesn't pay for it.
 await build({ ...common, entryPoints: ['node_modules/electron-updater/out/main.js'], outfile: 'dist/updater-lib.cjs', format: 'cjs', external: ['electron'] });
@@ -32,3 +49,4 @@ const page = readFileSync('src/pages/welcome.html', 'utf8')
   .replace("script-src 'self'", `script-src 'sha256-${hash}'`)
   .replace('<script src="welcome.js"></script>', () => `<script>${script}</script>`);
 writeFileSync('dist/pages/welcome.html', page);
+if (testBuild || bakedProfile) writeFileSync('dist/test-build.json', JSON.stringify({ testBuild, bakedProfile }));

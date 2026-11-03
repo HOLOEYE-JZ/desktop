@@ -1,9 +1,13 @@
 #!/bin/bash
-# Starts a packaged app under Xvfb and checks it comes up: the embedded server has run
-# its start-up chain, and a window is on screen. Windows only show once their page has
-# painted (`show: false`, `ready-to-show`), so a viewable window is a loaded page.
+# Starts a test pack under Xvfb and checks it comes up: the embedded server has run its
+# start-up chain, and a window is on screen. Windows only show once their page has painted
+# (`show: false`, `ready-to-show`), so a viewable window is a loaded page.
 #
-#   bash scripts/linux-smoke.sh <binary> [extra args, e.g. --appimage-extract-and-run]
+#   npm run pack:test
+#   bash scripts/linux-smoke.sh release/linux-unpacked/bulwark
+#
+# A test pack, since production refuses --user-data-dir and --no-sandbox and restarts
+# itself without them (src/main/switch-guard.ts).
 #
 # Needs xvfb, dbus-x11, gnome-keyring, x11-utils. A keyring has to run, since the app
 # refuses to keep its keys in plain text. SMOKE_NO_SANDBOX=1 where Chromium's sandbox

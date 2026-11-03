@@ -4,6 +4,8 @@
  * BRIDGE_VERSION; adding a member doesn't.
  */
 
+import type { PolicySnapshot } from './policy-schema';
+
 export const BRIDGE_VERSION = 1;
 
 export type WindowType = 'main' | 'message' | 'composer' | 'settings';
@@ -19,7 +21,7 @@ export type Mode = 'standalone' | 'instance';
 
 export type ServerPrepareResult =
   | { ok: true; approved: boolean }
-  | { ok: false; reason: 'declined' | 'invalid' };
+  | { ok: false; reason: 'declined' | 'invalid' | 'policy' };
 
 export type BrowserSignInResult =
   | { ok: true; code: string; state: string }
@@ -64,6 +66,12 @@ export interface UpdateState {
   /** The version the status is about. */
   target?: string;
   percent?: number;
+}
+
+export interface PolicyBridge {
+  /** What's in force now. Synchronous: a page can read it in its first render. */
+  get: () => PolicySnapshot;
+  onChange: (listener: (snapshot: PolicySnapshot) => void) => () => void;
 }
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
@@ -157,6 +165,8 @@ export const CHANNEL = {
   updatesOpenDownload: 'bulwark:updates.openDownload',
   updatesInstallOlder: 'bulwark:updates.installOlder',
   updatesChanged: 'bulwark:updates.changed',
+  policyGet: 'bulwark:policy.get',
+  policyChanged: 'bulwark:policy.changed',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

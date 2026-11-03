@@ -30,6 +30,7 @@ import {
   judgeFeedVersion,
   newestReleaseInFeed,
   updateAbility,
+  updatePolicyFrom,
   updateUrlAllowed,
   type InstallKind,
   type UpdatePolicy,
@@ -37,6 +38,7 @@ import {
 } from '../update-rules';
 import { fill, strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
+import { policies } from './policies';
 
 declare const __BULWARK_UPDATER_TEST__: boolean;
 
@@ -108,10 +110,6 @@ class Updater {
   }
 
   private policy(): UpdatePolicy {
-    if (__BULWARK_UPDATER_TEST__) {
-      const forced = argValue('bulwark-test-update-policy');
-      if (forced) return JSON.parse(forced) as UpdatePolicy;
-    }
     return readUpdatePolicy();
   }
 
@@ -474,15 +472,9 @@ class Updater {
       if (this.restarting && this.allowed && this.status === 'ready') this.load().quitAndInstall(false, true);
     });
 
+    setUpdatePolicySource(() => updatePolicyFrom(policies.snapshot));
     onUpdatePolicyChange(() => void this.onPolicyChange());
-    if (__BULWARK_UPDATER_TEST__) {
-      (globalThis as unknown as { __bulwarkUpdaterTest: unknown }).__bulwarkUpdaterTest = {
-        setPolicy: (policy: UpdatePolicy) => {
-          setUpdatePolicySource(() => policy);
-          notifyUpdatePolicyChanged();
-        },
-      };
-    }
+    policies.on('changed', notifyUpdatePolicyChanged);
     this.schedule();
     powerMonitor.on('resume', () => {
       if (Date.now() - this.lastCheckAt > 3600_000) void this.check();

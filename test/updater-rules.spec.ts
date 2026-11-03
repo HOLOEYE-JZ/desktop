@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, updateAbility, updateUrlAllowed } from '../src/main/update-rules';
+import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
 
@@ -163,6 +163,23 @@ test.describe('the sandbox', () => {
   });
 });
 
+test.describe('what the policy reader passes on', () => {
+  const entry = <T>(value: T, source: string, locked: boolean) => ({ value, source, locked }) as never;
+  const defaults = { AutoUpdate: entry(true, 'default', false), UpdateChannel: entry('stable', 'default', false) };
+
+  test('nothing, for values nobody set: a default is no decision', () => {
+    expect(updatePolicyFrom(defaults)).toEqual({});
+  });
+
+  test('forced values, with the channel locked', () => {
+    expect(updatePolicyFrom({ AutoUpdate: entry(false, 'forced-machine', true), UpdateChannel: entry('beta', 'forced-user', true) })).toEqual({ autoUpdate: false, channel: 'beta' });
+  });
+
+  test('a recommended channel is only a default for the user', () => {
+    expect(updatePolicyFrom({ ...defaults, UpdateChannel: entry('beta', 'recommended-machine', false) })).toEqual({ recommendedChannel: 'beta' });
+  });
+});
+
 test.describe('the policy hook', () => {
   test.afterEach(() => setUpdatePolicySource(() => ({})));
 
@@ -189,7 +206,5 @@ test.describe('the normal build', () => {
     const main = readFileSync(path.join(ROOT, 'dist', 'main.mjs'), 'utf8');
     expect(main).toContain('update-downloaded');
     expect(main).not.toContain('bulwark-test-update-feed');
-    expect(main).not.toContain('bulwark-test-update-policy');
-    expect(main).not.toContain('__bulwarkUpdaterTest');
   });
 });

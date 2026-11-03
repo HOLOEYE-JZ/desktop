@@ -4,6 +4,7 @@
 //
 // - the updater's test switches are compiled in (BULWARK_UPDATER_TEST_BUILD, build.mjs),
 //   which is the only way a feed other than GitHub can be set;
+// - it's a test build (--test), so it takes --user-data-dir and a stand-in policy root;
 // - the node-inspector fuse is on, which Playwright's _electron needs;
 // - no compression, for speed.
 //
@@ -25,7 +26,7 @@ function run(command, args, env = {}) {
 }
 
 const versions = process.argv.slice(2);
-run('node', ['build.mjs'], { BULWARK_UPDATER_TEST_BUILD: '1' });
+run('node', ['build.mjs', '--test'], { BULWARK_UPDATER_TEST_BUILD: '1' });
 if (!readFileSync(path.join(ROOT, 'dist', 'main.mjs'), 'utf8').includes('bulwark-test-update-feed')) throw new Error('not a test build');
 try {
   for (const version of versions.length ? versions : VERSIONS) {

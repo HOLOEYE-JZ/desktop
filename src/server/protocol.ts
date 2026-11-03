@@ -19,6 +19,8 @@ export interface InitMessage {
   /** Set on process.env in the utilityProcess before Next loads. */
   secretEnv: Record<string, string>;
   trustedOrigins: string[];
+  /** What OS policies say the server has to enforce. */
+  policy: ServerPolicyMessage['policy'];
 }
 
 export interface TrustedMessage {
@@ -26,7 +28,12 @@ export interface TrustedMessage {
   origins: string[];
 }
 
-export type HostMessage = InitMessage | TrustedMessage;
+export interface ServerPolicyMessage {
+  type: 'policy';
+  policy: { pluginsMode: 'allowed' | 'allowlist' | 'off'; pluginAllowlist: string[]; allowedJmapServers: string[] | null };
+}
+
+export type HostMessage = InitMessage | TrustedMessage | ServerPolicyMessage;
 
 export type HostEvent =
   | { type: 'ready'; systemCertificates: number; caError?: string }

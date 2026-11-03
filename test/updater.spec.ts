@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -36,6 +37,16 @@ interface Running {
   page: Page;
   profile: string;
 }
+
+const POLICY_BASE = 'HKCU\\Software\\BulwarkTest\\Policies\\updater';
+
+/** The real policy reader, on its stand-in root in a test build. */
+function setPolicyValue(name: string, type: 'REG_DWORD' | 'REG_SZ', value: string): void {
+  const done = spawnSync('reg.exe', ['add', POLICY_BASE, '/v', name, '/t', type, '/d', value, '/f'], { windowsHide: true });
+  if (done.status !== 0) throw new Error('could not write the stand-in policy');
+}
+
+const POLICY_ARGS = [`--bulwark-test-policy-root=${POLICY_BASE}`, '--bulwark-test-policy-poll=250'];
 
 const A = '0.9.0';
 const B = '0.9.1';
@@ -125,6 +136,7 @@ test.describe('updates', () => {
     if (existsSync(installedExe())) await waitUntilGone();
     killInstalled();
     removeToastKeys();
+    spawnSync('reg.exe', ['delete', 'HKCU\\Software\\BulwarkTest', '/f'], { windowsHide: true });
     if (!hadDefaultProfile) rmSync(roaming, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
     rmSync(path.join(process.env.LOCALAPPDATA!, 'bulwark-desktop-updater'), { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
   });
@@ -333,9 +345,9 @@ test.describe('updates', () => {
     installFixture(A);
     github.releases = [{ version: B }, { version: A }];
     github.throttle = true;
-    const { app, page, profile } = await launch(installedExe(), feed);
+    const { app, page, profile } = await launch(installedExe(), feed, ...POLICY_ARGS);
     await waitForStatus(page, 'downloading');
-    await app.evaluate(() => (globalThis as any).__bulwarkUpdaterTest.setPolicy({ autoUpdate: false }));
+    setPolicyValue('AutoUpdate', 'REG_DWORD', '0');
     await waitForStatus(page, 'off');
     github.throttle = false;
     await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -422,7 +434,8 @@ test.describe('updates', () => {
   test('AutoUpdate off by policy: not one request, and no way to start one', async () => {
     installFixture(A);
     github.releases = [{ version: B }, { version: A }];
-    const { app, page, profile } = await launch(installedExe(), feed, '--bulwark-test-update-policy={"autoUpdate":false}');
+    setPolicyValue('AutoUpdate', 'REG_DWORD', '0');
+    const { app, page, profile } = await launch(installedExe(), feed, ...POLICY_ARGS);
     await new Promise((resolve) => setTimeout(resolve, 4000));
     const state = await stateOf(page);
     expect(state.status).toBe('off');
@@ -438,7 +451,8 @@ test.describe('updates', () => {
   test('UpdateChannel forced by policy: the user cannot change it, and it applies', async () => {
     installFixture(A);
     github.releases = [{ version: BETA, prerelease: true }, { version: A }];
-    const { app, page, profile } = await launch(installedExe(), feed, '--bulwark-test-update-policy={"channel":"beta"}');
+    setPolicyValue('UpdateChannel', 'REG_SZ', 'beta');
+    const { app, page, profile } = await launch(installedExe(), feed, ...POLICY_ARGS);
     const ready = await waitForStatus(page, 'ready');
     expect(ready.channel).toBe('beta');
     expect(ready.channelLocked).toBe(true);

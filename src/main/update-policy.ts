@@ -1,10 +1,6 @@
 /**
- * Where the updater hears about the `AutoUpdate` and `UpdateChannel` policies. A small
- * hook, because the policy reader is its own feature. It calls `setUpdatePolicySource`
- * once at start, and the listener when a policy changes:
- *
- *   setUpdatePolicySource(() => ({ autoUpdate: read('AutoUpdate'), channel: read('UpdateChannel') }));
- *   watcher.on('change', notifyUpdatePolicyChanged);
+ * Where the updater hears about the `AutoUpdate` and `UpdateChannel` policies. No Electron
+ * here, so tests can load it. features/updater.ts connects it to the policy reader.
  */
 
 import type { UpdatePolicy } from './update-rules';

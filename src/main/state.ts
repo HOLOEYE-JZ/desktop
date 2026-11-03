@@ -37,6 +37,14 @@ export interface ShellState {
   updateChannelInitial?: UpdateChannel;
   /** The last version a notification was shown for. */
   updateNotified?: string;
+  /** "Change Connection" was chosen: ask once, also over a recommended server. */
+  askConnection?: boolean;
+  /** WipeOfflineData values already acted on, so each deletes once, across restarts. */
+  policyWipes?: string[];
+  /** Every partition this profile has used: a wipe covers them all. */
+  partitions?: string[];
+  /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
+  offlineClearedForPolicy?: boolean;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
 }

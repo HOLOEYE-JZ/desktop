@@ -4,6 +4,7 @@
  */
 
 import type { UpdateAbility, UpdateChannel } from '../shared/bridge';
+import type { PolicySnapshot } from '../shared/policy-schema';
 
 export interface UpdatePolicy {
   /** `AutoUpdate`, forced. False: no network requests for updates at all. */
@@ -12,6 +13,20 @@ export interface UpdatePolicy {
   channel?: UpdateChannel;
   /** `UpdateChannel`, recommended. The user's own choice goes first. */
   recommendedChannel?: UpdateChannel;
+}
+
+/**
+ * What the policy reader says, passing on only values really set. The schema's defaults
+ * aren't anyone's decision: `stable` as a forced channel would lock everyone and move
+ * betas off beta.
+ */
+export function updatePolicyFrom(snapshot: Pick<PolicySnapshot, 'AutoUpdate' | 'UpdateChannel'>): UpdatePolicy {
+  const { AutoUpdate: auto, UpdateChannel: channel } = snapshot;
+  const policy: UpdatePolicy = {};
+  if (auto.source !== 'default') policy.autoUpdate = auto.value;
+  if (channel.locked) policy.channel = channel.value;
+  else if (channel.source !== 'default') policy.recommendedChannel = channel.value;
+  return policy;
 }
 
 function parts(version: string): { main: number[]; pre: string[] } {
