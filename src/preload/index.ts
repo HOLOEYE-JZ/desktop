@@ -20,6 +20,9 @@ import {
   type KeystoreCertificate,
   type KeystoreResult,
   type KeystoreSignScheme,
+  type LocalImportGrantResult,
+  type LocalImportResumeResult,
+  type LocalImportScanResult,
   type MenuState,
   type SessionUrls,
   type SystemTheme,
@@ -76,6 +79,14 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
+    },
+    localImport: {
+      /** Asks the user natively before it looks. See src/main/features/import.ts. */
+      scan: (): Promise<LocalImportScanResult> => ipcRenderer.invoke(CHANNEL.localImportScan),
+      grant: (handles: string[]): Promise<LocalImportGrantResult> => ipcRenderer.invoke(CHANNEL.localImportGrant, handles),
+      resume: (jobId: string): Promise<LocalImportResumeResult> => ipcRenderer.invoke(CHANNEL.localImportResume, jobId),
+      release: (jobId: string): Promise<void> => ipcRenderer.invoke(CHANNEL.localImportRelease, jobId),
+      releaseAll: (): Promise<void> => ipcRenderer.invoke(CHANNEL.localImportReleaseAll),
     },
     lifecycle: {
       /**

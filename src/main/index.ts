@@ -19,6 +19,7 @@ import { instancePartition, setupAppSession } from './app-session';
 import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { registerImportScheme } from './features/import';
 import { createChannels, registerBridge } from './ipc';
 import { LocalAdmin } from './local-admin';
 import { installMenu } from './menu';
@@ -69,6 +70,7 @@ function reservePort(): Promise<number> {
   });
 }
 
+registerImportScheme();
 const SERVER_PORT = await reservePort();
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
 

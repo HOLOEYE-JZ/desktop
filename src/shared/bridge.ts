@@ -101,6 +101,73 @@ export interface SessionUrls {
   eventSourceUrl?: string;
 }
 
+export type LocalImportKind = 'mbox' | 'maildir' | 'pst';
+
+/** Something a scan found. The handle is all the page can ask for it by. */
+export interface LocalImportCandidate {
+  handle: string;
+  app: 'thunderbird' | 'outlook';
+  kind: LocalImportKind;
+  /** The Thunderbird profile's name, or "Outlook". */
+  group: string;
+  account?: string;
+  /** Where the mail goes: `Archives.sbd/2020` is ["Archives", "2020"]. Empty for a PST, which has its own. */
+  folder: string[];
+  name: string;
+  size: number;
+  lastModified: number;
+  /** Maildir only. */
+  messages?: number;
+}
+
+export interface LocalImportBook {
+  handle: string;
+  group: string;
+  name: string;
+  contacts: number;
+}
+
+export type LocalImportScanResult =
+  | {
+      ok: true;
+      candidates: LocalImportCandidate[];
+      books: LocalImportBook[];
+      /** Seen and not offered. */
+      refused: { name: string; reason: 'ost' | 'in-use' }[];
+      /** Thunderbird calendars seen, which aren't read. */
+      calendars: number;
+      thunderbirdRunning: boolean;
+    }
+  | { ok: false; reason: 'declined' | 'busy' };
+
+/** A file the user confirmed. `url` takes Range requests; a Maildir's messages are at `url/<position>`. */
+export interface LocalImportFile {
+  url: string;
+  name: string;
+  kind: LocalImportKind;
+  folder: string[];
+  size: number;
+  lastModified: number;
+  entrySizes?: number[];
+}
+
+export type LocalImportGrantResult =
+  | {
+      ok: true;
+      jobId: string;
+      files: LocalImportFile[];
+      /** Contacts of the confirmed address books, as vCard text. */
+      contacts: string[];
+      /** Names that couldn't be read after all. */
+      refused: string[];
+      thunderbirdRunning: boolean;
+    }
+  | { ok: false; reason: 'declined' | 'busy' | 'invalid'; refused?: string[] };
+
+export type LocalImportResumeResult =
+  | Extract<LocalImportGrantResult, { ok: true }>
+  | { ok: false; reason: 'later' | 'stopped' | 'busy' | 'invalid' | 'unknown'; refused?: string[] };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -131,6 +198,11 @@ export const CHANNEL = {
   keystoreAccess: 'bulwark:keystore.access',
   keystoreRevoke: 'bulwark:keystore.revoke',
   keystoreClearGrants: 'bulwark:keystore.clearGrants',
+  localImportScan: 'bulwark:localImport.scan',
+  localImportGrant: 'bulwark:localImport.grant',
+  localImportResume: 'bulwark:localImport.resume',
+  localImportRelease: 'bulwark:localImport.release',
+  localImportReleaseAll: 'bulwark:localImport.releaseAll',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */

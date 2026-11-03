@@ -27,6 +27,7 @@ npm start
 - `src/preload/` is the bridge, `window.bulwarkDesktop`. The webmail's side is `lib/desktop/`. `src/shared/bridge.ts` is a copy of the contract in `lib/desktop/types.ts`: change both together.
 - `src/main/windows.ts` is the window manager: all app windows go through it.
 - `src/main/features/` is where tray, jump lists, toasts, context menus and policies plug in. See `features/index.ts`.
+- `src/main/features/import.ts` with `import-scan.ts`, `import-files.ts` and `import-books.ts` finds Thunderbird and Outlook data and gives a page read access to the files the user confirmed, through a `bulwark-import:` scheme that serves ranges from main. Each step asks natively.
 - `native/` is the native helper: Windows Hello, the OS keystore for S/MIME, and the macOS check for forced preferences. `npm run build:native` needs Rust, and the app runs without it, with those features unavailable. Its exports are in `native/README.md`.
 
 ## Test
