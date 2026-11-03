@@ -10,7 +10,7 @@
 
 import { screen, shell, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents, type WebPreferences } from 'electron';
 import type { Mode } from '../shared/bridge';
-import { isJmapProxyPath, isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
+import { FORCED_SSO_LIMIT_MS, SsoChain, isJmapProxyPath, isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
 import { fitInto } from './window-placement';
 import { windowTypeOf, type WindowManager } from './windows';
 
@@ -30,6 +30,8 @@ export interface GuardOptions {
   mode: Mode;
   origin: string;
   windows: () => WindowManager;
+  /** The server is forced: a sign-in chain gets a time limit. */
+  forced?: () => boolean;
 }
 
 /** A pop-up without the bridge: print pages and blob previews. */
@@ -85,7 +87,9 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
   contents.on('did-create-window', (child, details) => {
     const parsed = parse(details.url);
     const windows = options.windows();
-    if (sameOrigin(parsed, options.origin) && parsed!.protocol === 'https:') {
+    // A blob's URL.origin is the app's too, but it's no window of the app's: it has none of its styles,
+    // so the frame check would take it for an older instance's page and rebuild it.
+    if (parsed?.protocol !== 'blob:' && sameOrigin(parsed, options.origin)) {
       const key = details.frameName && details.frameName !== '_blank' ? details.frameName : details.url;
       windows.adopt(child, windowTypeOf(parsed!.pathname), key, details.url);
       return;
@@ -99,15 +103,15 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
 /** Instance mode: inside the redirect chain any https page may show. */
 function guardNavigation(contents: WebContents, options: GuardOptions): void {
   const { origin, mode } = options;
-  let inSsoChain = false;
+  const chain = new SsoChain(() => (options.forced?.() ? FORCED_SSO_LIMIT_MS : null));
 
   const allowed = (target: URL): boolean => {
     if (target.protocol === 'about:' && target.href === 'about:blank') return true;
     if (sameOrigin(target, origin)) return !isJmapProxyPath(target.pathname);
     if (mode !== 'instance' || target.protocol !== 'https:') return false;
-    if (inSsoChain) return true;
+    if (chain.active()) return true;
     if (isSsoStart(target, origin)) {
-      inSsoChain = true;
+      chain.start();
       return true;
     }
     return false;
@@ -128,7 +132,11 @@ function guardNavigation(contents: WebContents, options: GuardOptions): void {
   contents.on('will-navigate', (event) => guard(event, event.url, event.isMainFrame));
   contents.on('will-redirect', (event) => guard(event, event.url, event.isMainFrame));
   contents.on('did-navigate', (_event, url) => {
-    if (sameOrigin(parse(url), origin)) inSsoChain = false;
+    if (sameOrigin(parse(url), origin)) chain.end();
+  });
+  contents.on('did-fail-load', (_event, code, _description, _url, isMainFrame) => {
+    // -3 is a load we replaced ourselves, which isn't the chain failing.
+    if (isMainFrame && code !== -3) chain.end();
   });
 }
 

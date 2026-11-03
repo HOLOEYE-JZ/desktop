@@ -7,13 +7,13 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseDeepLink, type WindowLink } from '../deep-link';
 import type { OsCommand, OsSettings } from '../../shared/bridge';
 
 export const DEFAULT_SHOW_SHORTCUT = 'CommandOrControl+Shift+B';
 /** Same as HANDOFF_MAX_BYTES in the webmail: it wouldn't take more. */
 export const MAX_LAUNCH_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_URL_LENGTH = 8192;
-const MAX_ID_LENGTH = 512;
 
 export function defaultSettings(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): OsSettings {
   // Plain GNOME has no tray at all: closing into nothing would look like a quit that isn't one.
@@ -90,12 +90,7 @@ export function parseFocusAssist(output: string): FocusAssist {
   return 'off';
 }
 
-const ids = (...values: string[]) => values.every((value) => value.length > 0 && value.length <= MAX_ID_LENGTH);
-
-/**
- * What a URL handed to the app means. Anyone can put a bulwark: link on a page, so
- * these only ever show something: nothing here changes mail.
- */
+/** A mailto: or webcal: link. bulwark: links have their one parser, src/main/deep-link.ts. */
 export function commandFromUrl(raw: string): OsCommand | null {
   if (raw.length > MAX_URL_LENGTH) return null;
   let url: URL;
@@ -106,33 +101,28 @@ export function commandFromUrl(raw: string): OsCommand | null {
   }
   if (url.protocol === 'mailto:') return { type: 'mailto', url: raw };
   if (url.protocol === 'webcal:' || url.protocol === 'webcals:') return { type: 'webcal', url: raw };
-  if (url.protocol !== 'bulwark:') return null;
-  const parts = url.pathname.split('/').filter(Boolean);
-  let decoded: string[];
-  try {
-    decoded = parts.map(decodeURIComponent);
-  } catch {
-    return null;
+  return null;
+}
+
+/**
+ * What a URL handed to the app means. Anyone can put a bulwark: link on a page, so
+ * these only ever show something: nothing here changes mail.
+ */
+export function requestFromUrl(raw: string): { commands: OsCommand[]; links: WindowLink[] } {
+  const link = parseDeepLink(raw);
+  if (!link) {
+    const command = commandFromUrl(raw);
+    return { commands: command ? [command] : [], links: [] };
   }
-  switch (url.hostname) {
-    case 'new':
-      return { type: 'new-message' };
-    case 'inbox':
-    case 'calendar':
-    case 'contacts':
-      return { type: 'navigate', target: url.hostname };
-    case 'message':
-      return decoded.length === 2 && ids(decoded[0], decoded[1]) ? { type: 'open-message', accountId: decoded[0], emailId: decoded[1] } : null;
-    case 'mailbox':
-    case 'folder':
-      return decoded.length === 1 && ids(decoded[0]) ? { type: 'open-mailbox', mailboxId: decoded[0] } : null;
-    default:
-      return null;
-  }
+  if (link.kind === 'new') return { commands: [{ type: 'new-message' }], links: [] };
+  if (link.kind === 'view') return { commands: [{ type: 'navigate', target: link.view }], links: [] };
+  return { commands: [], links: [link] };
 }
 
 export interface LaunchRequest {
   commands: OsCommand[];
+  /** bulwark: links main opens itself. */
+  links: WindowLink[];
   /** Files named on the command line, absolute. Whether they exist is checked when read. */
   files: string[];
   /** The login item's flag. */
@@ -165,7 +155,7 @@ export function parseArgv(
   argv: readonly string[],
   options: { cwd: string; skip: readonly string[]; platform?: NodeJS.Platform },
 ): LaunchRequest {
-  const request: LaunchRequest = { commands: [], files: [], fromLogin: false, toastUrls: [] };
+  const request: LaunchRequest = { commands: [], links: [], files: [], fromLogin: false, toastUrls: [] };
   const skipped = new Set(options.skip.map((entry) => path.resolve(options.cwd, entry).toLowerCase()));
   const platform = options.platform ?? process.platform;
   let positional = false;
@@ -198,8 +188,9 @@ export function parseArgv(
         request.toastUrls.push(arg);
         continue;
       }
-      const command = commandFromUrl(arg);
-      if (command) request.commands.push(command);
+      const asked = requestFromUrl(arg);
+      request.commands.push(...asked.commands);
+      request.links.push(...asked.links);
       continue;
     }
     const resolved = path.resolve(options.cwd, arg);

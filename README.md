@@ -18,7 +18,7 @@ node scripts/fetch-webmail.mjs --path ../path/to/webmail
 npm start
 ```
 
-`ELECTRON_RUN_AS_NODE` must not be set when launching Electron. For a second copy next to a running one: `node scripts/run-electron.mjs . --bulwark-user-data=<dir> --standalone`, or `--instance=<url>`. `--dev` adds the reload and devtools items, in an unpackaged run only.
+`ELECTRON_RUN_AS_NODE` must not be set when launching Electron. For a second copy next to a running one: `node scripts/run-electron.mjs . --bulwark-user-data=<dir> --standalone`, or `--instance=<url>`. `--dev` adds the reload and devtools items. These switches only exist in a test build (`node build.mjs --test`, which `npm start` and `npm test` use), never in what ships.
 
 ## How it's built
 
@@ -26,6 +26,7 @@ npm start
 - `src/server/` runs in a utilityProcess: a custom `next()` server on TLS, with a per-install certificate pinned by fingerprint, answering only requests with a per-launch secret that main adds. See `src/server/host.ts`.
 - `src/preload/` is the bridge, `window.bulwarkDesktop`. The webmail's side is `lib/desktop/`. `src/shared/bridge.ts` is a copy of the contract in `lib/desktop/types.ts`: change both together.
 - `src/main/windows.ts` is the window manager: all app windows go through it.
+- `src/main/menu.ts` is the app menu. Commands run in the page, through `menu.onCommand` and `lib/desktop/commands.ts` in the webmail. A feature adds its own lines with `menu.extend`. Native right-click menus are the webmail's HTML menus read back: `lib/desktop/native-menu.ts`.
 - `src/main/features/` is where tray, jump lists, toasts, context menus and policies plug in. See `features/index.ts`.
 - `native/` is the native helper: Windows Hello, the OS keystore for S/MIME, and the macOS check for forced preferences. `npm run build:native` needs Rust, and the app runs without it, with those features unavailable. Its exports are in `native/README.md`.
 
@@ -37,14 +38,29 @@ Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu sh
 
 A file dragged or copied out of the app is a temporary copy in a private folder (`%LOCALAPPDATA%\Bulwark\os-files`, or under userData elsewhere), gone within minutes, at sign-out and at quit. Save it somewhere before working on it: a program opened straight on that copy loses its edits when the copy goes. Decrypted S/MIME and PGP attachments never go through that folder.
 
+## Policies
+
+Admins set or force settings through `Software\Policies\Bulwark\Desktop` and its `Recommended` subkey, a macOS profile, or `/etc/bulwark/policies.json`. The schema and the ADMX, ADML and samples come from the webmail (`lib/desktop/policy-schema.ts`, `scripts/generate-desktop-policies.mjs`). `src/shared/policy-schema.ts` is a byte-for-byte copy: `node scripts/generate-desktop-policies.mjs --shell <this repo>` in the webmail refreshes it. `src/main/policy-read.ts` reads them, `src/main/features/policies.ts` keeps them live, and pages read them through the bridge's `policy` member.
+
+The installers take the same values: `msiexec /i Bulwark.msi /qn ALLUSERS=1 INSTANCE_URL=https://mail.example.com FORCE_INSTANCE=1 UPDATE_CHANNEL=stable`, or `Bulwark-Setup.exe /S /INSTANCE_URL=https://mail.example.com /FORCE_INSTANCE=1` run as an administrator. Without `FORCE_INSTANCE=1` the values go under `Recommended`.
+
+Limits: these settings stop people from changing them inside the app. The app isn't signed yet, so someone who can write to its folder, or run their own copy, can patch it. Admins who need a hard guarantee also limit what may run, with AppLocker or WDAC, and install per machine with the MSI so standard users can't write to the folder. `AllowedJmapServers` also applies to a Bulwark server the user picks, so list that too.
+
+A production build refuses switches that would script the page or move its traffic (`src/main/switch-guard.ts`), with or without a policy, and restarts itself without them.
+
+Tests use a stand-in root under `HKCU\Software\BulwarkTest\Policies`, only in a test build (`node build.mjs --test`, which `npm test` does). `scripts/after-pack.cjs` refuses to package one.
+
 ## Test
 
 ```sh
-npm run pack:dir          # for test/fuses.spec.ts
+npm run pack:test         # test/fuses.spec.ts and friends: a package that takes --user-data-dir and Playwright
+npm run pack:strict       # test/policies-packaged.spec.ts: behaves as production, with its profile compiled in
 vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npm test
 ```
 
 `test/` drives the real app with Playwright's Electron support, on a real webmail build.
+
+`BULWARK_TEST_WEBMAIL=<dir>` runs the tests on another webmail build, made with `fetch-webmail.mjs --out <dir>`. `test/native-windows.spec.ts` needs one from the same branch. `test/native-timing.spec.ts` is for the bench rig only, and `test/native-screenshots.spec.ts` takes pictures from a real, unlocked desktop.
 
 ## Licence
 

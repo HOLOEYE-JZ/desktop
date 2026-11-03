@@ -24,6 +24,12 @@ function reg(...args: string[]): { ok: boolean; out: string } {
   return { ok: result.status === 0, out: result.stdout ?? '' };
 }
 
+/** A separate Windows desktop, which test runs may use, has no taskbar. */
+function hasTaskbar(): boolean {
+  const script = `(Add-Type -PassThru -Name W -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);')::FindWindow('Shell_TrayWnd', $null) -ne [IntPtr]::Zero`;
+  return execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8', windowsHide: true }).trim() === 'True';
+}
+
 interface Recorded {
   shown: { title: string; body: string; toastXml: string }[];
   opened: string[];
@@ -372,6 +378,28 @@ test.describe('OS integration', () => {
     expect(existsSync(files[0])).toBe(false);
   });
 
+  test('a wipe clears what the OS shows, and it stays clear when the page comes back', async () => {
+    test.skip(!win, 'the test root is a registry key');
+    const root = `HKCU\\Software\\BulwarkTest\\Policies\\os${process.pid}`;
+    try {
+      running = await launchStandalone(profile, `--bulwark-test-policy-root=${root}`, '--bulwark-test-policy-poll=250');
+      const { app, page } = running;
+      await takeOverFromPage(app);
+      await os(page, 'setLocked(false)');
+      await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
+      await expect.poll(async () => JSON.stringify(await trayItems(app))).toContain('Lunch');
+      const files = await app.evaluate(async () => (await (globalThis as unknown as { __bulwarkOs: { files: { prepare: (r: unknown) => Promise<{ paths: string[] }> } } }).__bulwarkOs.files.prepare([{ name: 'a.txt', data: new Uint8Array([1]) }])).paths);
+      expect(existsSync(files[0])).toBe(true);
+      expect(reg('add', `${root}\\Machine`, '/v', 'WipeOfflineData', '/t', 'REG_SZ', '/d', `wipe-${Date.now()}`, '/f').ok).toBe(true);
+      await expect.poll(() => existsSync(files[0])).toBe(false);
+      // The wiped page goes to a blank one, which alone hides the summary. Past that:
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+      expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
+    } finally {
+      reg('delete', root, '/f');
+    }
+  });
+
   test('a file a program holds stops neither the start nor a quit', async () => {
     test.skip(!win);
     const held = path.join(profile, 'os-files', 'old', 'open.txt');
@@ -602,7 +630,7 @@ test.describe('OS integration', () => {
     await os(page, 'setProgress(null)');
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __progress: unknown[] }).__progress)).toEqual([[0.4, null], [2, 'indeterminate'], [-1, null]]);
 
-    expect(await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]))).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]))).toBe(hasTaskbar());
 
     expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
     const settings = await app.evaluate(({ app: a }) => a.getJumpListSettings());

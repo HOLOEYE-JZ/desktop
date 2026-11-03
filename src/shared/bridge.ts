@@ -4,6 +4,8 @@
  * BRIDGE_VERSION; adding a member doesn't.
  */
 
+import type { PolicySnapshot } from './policy-schema';
+
 export const BRIDGE_VERSION = 1;
 
 export type WindowType = 'main' | 'message' | 'composer' | 'settings';
@@ -13,13 +15,15 @@ export interface WindowInfo {
   type: WindowType;
   title: string;
   focused: boolean;
+  /** False for a main window hidden while pop-outs are open. */
+  visible?: boolean;
 }
 
 export type Mode = 'standalone' | 'instance';
 
 export type ServerPrepareResult =
   | { ok: true; approved: boolean }
-  | { ok: false; reason: 'declined' | 'invalid' };
+  | { ok: false; reason: 'declined' | 'invalid' | 'policy' };
 
 export type BrowserSignInResult =
   | { ok: true; code: string; state: string }
@@ -38,10 +42,70 @@ export interface ThemeColours {
 export interface SystemTheme {
   dark: boolean;
   highContrast: boolean;
+  /** The OS accent colour as #rrggbb, where the OS has one and tells. */
+  accent?: string;
+}
+
+export interface PolicyBridge {
+  /** What's in force now. Synchronous: a page can read it in its first render. */
+  get: () => PolicySnapshot;
+  onChange: (listener: (snapshot: PolicySnapshot) => void) => () => void;
 }
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
 
+/** A native menu built by the page: an HTML menu read back, so the two can't drift. */
+export interface NativeMenuItem {
+  /** Handed back when this item is chosen. Left out of separators and submenus. */
+  id?: string;
+  label?: string;
+  type?: 'normal' | 'separator' | 'checkbox' | 'radio';
+  enabled?: boolean;
+  checked?: boolean;
+  submenu?: NativeMenuItem[];
+}
+
+/** One name in the strip that stands in for a menu bar in a window with no native frame. */
+export interface MenuBarEntry {
+  id: string;
+  label: string;
+  /** The letter that opens it with Alt, lower case. */
+  mnemonic?: string;
+}
+
+export interface MenuBarEvent {
+  visible: boolean;
+  /** Open this menu right away: Alt plus its letter. */
+  open?: string;
+}
+
+/** What a page says when asked to save before a window goes. */
+export interface FlushAnswer {
+  /** Drafts it couldn't save. */
+  failed?: number;
+  timedOut?: boolean;
+  /** Mail waiting to be sent. It goes out at the next start. */
+  unsent?: number;
+}
+
+export interface ConfirmOptions {
+  message: string;
+  detail?: string;
+  /** Button labels, the safe choice last. */
+  buttons: string[];
+  /** The button Enter takes. */
+  defaultId?: number;
+  type?: 'none' | 'info' | 'warning' | 'question';
+}
+
+export interface LanguagesUpdate {
+  /** The interface language. The shell's menus follow it too. */
+  ui: string;
+  /** What the composer's text is in, if it says. */
+  composer?: string[];
+  /** The shell's menu and dialog text in that language, by the keys of `src/main/strings.ts`. */
+  labels?: Record<string, string>;
+}
 export type KeystoreHash = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
 
 export interface KeystoreCertificate {
@@ -187,6 +251,21 @@ export interface OsDefaultAppStatus {
   webcal: boolean;
 }
 
+export interface PrivacyState {
+  telemetry: { on: boolean; forcedOff: boolean };
+  crashReports: { on: boolean; forcedOff: boolean; uploadUrl: string };
+}
+
+export interface CrashFileInfo {
+  id: string;
+  createdAt: number;
+  bytes: number;
+}
+
+export type CrashSendResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -197,8 +276,28 @@ export const CHANNEL = {
   windowsChanged: 'bulwark:windows.changed',
   themeSet: 'bulwark:theme.set',
   themeSystem: 'bulwark:theme.system',
+  themeGetSystem: 'bulwark:theme.getSystem',
+  windowsCloseSelf: 'bulwark:windows.closeSelf',
+  windowsSetRestore: 'bulwark:windows.setRestore',
+  windowsSetRestoreEnabled: 'bulwark:windows.setRestoreEnabled',
+  windowsSessionReady: 'bulwark:windows.sessionReady',
+  windowsSpareReady: 'bulwark:windows.spareReady',
+  windowsSpareActivate: 'bulwark:windows.spareActivate',
+  windowsSpareTaken: 'bulwark:windows.spareTaken',
   menuSetState: 'bulwark:menu.setState',
+  menuCommand: 'bulwark:menu.command',
+  menuPopup: 'bulwark:menu.popup',
+  menuBarEntries: 'bulwark:menu.barEntries',
+  menuBarOpen: 'bulwark:menu.barOpen',
+  menuBarEvent: 'bulwark:menu.barEvent',
   shellOpenExternal: 'bulwark:shell.openExternal',
+  shellSetLanguages: 'bulwark:shell.setLanguages',
+  dialogsConfirm: 'bulwark:dialogs.confirm',
+  clipboardCopyFile: 'bulwark:clipboard.copyFile',
+  clipboardClearFiles: 'bulwark:clipboard.clearFiles',
+  spellMissing: 'bulwark:spell.missing',
+  spellListMissing: 'bulwark:spell.listMissing',
+  spellAllowDownload: 'bulwark:spell.allowDownload',
   serversPrepare: 'bulwark:servers.prepare',
   serversNoteSession: 'bulwark:servers.noteSession',
   serversForget: 'bulwark:servers.forget',
@@ -227,12 +326,24 @@ export const CHANNEL = {
   osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
   osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
   welcomeChoose: 'bulwark:welcome.choose',
+  policyGet: 'bulwark:policy.get',
+  policyChanged: 'bulwark:policy.changed',
+  privacyGet: 'bulwark:privacy.get',
+  privacySetTelemetry: 'bulwark:privacy.setTelemetry',
+  privacySetCrashReports: 'bulwark:privacy.setCrashReports',
+  privacySetCrashUploadUrl: 'bulwark:privacy.setCrashUploadUrl',
+  privacyListCrashes: 'bulwark:privacy.listCrashes',
+  privacySendCrash: 'bulwark:privacy.sendCrash',
+  privacyDeleteCrashes: 'bulwark:privacy.deleteCrashes',
+  privacyChanged: 'bulwark:privacy.changed',
+  welcomePrivacy: 'bulwark:welcome.privacy',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',
   keystoreAgree: 'bulwark:keystore.agree',
   keystoreAccess: 'bulwark:keystore.access',
   keystoreRevoke: 'bulwark:keystore.revoke',
+  keystoreClearGrants: 'bulwark:keystore.clearGrants',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */
