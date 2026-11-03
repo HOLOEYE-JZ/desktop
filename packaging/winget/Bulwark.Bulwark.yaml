@@ -1,0 +1,6 @@
+# Winget manifest template, version part. See Bulwark.Bulwark.installer.yaml.
+PackageIdentifier: Bulwark.Bulwark
+PackageVersion: {{VERSION}}
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.10.0
