@@ -1,7 +1,7 @@
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createHash, X509Certificate } from 'node:crypto';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -412,6 +412,20 @@ test.describe('the local admin', () => {
     const cookies = await app.evaluate(async ({ session }) => (await session.fromPartition('persist:bulwark').cookies.get({})).map((c) => c.name));
     expect(cookies).not.toContain('admin_session');
     expect(cookies).not.toContain('admin_device');
+  });
+
+  test('a real plugin from the directory installs through the admin route, with its checks', async () => {
+    await fakeOsIntegration(app);
+    const answer = (await page.evaluate(() =>
+      (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('languagetool'),
+    )) as { ok: boolean; id?: string; error?: string };
+    expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
+    const installed = path.join(profile, 'webmail', 'admin', 'plugins');
+    expect(readdirSync(installed).join()).toContain(answer.id);
+    // Signed with this install's own key, in the profile.
+    expect(existsSync(path.join(profile, 'webmail', 'admin', 'plugin-signing.key'))).toBe(true);
+    const cookies = await app.evaluate(async ({ session }) => (await session.fromPartition('persist:bulwark').cookies.get({})).map((c) => c.name));
+    expect(cookies).not.toContain('admin_session');
   });
 
   test('a declined prompt installs nothing', async () => {

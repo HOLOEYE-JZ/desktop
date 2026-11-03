@@ -76,7 +76,7 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
           cancelBrowserSignIn: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
         },
         plugins: {
-          install: (slug: string, version: string) => ipcRenderer.invoke(CHANNEL.pluginsInstall, slug, version),
+          install: (slug: string, version?: string) => ipcRenderer.invoke(CHANNEL.pluginsInstall, slug, version),
         },
       }
     : {};

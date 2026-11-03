@@ -18,17 +18,10 @@ export type PluginPolicyCheck = (slug: string) => { allowed: true } | { allowed:
 
 export const allowEveryPlugin: PluginPolicyCheck = () => ({ allowed: true });
 
-interface DirectoryDetail {
-  latestVersion?: string;
-  latest?: { version?: string } | string;
-  versions?: { version?: string; yanked?: boolean }[];
-}
-
-function latestOf(detail: DirectoryDetail): string | null {
-  if (typeof detail.latestVersion === 'string') return detail.latestVersion;
-  if (typeof detail.latest === 'string') return detail.latest;
-  if (detail.latest && typeof detail.latest.version === 'string') return detail.latest.version;
-  return detail.versions?.find((v) => !v.yanked && typeof v.version === 'string')?.version ?? null;
+/** The version the admin route shows for an extension: the directory's latest for this app. */
+function latestOf(detail: unknown): string | null {
+  const preview = (detail as { preview?: { version?: unknown; yanked?: unknown } } | null)?.preview;
+  return typeof preview?.version === 'string' && !preview.yanked ? preview.version : null;
 }
 
 export async function installPlugin(
@@ -61,7 +54,7 @@ export async function installPlugin(
     if (!target) {
       const detail = await admin.call('GET', `/api/admin/marketplace/${encodeURIComponent(slug)}`);
       if (detail.status !== 200) return { ok: false, error: 'not_found' };
-      target = latestOf(detail.body as DirectoryDetail);
+      target = latestOf(detail.body);
       if (!target) return { ok: false, error: 'not_found' };
     }
     const answer = await admin.call('POST', '/api/admin/marketplace', { slug, version: target, type: 'plugin' });

@@ -97,7 +97,11 @@ export class LoopbackSignIn {
       return { ok: false, error: 'invalid_url' };
     }
     flow.expectedState = target.searchParams.get('state');
-    await shell.openExternal(target.toString());
+    try {
+      await shell.openExternal(target.toString());
+    } catch {
+      this.finish(flowId as string, { ok: false, error: 'no_browser' });
+    }
     return flow.result;
   }
 
