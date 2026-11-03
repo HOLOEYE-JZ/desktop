@@ -20,6 +20,18 @@ export interface ApprovedServer {
   approvedAt: number;
 }
 
+/** Telemetry and crash report consent. Absent means nobody said yes: off. See features/privacy.ts. */
+export interface PrivacyChoices {
+  /** The first run asked, or the user answered in settings. */
+  asked?: boolean;
+  telemetry?: boolean;
+  crashReports?: boolean;
+  crashUploadUrl?: string;
+  /** The shell's own id for its heartbeat. Instance mode only. */
+  id?: string;
+  lastPingAt?: number;
+}
+
 export interface ShellState {
   mode?: Mode;
   instanceUrl?: string;
@@ -31,6 +43,7 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  privacy?: PrivacyChoices;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;
   /** WipeOfflineData values already acted on, so each deletes once, across restarts. */

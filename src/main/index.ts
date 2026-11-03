@@ -21,6 +21,7 @@ import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
+import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
 import { notePartition } from './features/local-wipe';
 import { native } from './native';
@@ -111,6 +112,7 @@ if (gotLock) {
 
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
 policies.attachState(stateFile);
+if (gotLock) privacy.start(stateFile);
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
@@ -246,7 +248,11 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     startServerProcess({
       hostScript: SERVER_HOST,
       serverDir: serverDirectory(),
-      env: serverEnv(profile, process.env, process.platform),
+      env: {
+        ...serverEnv(profile, process.env, process.platform),
+        // Only a test build: the local stand-in for the collector needs it.
+        ...(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE === '1' ? { BULWARK_TELEMETRY_ALLOW_PRIVATE: '1' } : {}),
+      },
       logDir: path.join(userData, 'logs'),
       append,
       init: {
@@ -259,6 +265,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
         trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
         policy: policies.serverPolicy(),
+        privacy: privacy.serverView('standalone'),
       },
     });
   let server = spawnServer(false);
@@ -270,6 +277,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     servers.applyPolicy();
     seedProfile(profile, pluginFeatures(snapshot.PluginsMode.value));
   });
+  privacy.on('changed', () => server.sendPrivacy(privacy.serverView('standalone')));
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
   const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
@@ -303,6 +311,8 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     await showErrorPage(text.errorServerTitle, text.errorServerBody);
     return;
   }
+
+  privacy.useServerSink((error) => server.sendMainError(error));
 
   // A crash shouldn't end the app: same port, same secret, so open windows carry on.
   let restarts = 0;
@@ -338,6 +348,7 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
 /** The first run asks which of the two the user wants. A forced InstanceUrl skips this. */
 function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { kind: 'welcome' }>): void {
   const colours = theme.colours();
+  const questions = privacy.firstRunQuestions();
   const window = new BrowserWindow({
     width: 620,
     height: 520,
@@ -353,7 +364,7 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
       nodeIntegration: false,
       devTools,
       // Encoded: quotes don't survive Chromium's command line on Windows.
-      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked }))}`],
+      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked, askTelemetry: questions.telemetry, askCrashReports: questions.crashReports }))}`],
     },
   });
   window.once('ready-to-show', () => window.show());
@@ -362,25 +373,39 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
 
   ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
     if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
+    let instanceUrl: string | undefined;
     if (choice?.mode === 'standalone') {
       if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
-      stateFile.data.mode = 'standalone';
     } else if (choice?.mode === 'instance') {
       const parsed = parseInstanceUrl(decision.urlLocked ? decision.instanceUrl : choice.url, policies.snapshot.AllowInsecureInstance.value);
       if (!parsed.ok) return { ok: false, error: 'invalid_url' };
       // A forced one needs no listing, and only a forced one is locked here.
       if (!decision.urlLocked && !jmapServerAllowed(policies.snapshot.AllowedJmapServers.value, parsed.value)) return { ok: false, error: 'policy' };
-      stateFile.data.mode = 'instance';
-      stateFile.data.instanceUrl = parsed.value;
+      instanceUrl = parsed.value;
     } else {
       return { ok: false, error: 'invalid_choice' };
     }
-    stateFile.data.askConnection = undefined;
-    stateFile.save();
-    ipcMain.removeHandler(CHANNEL.welcomeChoose);
-    await boot(theme);
-    window.destroy();
-    return { ok: true };
+    // Kept until the last answer: closing the window here leaves the first run still to do.
+    const mode = choice.mode as Mode;
+    const finish = async () => {
+      stateFile.data.mode = mode;
+      if (instanceUrl) stateFile.data.instanceUrl = instanceUrl;
+      stateFile.data.askConnection = undefined;
+      stateFile.save();
+      ipcMain.removeHandler(CHANNEL.welcomeChoose);
+      ipcMain.removeHandler(CHANNEL.welcomePrivacy);
+      await boot(theme);
+      window.destroy();
+      return { ok: true };
+    };
+    if (!questions.telemetry && !questions.crashReports) return finish();
+    ipcMain.removeHandler(CHANNEL.welcomePrivacy);
+    ipcMain.handle(CHANNEL.welcomePrivacy, async (answerEvent, answers: { telemetry?: unknown; crashReports?: unknown }) => {
+      if (answerEvent.sender !== window.webContents || !answerEvent.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
+      privacy.answerFirstRun(answers ?? {});
+      return finish();
+    });
+    return { ok: true, next: 'privacy' };
   });
   // A data: page: with the grantFileProtocolExtraPrivileges fuse off, a file: one doesn't run.
   void window.loadURL(`data:text/html;charset=utf-8;base64,${readFileSync(WELCOME_PAGE).toString('base64')}`);
