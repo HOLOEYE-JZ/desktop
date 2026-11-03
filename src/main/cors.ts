@@ -35,20 +35,38 @@ export class CorsInjector {
     this.install();
   }
 
-  add(origin: string): boolean {
-    if (this.origins.has(origin)) return false;
+  add(origin: string): void {
+    if (this.origins.has(origin)) return;
     this.origins.add(origin);
     this.install();
-    return true;
+  }
+
+  remove(origin: string): void {
+    if (this.origins.delete(origin)) this.install();
+  }
+
+  /** One pattern Electron refuses must not take the others down, or the app with it. */
+  private validPatterns(): string[] {
+    const valid: string[] = [];
+    for (const origin of [...this.origins]) {
+      const pattern = urlPattern(origin);
+      try {
+        this.session.webRequest.onHeadersReceived({ urls: [pattern] }, null as never);
+        valid.push(pattern);
+      } catch {
+        this.origins.delete(origin);
+      }
+    }
+    return valid;
   }
 
   private install(): void {
-    if (this.origins.size === 0) {
+    const urls = this.validPatterns();
+    if (urls.length === 0) {
       this.session.webRequest.onHeadersReceived(null);
       return;
     }
-    const filter = { urls: [...this.origins].map(urlPattern) };
-    this.session.webRequest.onHeadersReceived(filter, (details, callback) => {
+    this.session.webRequest.onHeadersReceived({ urls }, (details, callback) => {
       const headers: Record<string, string[]> = {};
       for (const [name, value] of Object.entries(details.responseHeaders ?? {})) {
         if (!name.toLowerCase().startsWith('access-control-')) headers[name] = value;

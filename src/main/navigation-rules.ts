@@ -8,6 +8,11 @@ export function parse(url: string): URL | null {
   }
 }
 
+/** The embedded server's forwarding route, which holds other servers' answers on our origin. */
+export function isJmapProxyPath(pathname: string): boolean {
+  return pathname === '/__jmap' || pathname.startsWith('/__jmap/');
+}
+
 export function sameOrigin(url: URL | null, origin: string): boolean {
   return !!url && url.origin === origin;
 }

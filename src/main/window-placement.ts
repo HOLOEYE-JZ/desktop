@@ -26,12 +26,19 @@ function overlap(a: Rect, b: Rect): { width: number; height: number } {
   };
 }
 
-/** Enough of the window to grab it, on some monitor. A monitor unplugged since fails this. */
+/** The monitor holding the window's top strip, which is what you grab it by. A monitor unplugged since has none. */
+export function displayHoldingTop(bounds: Rect, displays: Display[]): Display | null {
+  const strip = { x: bounds.x, y: bounds.y, width: bounds.width, height: MIN_VISIBLE_HEIGHT };
+  return (
+    displays.find((display) => {
+      const shared = overlap(strip, display.workArea);
+      return shared.width >= MIN_VISIBLE_WIDTH && shared.height >= MIN_VISIBLE_HEIGHT;
+    }) ?? null
+  );
+}
+
 export function isOnSomeDisplay(bounds: Rect, displays: Display[]): boolean {
-  return displays.some((display) => {
-    const shared = overlap(bounds, display.workArea);
-    return shared.width >= MIN_VISIBLE_WIDTH && shared.height >= MIN_VISIBLE_HEIGHT;
-  });
+  return displayHoldingTop(bounds, displays) !== null;
 }
 
 /** Moved and shrunk just enough to lie inside `area`. */
@@ -87,7 +94,9 @@ export function placeWindow({ size, stored, sameType, anchor, displays, current 
     }
     return cascadeFrom(anchor, wanted, area);
   }
-  // Nothing open: the stored place if it still exists.
-  if (stored && isOnSomeDisplay(stored, displays)) return stored;
+  // Nothing open: the stored place if its top strip is on a screen, fitted, since
+  // that monitor may have shrunk.
+  const holding = stored ? displayHoldingTop(stored, displays) : null;
+  if (stored && holding) return fitInto(stored, holding.workArea);
   return centreIn(wanted, area);
 }

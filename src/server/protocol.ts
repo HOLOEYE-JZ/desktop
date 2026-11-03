@@ -3,6 +3,8 @@
 export const APP_HOST = 'app.bulwark.localhost';
 export const APP_ORIGIN = `https://${APP_HOST}`;
 export const LAUNCH_HEADER = 'x-bulwark-launch';
+/** Only main's own requests carry this. The app session's requests carry the launch header too. */
+export const MAIN_HEADER = 'x-bulwark-main';
 
 export interface InitMessage {
   type: 'init';
@@ -10,6 +12,7 @@ export interface InitMessage {
   /** Main's pid, to go down with it (host.ts). */
   parentPid: number;
   launchSecret: string;
+  mainSecret: string;
   tls: { key: string; cert: string };
   /** Set on process.env in the utilityProcess before Next loads. */
   secretEnv: Record<string, string>;

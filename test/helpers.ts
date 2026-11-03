@@ -75,8 +75,8 @@ export async function shownPage(app: ElectronApplication): Promise<Page> {
   return page;
 }
 
-export async function launchStandalone(profile: string): Promise<Launched> {
-  const app = await launch(profile, '--standalone');
+export async function launchStandalone(profile: string, ...args: string[]): Promise<Launched> {
+  const app = await launch(profile, '--standalone', ...args);
   return { app, page: await shownPage(app) };
 }
 
@@ -121,6 +121,10 @@ export async function fakeOsIntegration(app: ElectronApplication, response = 0):
       g.__prompts.push(args[args.length - 1]);
       return { response: answer, checkboxChecked: false };
     }) as typeof dialog.showMessageBox;
+    dialog.showMessageBoxSync = ((...args: unknown[]) => {
+      g.__prompts.push(args[args.length - 1]);
+      return answer;
+    }) as typeof dialog.showMessageBoxSync;
   }, response);
 }
 

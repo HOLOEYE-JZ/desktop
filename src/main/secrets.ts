@@ -16,7 +16,7 @@ import { safeStorage } from 'electron';
 export class SecretStoreError extends Error {
   constructor(
     message: string,
-    readonly code: 'unavailable' | 'undecryptable',
+    readonly code: 'unavailable' | 'undecryptable' | 'missing',
   ) {
     super(message);
     this.name = 'SecretStoreError';
@@ -64,10 +64,14 @@ export class SecretStore {
     atomicWrite(this.file(name), await safeStorage.encryptStringAsync(value));
   }
 
-  /** The value, or a new one if there's none. Throws rather than replace one it can't read. */
-  async getOrCreate(name: string, make: () => string): Promise<string> {
+  /**
+   * The value, or a new one if there's none. Throws rather than replace one it can't
+   * read, and rather than make one on a profile that must already have had it.
+   */
+  async getOrCreate(name: string, make: () => string, { mustExist = false } = {}): Promise<string> {
     const existing = await this.get(name);
     if (existing !== null) return existing;
+    if (mustExist) throw new SecretStoreError(`The stored ${name} is missing.`, 'missing');
     const value = make();
     await this.set(name, value);
     return value;

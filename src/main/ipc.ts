@@ -1,14 +1,20 @@
 /**
  * Every bridge call passes through here. The preload only exposes the bridge on
  * the right origin, but the check that counts is this one: the sender must be a
- * main frame on the app's origin. A plugin frame, a mail frame, or a page the
- * window navigated to gets nothing.
+ * main frame on the app's origin. A page the window navigated to gets nothing, and
+ * neither does an opaque frame (mail, untrusted plugins).
+ *
+ * A same-origin frame, such as a privileged plugin, can reach parent.bulwarkDesktop,
+ * and those calls arrive here from the main frame: this check can't tell them apart.
+ * So nothing on the bridge may do harm on a call alone: installing and approving
+ * ask the user natively, and windows only open the app's own routes.
  */
 
 import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebFrameMain } from 'electron';
 import { CHANNEL, type ThemeColours, type WindowType } from '../shared/bridge';
 import { setCommandState } from './menu';
 import { openExternally } from './navigation';
+import { isJmapProxyPath } from './navigation-rules';
 import type { FeatureContext } from './features';
 import type { LoopbackSignIn } from './oauth-loopback';
 import { installPlugin, type PluginPolicyCheck } from './plugins';
@@ -52,7 +58,7 @@ function resolveAppUrl(url: unknown, origin: string): URL | null {
   if (typeof url !== 'string' || !url) return null;
   try {
     const parsed = new URL(url, origin);
-    if (parsed.origin !== origin || parsed.protocol !== 'https:') return null;
+    if (parsed.origin !== origin || parsed.protocol !== 'https:' || isJmapProxyPath(parsed.pathname)) return null;
     return parsed;
   } catch {
     return null;
@@ -109,11 +115,21 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
     if (typeof url === 'string') openExternally(url);
   });
 
+  ctx.on(CHANNEL.lifecycleRegister, (_event, window, wants) => {
+    if (window) windows.setFlushable(window, wants === true);
+  });
+  ctx.on(CHANNEL.lifecycleFlushed, (_event, _window, id) => {
+    if (typeof id === 'number') windows.flushDone(id);
+  });
+
   if (ctx.mode !== 'standalone') return;
 
   ctx.handle(CHANNEL.serversPrepare, (_event, window, serverUrl) => ctx.servers!.prepare(serverUrl, window));
-  ctx.on(CHANNEL.serversNoteSession, (_event, _window, serverUrl, urls) => {
-    ctx.servers!.noteSession(serverUrl, urls as never);
+  ctx.on(CHANNEL.serversNoteSession, (_event, window, serverUrl, urls) => {
+    void ctx.servers!.noteSession(serverUrl, urls as never, window);
+  });
+  ctx.on(CHANNEL.serversForget, (_event, _window, serverUrl, reason) => {
+    ctx.servers!.forget(serverUrl, reason);
   });
 
   const signIn = options.signIn!;

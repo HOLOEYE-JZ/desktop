@@ -6,7 +6,7 @@
  */
 
 import type { IncomingMessage } from 'node:http';
-import { APP_HOST, LAUNCH_HEADER } from './protocol';
+import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER } from './protocol';
 
 /** Removes a header from both views Node keeps of a request. */
 function dropHeader(req: IncomingMessage, name: string): void {
@@ -23,8 +23,21 @@ function setHeader(req: IncomingMessage, name: string, value: string): void {
   req.rawHeaders.push(name, value);
 }
 
+/** POST /api/admin/auth, however it's spelled. Reading its status stays open. */
+export function isAdminLogin(method: string | undefined, url: string | undefined): boolean {
+  if (!url || method === 'GET' || method === 'HEAD') return false;
+  let pathname = url.split(/[?#]/)[0];
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    // Not decodable, compared as it is.
+  }
+  return pathname.toLowerCase().replace(/\/+/g, '/').replace(/\/$/, '') === '/api/admin/auth';
+}
+
 export function sanitizeRequest(req: IncomingMessage): void {
   dropHeader(req, LAUNCH_HEADER);
+  dropHeader(req, MAIN_HEADER);
   for (const name of Object.keys(req.headers)) {
     if (name.startsWith('x-middleware-') || name.startsWith('x-forwarded-') || name.startsWith('x-nextjs-')) dropHeader(req, name);
   }

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -14,7 +15,7 @@ let page: Page;
 
 test.beforeAll(async () => {
   profile = tempProfile('guards');
-  ({ app, page } = await launchStandalone(profile));
+  ({ app, page } = await launchStandalone(profile, '--use-fake-device-for-media-stream'));
   await fakeOsIntegration(app);
   await waitForLogin(page);
 });
@@ -49,12 +50,28 @@ test.describe('the embedded server', () => {
     expect(headers.keys).not.toContain('x-bulwark-launch');
   });
 
-  test('the secret is in no process argument or env of the server', async () => {
-    const info = await app.evaluate(({ app: electronApp }) => {
-      const metrics = electronApp.getAppMetrics().filter((m) => m.type === 'Utility');
-      return metrics.map((m) => m.name);
-    });
-    expect(info).toContain('Bulwark mail service');
+  test('the launch secret is in no process argument', async () => {
+    test.skip(process.platform !== 'win32', 'reads command lines through PowerShell');
+    // The real value, from what Chromium sent.
+    const [request] = await Promise.all([page.waitForRequest((r) => r.url().includes('/api/health/live')), page.evaluate(() => fetch('/api/health/live'))]);
+    const secret = (await request.allHeaders())['x-bulwark-launch'];
+    expect(secret, 'the header is on the wire').toBeTruthy();
+    const pids = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().map((m) => m.pid));
+    const script = `Get-CimInstance Win32_Process -Filter "Name='electron.exe'" | Where-Object { @(${pids.join(',')}) -contains $_.ProcessId } | ForEach-Object { $_.CommandLine }`;
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' });
+    expect(run.stdout.length, 'command lines were read').toBeGreaterThan(100);
+    expect(run.stdout).not.toContain(secret);
+    expect(run.stdout).not.toContain('BEGIN PRIVATE KEY');
+  });
+
+  test('the forwarding route refuses a navigation at the server too', async () => {
+    const port = await serverPort(app);
+    // The secret alone isn't enough: this is what a document request would look like.
+    const [request] = await Promise.all([page.waitForRequest((r) => r.url().includes('/api/health/live')), page.evaluate(() => fetch('/api/health/live'))]);
+    const secret = (await request.allHeaders())['x-bulwark-launch'];
+    const id = Buffer.from('http://127.0.0.1:1').toString('base64url');
+    const answer = await plainRequest(port, `/__jmap/${id}/x`, { 'x-bulwark-launch': secret, 'sec-fetch-dest': 'document', 'sec-fetch-site': 'same-origin' });
+    expect(answer.status).toBe(403);
   });
 
   test('it listens on loopback only', async () => {
@@ -110,20 +127,64 @@ test.describe('window prefs', () => {
     });
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
-    expect(shape.keys).toEqual(['auth', 'menu', 'mode', 'platform', 'plugins', 'servers', 'shell', 'theme', 'version', 'windows']);
+    expect(shape.keys).toEqual(['auth', 'lifecycle', 'menu', 'mode', 'platform', 'plugins', 'servers', 'shell', 'theme', 'version', 'windows']);
   });
 
-  test('a same-origin frame gets no bridge of its own', async () => {
-    const inFrame = await page.evaluate(async () => {
-      const frame = document.createElement('iframe');
-      frame.srcdoc = '<p>frame</p>';
-      document.body.appendChild(frame);
-      await new Promise((resolve) => (frame.onload = resolve));
-      const value = typeof (frame.contentWindow as unknown as { bulwarkDesktop?: unknown }).bulwarkDesktop;
-      frame.remove();
-      return value;
+  test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {
+    const seen = await page.evaluate(async () => {
+      type W = { bulwarkDesktop?: unknown; parent: W };
+      const same = document.createElement('iframe');
+      same.srcdoc = '<p>frame</p>';
+      document.body.appendChild(same);
+      await new Promise((resolve) => (same.onload = resolve));
+      const own = typeof (same.contentWindow as unknown as W).bulwarkDesktop;
+      // Honest about it: this is why nothing on the bridge may do harm on a call alone (ipc.ts).
+      const viaParent = typeof (same.contentWindow as unknown as W).parent.bulwarkDesktop;
+      same.remove();
+      return { own, viaParent };
     });
-    expect(inFrame).toBe('undefined');
+    // The page's CSP keeps inline script out of a frame, so this one is entered from outside.
+    await page.evaluate(() => {
+      const opaque = document.createElement('iframe');
+      opaque.id = 'opaque-frame';
+      opaque.setAttribute('sandbox', 'allow-scripts');
+      opaque.srcdoc = '<p>opaque</p>';
+      document.body.appendChild(opaque);
+    });
+    const handle = await page.waitForSelector('#opaque-frame', { state: 'attached' });
+    const frame = await handle.contentFrame();
+    const opaque = await frame!.evaluate(() => {
+      try {
+        return typeof (parent as unknown as { bulwarkDesktop?: unknown }).bulwarkDesktop;
+      } catch (error) {
+        return (error as Error).name;
+      }
+    });
+    await handle.evaluate((node) => node.remove());
+    expect(seen.own).toBe('undefined');
+    expect(seen.viaParent).toBe('object');
+    expect(opaque).toBe('SecurityError');
+  });
+
+  test('a bridge call from a frame that is not the main frame is refused in main', async () => {
+    const denied = await app.evaluate(async ({ BrowserWindow, ipcMain }, origin) => {
+      const handler = (ipcMain as unknown as { _invokeHandlers: Map<string, (e: unknown) => unknown> })._invokeHandlers.get('bulwark:windows.list')!;
+      const window = BrowserWindow.getAllWindows()[0];
+      const outcome = async (senderFrame: unknown) => {
+        try {
+          await handler({ sender: window.webContents, senderFrame });
+          return 'allowed';
+        } catch (error) {
+          return (error as Error).message;
+        }
+      };
+      return {
+        subframe: await outcome({ url: `${origin}/en/login`, parent: { url: origin } }),
+        foreign: await outcome({ url: 'https://evil.example/', parent: null }),
+        main: await outcome({ url: `${origin}/en/login`, parent: null }),
+      };
+    }, APP_ORIGIN);
+    expect(denied).toEqual({ subframe: 'Not allowed', foreign: 'Not allowed', main: 'allowed' });
   });
 
   test('no reload or devtools from the keyboard', async () => {
@@ -258,6 +319,7 @@ test.describe('the window manager', () => {
     await bridgeOpen('https://example.com/phish', 'x');
     await bridgeOpen('file:///C:/Windows/win.ini', 'y');
     await bridgeOpen('/api/health/live', 'z');
+    await bridgeOpen('/__jmap/abc/mail.html', 'j');
     await page.waitForTimeout(300);
     expect(await allWindows()).toBe(before);
   });
@@ -357,6 +419,30 @@ test.describe('the theme', () => {
   });
 });
 
+test.describe('leaving a page with unsaved changes', () => {
+  async function dirtyPage() {
+    await page.goto(`${APP_ORIGIN}/en/login?dirty=1`);
+    await waitForLogin(page);
+    // Chromium only asks after the user touched the page.
+    await page.click('body', { position: { x: 5, y: 5 } });
+    await page.evaluate(() => window.addEventListener('beforeunload', (event) => event.preventDefault()));
+  }
+
+  test('reloading asks natively: Stay keeps the page, Leave goes', async () => {
+    await dirtyPage();
+    await fakeOsIntegration(app, 1); // Stay
+    void page.evaluate(() => location.assign('/en/login?left=1')).catch(() => {});
+    await expect.poll(async () => (await prompts(app)).length).toBe(1);
+    expect((await prompts(app))[0].message).toMatch(/unsaved/i);
+    expect(page.url()).toContain('dirty=1');
+
+    await fakeOsIntegration(app, 0); // Leave
+    void page.evaluate(() => location.assign('/en/login?left=1')).catch(() => {});
+    await expect(page).toHaveURL(/left=1/);
+    await waitForLogin(page);
+  });
+});
+
 test.describe('navigation guard', () => {
   test('leaving the origin is stopped, and goes to the system browser', async () => {
     const url = page.url();
@@ -365,6 +451,28 @@ test.describe('navigation guard', () => {
     });
     await expect.poll(() => opened(app)).toContain('https://example.org/left-the-app');
     expect(page.url()).toBe(url);
+  });
+
+  test('the forwarding route never loads as a page, whether by navigation or window.open', async () => {
+    const url = page.url();
+    const before = (await opened(app)).length;
+    const windows = await allWindows();
+    await page.evaluate(() => {
+      location.href = '/__jmap/aHR0cDovL3g/evil.html';
+    });
+    const handle = await page.evaluate(() => window.open('/__jmap/aHR0cDovL3g/evil.html', '_blank') === null);
+    await page.waitForTimeout(500);
+    expect(handle).toBe(true);
+    expect(page.url()).toBe(url);
+    expect(await allWindows()).toBe(windows);
+    expect((await opened(app)).length).toBe(before);
+  });
+
+  test('tel:, sms: and xmpp: links open through the OS', async () => {
+    await page.evaluate(() => {
+      for (const href of ['tel:+4912345', 'sms:+4912345', 'xmpp:a@example.org']) window.open(href, '_blank');
+    });
+    await expect.poll(() => opened(app)).toEqual(expect.arrayContaining(['tel:+4912345', 'sms:+4912345', 'xmpp:a@example.org']));
   });
 
   test('a provider logout that is blocked does not leave the window stuck', async () => {
@@ -380,25 +488,50 @@ test.describe('navigation guard', () => {
 });
 
 test.describe('permissions', () => {
-  test('denied by default, granted only for what the app uses', async () => {
+  test('granted only for what the app uses, by the handler itself', async () => {
     await page.goto(`${APP_ORIGIN}/en/login`);
+    await page.bringToFront();
     const results = await page.evaluate(async () => {
+      const state = async (name: string) => (await navigator.permissions.query({ name: name as PermissionName })).state;
       const denied = async (fn: () => Promise<unknown>) => fn().then(() => 'granted', (e) => e.name);
       return {
         notifications: await Notification.requestPermission(),
         persist: await navigator.storage.persist(),
-        clipboardRead: await denied(() => navigator.clipboard.readText()),
+        // A fake camera exists (launch switch), so a refusal can only be the handler's.
+        devices: (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput').length,
         camera: await denied(() => navigator.mediaDevices.getUserMedia({ video: true })),
-        screen: await denied(() => navigator.mediaDevices.getDisplayMedia()),
+        clipboardRead: await denied(() => navigator.clipboard.readText()),
+        queryCamera: await state('camera'),
+        queryGeo: await state('geolocation'),
+        queryNotifications: await state('notifications'),
         geo: await new Promise((resolve) => navigator.geolocation.getCurrentPosition(() => resolve('granted'), (e) => resolve(e.code), { timeout: 3000 })),
       };
     });
     expect(results.notifications).toBe('granted');
     expect(results.persist).toBe(true);
-    expect(results.clipboardRead).not.toBe('granted');
-    expect(results.camera).not.toBe('granted');
-    expect(results.screen).not.toBe('granted');
-    expect(results.geo).not.toBe('granted');
+    expect(results.queryNotifications).toBe('granted');
+    expect(results.devices).toBeGreaterThan(0);
+    expect(results.camera).toBe('NotAllowedError');
+    expect(results.clipboardRead).toBe('NotAllowedError');
+    expect(results.queryCamera).toBe('denied');
+    expect(results.queryGeo).toBe('denied');
+    expect(results.geo).toBe(1); // PERMISSION_DENIED, not a timeout
+  });
+
+  test('a same-origin frame gets nothing, even what its origin may have', async () => {
+    const result = await page.evaluate(async () => {
+      const frame = document.createElement('iframe');
+      frame.srcdoc = '<p>frame</p>';
+      document.body.appendChild(frame);
+      await new Promise((resolve) => (frame.onload = resolve));
+      const w = frame.contentWindow as unknown as Window & typeof globalThis;
+      const query = (await w.navigator.permissions.query({ name: 'notifications' })).state;
+      const top = (await navigator.permissions.query({ name: 'notifications' })).state;
+      frame.remove();
+      return { query, top };
+    });
+    expect(result.top).toBe('granted');
+    expect(result.query).toBe('denied');
   });
 });
 
@@ -407,8 +540,8 @@ test.describe('the local admin', () => {
     await fakeOsIntegration(app);
     const answer = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('bulwark-no-such-plugin-xyz'));
     expect(answer).toMatchObject({ ok: false, error: 'not_found' });
-    // It asked first, and got as far as the admin route (a 403 or 401 would read differently).
-    expect((await prompts(app)).map((p) => p.message).join()).toContain('bulwark-no-such-plugin-xyz');
+    // Nothing to name, so nothing to ask about.
+    expect(await prompts(app)).toEqual([]);
     const cookies = await app.evaluate(async ({ session }) => (await session.fromPartition('persist:bulwark').cookies.get({})).map((c) => c.name));
     expect(cookies).not.toContain('admin_session');
     expect(cookies).not.toContain('admin_device');
@@ -420,6 +553,15 @@ test.describe('the local admin', () => {
       (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('languagetool'),
     )) as { ok: boolean; id?: string; error?: string };
     expect(answer, JSON.stringify(answer)).toMatchObject({ ok: true });
+    // It asked first, naming it, who it's from and what it may do, with Cancel on Enter.
+    const asked = (await prompts(app)) as unknown as { message: string; detail: string; defaultId: number; cancelId: number; buttons: string[]; type: string }[];
+    expect(asked).toHaveLength(1);
+    expect(asked[0].message).toContain('Proofreading (LanguageTool)');
+    expect(asked[0].detail).toContain('Bulwark');
+    expect(asked[0].detail).toContain('Check what you write');
+    expect(asked[0].defaultId).toBe(1);
+    expect(asked[0].cancelId).toBe(1);
+    expect(asked[0].buttons[1]).toBe('Cancel');
     const installed = path.join(profile, 'webmail', 'admin', 'plugins');
     expect(readdirSync(installed).join()).toContain(answer.id);
     // Signed with this install's own key, in the profile.
@@ -430,7 +572,7 @@ test.describe('the local admin', () => {
 
   test('a declined prompt installs nothing', async () => {
     await fakeOsIntegration(app, 1);
-    const answer = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('anything'));
+    const answer = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('languagetool'));
     expect(answer).toEqual({ ok: false, error: 'cancelled' });
     await fakeOsIntegration(app);
   });
@@ -438,6 +580,20 @@ test.describe('the local admin', () => {
   test('the renderer has no way in by itself', async () => {
     const status = await page.evaluate(() => fetch('/api/admin/plugins').then((r) => r.status));
     expect(status).toBe(401);
+  });
+
+  test('page script cannot burn the admin login attempts and lock main out', async () => {
+    const statuses = await page.evaluate(async () => {
+      const out: number[] = [];
+      for (let i = 0; i < 7; i += 1) {
+        out.push((await fetch('/api/admin/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"password":"wrong"}' })).status);
+      }
+      return out;
+    });
+    expect(new Set(statuses)).toEqual(new Set([403]));
+    // Main signed in before this test, so make it sign in again: a new session's worth.
+    const answer = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('bulwark-no-such-plugin-xyz'));
+    expect(answer).toMatchObject({ error: 'not_found' });
   });
 });
 
@@ -515,6 +671,74 @@ test.describe('CORS for an account\'s server', () => {
     const before = options;
     expect(await post(`${origin}/jmap/`)).toEqual({ reached: true, authorization: 'Bearer abc' });
     expect(options).toBeGreaterThan(before);
+  });
+
+  test('a wildcard is no server: no prompt, no list entry, and every other host stays closed', async () => {
+    await fakeOsIntegration(app);
+    for (const url of ['https://*', 'https://*.example.org', 'https://a*b.com']) {
+      const answer = await page.evaluate((u) => (window as unknown as { bulwarkDesktop: { servers: { prepare: (u: string) => Promise<unknown> } } }).bulwarkDesktop.servers.prepare(u), url);
+      expect(answer, url).toEqual({ ok: false, reason: 'invalid' });
+    }
+    expect(await prompts(app)).toEqual([]);
+    const state = JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8'));
+    expect(JSON.stringify(state.corsOrigins)).not.toContain('*');
+  });
+
+  test('what prepare added is not stored until a session came back, and a failure takes it back', async () => {
+    const stored = () => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).corsOrigins as string[];
+    const call = (method: string, ...args: unknown[]) =>
+      page.evaluate(
+        ([m, a]) => (window as unknown as { bulwarkDesktop: { servers: Record<string, (...x: unknown[]) => unknown> } }).bulwarkDesktop.servers[m as string](...(a as unknown[])),
+        [method, args] as [string, unknown[]],
+      );
+    const other = createHttpsServer({ key: certificate.keyPem, cert: certificate.certPem }, (_req, res) => res.end('{"reached":true}'));
+    await new Promise<void>((resolve) => other.listen(0, '127.0.0.1', resolve));
+    const otherOrigin = `https://127.0.0.1:${(other.address() as AddressInfo).port}`;
+
+    await fakeOsIntegration(app);
+    await call('prepare', otherOrigin);
+    expect(await post(`${otherOrigin}/`)).toEqual({ reached: true });
+    await page.waitForTimeout(700);
+    expect(stored()).not.toContain(otherOrigin);
+
+    await call('forget', otherOrigin, 'failed');
+    expect(String(await post(`${otherOrigin}/`))).toContain('blocked');
+
+    await call('prepare', otherOrigin);
+    await call('noteSession', otherOrigin, { apiUrl: `${otherOrigin}/jmap/` });
+    await expect.poll(stored).toContain(otherOrigin);
+
+    await call('forget', otherOrigin, 'signed-out');
+    await expect.poll(stored).not.toContain(otherOrigin);
+    expect(String(await post(`${otherOrigin}/`))).toContain('blocked');
+    other.close();
+    other.closeAllConnections();
+  });
+
+  test('another origin a session names needs the user, and a private one never gets in', async () => {
+    const call = (method: string, ...args: unknown[]) =>
+      page.evaluate(
+        ([m, a]) => (window as unknown as { bulwarkDesktop: { servers: Record<string, (...x: unknown[]) => unknown> } }).bulwarkDesktop.servers[m as string](...(a as unknown[])),
+        [method, args] as [string, unknown[]],
+      );
+    const stored = () => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).corsOrigins as string[];
+    await fakeOsIntegration(app, 1); // decline
+    await call('noteSession', origin, { downloadUrl: 'https://downloads.example.org/{blobId}', uploadUrl: 'https://192.168.7.7/up' });
+    await expect.poll(async () => (await prompts(app)).length).toBe(1);
+    expect((await prompts(app))[0].detail).toContain('downloads.example.org');
+    await page.waitForTimeout(700);
+    expect(stored()).not.toContain('https://downloads.example.org');
+    expect(stored()).not.toContain('https://192.168.7.7');
+
+    // Asked once only, and the private one not at all.
+    await call('noteSession', origin, { downloadUrl: 'https://downloads.example.org/{blobId}', uploadUrl: 'https://192.168.7.7/up' });
+    await page.waitForTimeout(300);
+    expect(await prompts(app)).toHaveLength(1);
+
+    await fakeOsIntegration(app, 0); // allow, on a new origin
+    await call('noteSession', origin, { downloadUrl: 'https://cdn.example.net/{blobId}', uploadUrl: 'https://192.168.7.7/up' });
+    await expect.poll(stored).toContain('https://cdn.example.net');
+    expect(stored()).not.toContain('https://192.168.7.7');
   });
 
   test('other origins stay under normal CORS', async () => {

@@ -9,9 +9,10 @@
  */
 
 import { EventEmitter } from 'node:events';
-import { BrowserWindow, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
+import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { StateFile } from './state';
+import { strings } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
 import { placeWindow, type Rect } from './window-placement';
 
@@ -33,6 +34,8 @@ const MIN_SIZE: Record<WindowType, { minWidth: number; minHeight: number }> = {
 
 /** Past this, a slow page shows anyway rather than leave the user with nothing. */
 const SHOW_FALLBACK_MS = 6000;
+/** How long a closing window waits for its page to save. The page's own limit is shorter. */
+const FLUSH_TIMEOUT_MS = 4000;
 
 /** The window type a same-origin URL belongs in. Locale prefix optional. */
 export function windowTypeOf(pathname: string): WindowType {
@@ -58,6 +61,10 @@ export interface ManagedWindow {
   url: string;
   /** What the OS made of the place it was given. Until it changes, nothing is stored. */
   initialBounds?: Electron.Rectangle;
+  /** The page has something to save before it closes (lib/desktop/types.ts `lifecycle`). */
+  flushable?: boolean;
+  /** Saved: the next close goes straight through. */
+  flushed?: boolean;
 }
 
 export interface WindowManagerOptions {
@@ -76,9 +83,13 @@ export class WindowManager extends EventEmitter<{
   created: [ManagedWindow];
   closed: [ManagedWindow];
   changed: [WindowInfo[]];
+  /** The user chose to stay on a page, so whatever was closing it is off. */
+  stayed: [];
 }> {
   private readonly windows = new Map<number, ManagedWindow>();
   private lastFocused: number | null = null;
+  private nextFlushId = 1;
+  private readonly flushWaits = new Map<number, () => void>();
 
   constructor(private readonly options: WindowManagerOptions) {
     super();
@@ -141,7 +152,7 @@ export class WindowManager extends EventEmitter<{
   }
 
   /** Remembered, cascaded, on the current monitor. */
-  private placeFor(type: WindowType, size?: { width: number; height: number }): Rect {
+  placeFor(type: WindowType, size?: { width: number; height: number }): Rect {
     const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed());
     const sameType = others.filter((w) => w.type === type).at(-1)?.window.getNormalBounds();
     const focused = this.focusedManaged()?.window.getNormalBounds();
@@ -196,7 +207,37 @@ export class WindowManager extends EventEmitter<{
     for (const event of ['resize', 'move', 'maximize', 'unmaximize'] as const) {
       window.on(event as 'resize', () => this.rememberBounds(managed));
     }
-    window.on('close', () => this.rememberBounds(managed));
+    window.on('close', (event) => {
+      this.rememberBounds(managed);
+      if (!managed.flushable || managed.flushed) return;
+      event.preventDefault();
+      void this.flushWindow(managed).then(() => {
+        managed.flushed = true;
+        if (!window.isDestroyed()) window.close();
+      });
+    });
+    // Unanswered, this cancels the close silently, and a quit with it.
+    webContents.on('will-prevent-unload', (event) => {
+      const text = strings();
+      if (window.isMinimized()) window.restore();
+      if (!window.isVisible()) window.show();
+      const choice = dialog.showMessageBoxSync(window, {
+        type: 'question',
+        title: 'Bulwark',
+        message: text.leaveTitle,
+        detail: text.leaveDetail,
+        buttons: [text.leave, text.stay],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      });
+      if (choice === 0) {
+        event.preventDefault();
+        return;
+      }
+      for (const other of this.windows.values()) other.flushed = false;
+      this.emit('stayed');
+    });
     window.once('closed', () => {
       this.windows.delete(window.id);
       if (this.lastFocused === window.id) this.lastFocused = null;
@@ -285,6 +326,39 @@ export class WindowManager extends EventEmitter<{
         }
       }
     }
+  }
+
+  setFlushable(window: BrowserWindow, flushable: boolean): void {
+    const managed = this.windows.get(window.id);
+    if (managed) managed.flushable = flushable;
+  }
+
+  flushDone(id: number): void {
+    this.flushWaits.get(id)?.();
+  }
+
+  /** Asks the page to save and waits, within limits: a hung page can't keep a window open. */
+  private flushWindow(managed: ManagedWindow): Promise<void> {
+    if (!managed.flushable || managed.window.isDestroyed()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const id = this.nextFlushId++;
+      const finish = () => {
+        clearTimeout(timer);
+        this.flushWaits.delete(id);
+        resolve();
+      };
+      const timer = setTimeout(finish, FLUSH_TIMEOUT_MS);
+      this.flushWaits.set(id, finish);
+      managed.window.webContents.send(CHANNEL.lifecycleFlush, id);
+    });
+  }
+
+  /** Before a quit, every window at once. True if any had something to save. */
+  async flushAll(): Promise<boolean> {
+    const pending = [...this.windows.values()].filter((w) => w.flushable && !w.flushed && !w.window.isDestroyed());
+    await Promise.all(pending.map((w) => this.flushWindow(w)));
+    for (const w of pending) w.flushed = true;
+    return pending.length > 0;
   }
 
   findByKey(key: string): ManagedWindow | undefined {

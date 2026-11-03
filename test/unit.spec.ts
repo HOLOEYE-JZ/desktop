@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer, type IncomingMessage, type Server } from 'node:http';
 import { createServer as createHttpsServer, request } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -8,11 +8,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { fingerprintOf, generateCertificate } from '../src/main/cert';
-import { isSsoStart, looksLikeProviderLogout } from '../src/main/navigation-rules';
-import { isPrivateAddress, isPrivateHost, serverOrigin } from '../src/main/server-address';
+import { isJmapProxyPath, isSsoStart, looksLikeProviderLogout } from '../src/main/navigation-rules';
+import { isPrivateAddress, isPrivateHost, isRealHostname, serverOrigin } from '../src/main/server-address';
+import { CorsInjector } from '../src/main/cors';
+import { pluginFacts, pluginPrompt, type PromptText } from '../src/main/plugin-prompt';
+import { serverEnv, profilePaths } from '../src/main/profile';
+import { findHomePaths, findProblems, guardPackage, scrubPaths } from '../scripts/package-guard.mjs';
 import { cascadeFrom, centreIn, CASCADE_PX, isOnSomeDisplay, placeWindow } from '../src/main/window-placement';
-import { forwardJmap, isJmapRoute, parseJmapRoute } from '../src/server/jmap-proxy';
-import { sanitizeRequest } from '../src/server/sanitize';
+import { forwardJmap, isJmapRoute, parseJmapRoute, safeContentType } from '../src/server/jmap-proxy';
+import { isAdminLogin, sanitizeRequest } from '../src/server/sanitize';
 
 const HOST = 'app.bulwark.localhost';
 const display = (x: number, y: number, width = 1920, height = 1040) => ({ workArea: { x, y, width, height } });
@@ -78,6 +82,22 @@ test.describe('window placement', () => {
     expect(placed).toEqual(stored);
   });
 
+  test('a stored window with its top strip off every screen is not used', () => {
+    // Only the bottom of the window is on the monitor: nothing to grab it by.
+    const stored = { x: 100, y: -500, width: 800, height: 600 };
+    expect(isOnSomeDisplay(stored, [display(0, 0)])).toBe(false);
+    const placed = placeWindow({ size, stored, displays: [display(0, 0)], current: display(0, 0) });
+    expect(placed.y).toBeGreaterThanOrEqual(0);
+  });
+
+  test('a stored window is fitted when its monitor has shrunk', () => {
+    const stored = { x: 100, y: 100, width: 1800, height: 1000 };
+    const small = display(0, 0, 1280, 720);
+    const placed = placeWindow({ size, stored, displays: [small], current: small });
+    expect(placed.x + placed.width).toBeLessThanOrEqual(1280);
+    expect(placed.y + placed.height).toBeLessThanOrEqual(720);
+  });
+
   test('new windows of a type cascade from the last one', () => {
     const sameType = { x: 100, y: 100, width: 800, height: 600 };
     const placed = placeWindow({ size, sameType, anchor: sameType, displays: [display(0, 0)], current: display(0, 0) });
@@ -119,6 +139,17 @@ test.describe('server addresses', () => {
     }
   });
 
+  test('wildcards and other non-names are no server, though the URL parser takes them', () => {
+    for (const url of ['https://*', 'https://*.example.org', 'https://a*b.com', 'https://exa mple.org', 'https://%2A.example.org', 'https://-bad.example.org']) {
+      expect(serverOrigin(url), url).toBeNull();
+    }
+    for (const host of ['mail.example.org', 'localhost', '192.168.1.5', '[::1]', 'xn--bcher-kva.example']) {
+      expect(isRealHostname(host), host).toBe(true);
+    }
+    expect(serverOrigin('https://[::1]:8443/')).toBe('https://[::1]:8443');
+    expect(serverOrigin('https://BÜCHER.example/')).toBe('https://xn--bcher-kva.example');
+  });
+
   test('serverOrigin refuses what the login routes would', () => {
     expect(serverOrigin('https://mail.example:8443/jmap')).toBe('https://mail.example:8443');
     expect(serverOrigin('http://192.168.1.5:8080/')).toBe('http://192.168.1.5:8080');
@@ -143,11 +174,120 @@ test.describe('navigation rules', () => {
     expect(isSsoStart(new URL('https://example.com/page'), origin)).toBe(false);
   });
 
+  test('the forwarding route is recognised, also after the URL parser tidied it', () => {
+    expect(isJmapProxyPath(new URL('https://a/__jmap/x/y').pathname)).toBe(true);
+    expect(isJmapProxyPath(new URL('https://a/en/../__jmap/x').pathname)).toBe(true);
+    expect(isJmapProxyPath(new URL('https://a/__jmap').pathname)).toBe(true);
+    expect(isJmapProxyPath(new URL('https://a/__jmapper').pathname)).toBe(false);
+    expect(isJmapProxyPath(new URL('https://a/en/mail').pathname)).toBe(false);
+  });
+
   test('provider logout URLs are recognised', () => {
     expect(looksLikeProviderLogout(new URL('https://idp.example/oidc/logout?client_id=x'))).toBe(true);
     expect(looksLikeProviderLogout(new URL('https://idp.example/x?id_token_hint=abc'))).toBe(true);
     expect(looksLikeProviderLogout(new URL('https://idp.example/end_session'))).toBe(true);
     expect(looksLikeProviderLogout(new URL('https://example.com/about'))).toBe(false);
+  });
+});
+
+test.describe('the CORS list', () => {
+  function fakeSession() {
+    const installed: (string[] | null)[] = [];
+    const session = {
+      webRequest: {
+        onHeadersReceived(filter: { urls: string[] } | null, listener?: unknown) {
+          if (filter === null) {
+            installed.push(null);
+            return;
+          }
+          // What Electron does with a pattern it can't parse.
+          for (const url of filter.urls) if (url.includes('*.') || /a\*b/.test(url)) throw new TypeError(`Invalid url pattern ${url}`);
+          if (listener) installed.push(filter.urls);
+        },
+      },
+    };
+    return { session: session as never, installed };
+  }
+
+  test('one pattern Electron refuses does not take the others down, or throw', () => {
+    const { session, installed } = fakeSession();
+    const cors = new CorsInjector(session, 'https://app.example');
+    expect(() => cors.set(['https://good.example', 'https://a*b.com', 'https://also-good.example'])).not.toThrow();
+    expect(installed.at(-1)).toEqual(['https://good.example/*', 'https://also-good.example/*']);
+  });
+
+  test('removing the last one removes the listener', () => {
+    const { session, installed } = fakeSession();
+    const cors = new CorsInjector(session, 'https://app.example');
+    cors.add('https://good.example');
+    cors.remove('https://good.example');
+    expect(installed.at(-1)).toBeNull();
+  });
+});
+
+test.describe('the utilityProcess env', () => {
+  test('is an allowlist: nothing from the user\'s environment and no secret', () => {
+    const env = serverEnv(
+      profilePaths('C:\\ud'),
+      { PATH: 'x', SystemRoot: 'y', REDIS_URL: 'redis://x', DEMO_MODE: 'true', JMAP_SERVER_URL: 'https://x', NODE_OPTIONS: '--inspect', HOSTNAME: 'x', SESSION_SECRET: 'env-secret', ADMIN_PASSWORD: 'env-password', OTEL_EXPORTER: 'x' } as never,
+      'win32',
+    );
+    for (const name of ['REDIS_URL', 'DEMO_MODE', 'JMAP_SERVER_URL', 'NODE_OPTIONS', 'HOSTNAME', 'SESSION_SECRET', 'ADMIN_PASSWORD', 'OTEL_EXPORTER', 'PORT']) {
+      expect(env[name], name).toBeUndefined();
+    }
+    expect(env.PATH).toBe('x');
+    expect(env.BULWARK_UPDATE_CHECK).toBe('off');
+  });
+});
+
+test.describe('the package guard', () => {
+  function tree(files: Record<string, string>): string {
+    const dir = mkdtempSync(path.join(tmpdir(), 'bw-pack-'));
+    for (const [name, body] of Object.entries(files)) {
+      mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+      writeFileSync(path.join(dir, name), body);
+    }
+    return dir;
+  }
+
+  test('fails on a planted signing key, a data folder and an env file', () => {
+    expect(findProblems(tree({ 'server.js': '', 'data/admin/plugin-signing.key': 'x', '.env': 'x', 'public/plugin-signing.key': 'x' }))).toEqual([
+      '.env',
+      'data/',
+      'public/plugin-signing.key',
+    ]);
+    expect(() => guardPackage(tree({ 'server.js': '', 'data/x': 'x' }))).toThrow(/Do not ship/);
+  });
+
+  test('leaves packages and route folders alone', () => {
+    expect(findProblems(tree({ 'server.js': '', 'node_modules/x/data/t.json': '{}', '.next/server/app/api/data/route.js': '' }))).toEqual([]);
+  });
+
+  test('removes Next\'s cache', () => {
+    const dir = tree({ 'server.js': '', '.next/cache/x': 'x', '.next/BUILD_ID': 'x' });
+    guardPackage(dir, { warn: () => {} });
+    expect(existsSync(path.join(dir, '.next', 'cache'))).toBe(false);
+    expect(existsSync(path.join(dir, '.next', 'BUILD_ID'))).toBe(true);
+  });
+
+  test('takes the recorded build paths out, in every spelling', () => {
+    const dir = tree({
+      '.next/required-server-files.json': JSON.stringify({ config: { outputFileTracingRoot: 'C:/Users/dev', turbopack: { root: 'C:/Users/dev' } }, appDir: 'C:\\\\Users\\\\dev\\\\wt' }),
+      '.next/server/chunks/1.js': 'a="C:\\\\Users\\\\dev\\\\wt";b="C:/Users/dev/wt"',
+    });
+    expect(scrubPaths(dir)).toBe(2);
+    const chunk = readFileSync(path.join(dir, '.next/server/chunks/1.js'), 'utf8');
+    expect(chunk).not.toContain('dev');
+    expect(chunk).toContain('/bulwark-build');
+    JSON.parse(readFileSync(path.join(dir, '.next/required-server-files.json'), 'utf8'));
+  });
+
+  test('warns about a home folder that is still in there', () => {
+    const dir = tree({ '.next/server/chunks/1.js': 'a="D:/Home/dev/x"' });
+    expect(findHomePaths(dir, 'D:\\Home\\dev')).toEqual(['.next/server/chunks/1.js']);
+    const warnings: string[] = [];
+    guardPackage(tree({ 'server.js': '' }), { warn: (m: string) => warnings.push(m) });
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -162,6 +302,7 @@ test.describe('request sanitising', () => {
     const req = requestWith({
       host: 'evil.example',
       'x-bulwark-launch': 'secret',
+      'x-bulwark-main': 'main-secret',
       'x-forwarded-for': '6.6.6.6',
       'x-forwarded-host': 'evil.example',
       'x-forwarded-proto': 'http',
@@ -182,7 +323,18 @@ test.describe('request sanitising', () => {
       'x-forwarded-for': '127.0.0.1',
     });
     expect(req.rawHeaders).not.toContain('secret');
+    expect(req.rawHeaders).not.toContain('main-secret');
     expect(req.rawHeaders).not.toContain('6.6.6.6');
+  });
+});
+
+test.describe('the admin login route', () => {
+  test('is recognised however it is spelled, reading its status is not', () => {
+    for (const url of ['/api/admin/auth', '/api/admin/auth/', '//api//admin/auth', '/api/admin/%61uth', '/API/admin/auth?x=1']) {
+      expect(isAdminLogin('POST', url), url).toBe(true);
+    }
+    expect(isAdminLogin('GET', '/api/admin/auth')).toBe(false);
+    expect(isAdminLogin('POST', '/api/admin/plugins')).toBe(false);
   });
 });
 
@@ -199,6 +351,19 @@ test.describe('/__jmap route', () => {
         seen.push({ url: req.url ?? '', method: req.method ?? '', headers: req.headers, body: Buffer.concat(chunks).toString() });
         if (req.url === '/.well-known/jmap') {
           res.writeHead(307, { location: '/jmap/session' }).end();
+          return;
+        }
+        if (req.url === '/redirect-out') {
+          res.writeHead(302, { location: 'http://unapproved.invalid/steal' }).end();
+          return;
+        }
+        if (req.url === '/redirect-post') {
+          res.writeHead(307, { location: '/jmap/' }).end();
+          return;
+        }
+        if (req.url === '/html') {
+          res.writeHead(200, { 'content-type': 'text/html', 'content-disposition': 'inline', 'access-control-allow-origin': '*', 'content-security-policy': "default-src *" });
+          res.end('<script>steal()</script>');
           return;
         }
         if (req.url === '/stream') {
@@ -229,7 +394,10 @@ test.describe('/__jmap route', () => {
 
   const idOf = (value: string) => Buffer.from(value).toString('base64url');
 
-  async function through(url: string, init: RequestInit & { headers?: Record<string, string> } = {}, trusted = true) {
+  const PAGE_FETCH = { 'sec-fetch-dest': 'empty', 'sec-fetch-site': 'same-origin' };
+
+  async function through(url: string, init: RequestInit & { headers?: Record<string, string> } = {}, trusted = true, sentFrom: Record<string, string> = PAGE_FETCH) {
+    init = { ...init, headers: { ...sentFrom, ...init.headers } };
     const server = createHttpServer((req, res) => {
       void forwardJmap(req, res, (candidate) => trusted && candidate === origin);
     });
@@ -280,7 +448,7 @@ test.describe('/__jmap route', () => {
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const response = await fetch(`${address}/__jmap/${idOf(origin)}/stream`);
+    const response = await fetch(`${address}/__jmap/${idOf(origin)}/stream`, { headers: PAGE_FETCH });
     const reader = response.body!.getReader();
     const first = new TextDecoder().decode((await reader.read()).value);
     expect(first).toContain('one');
@@ -288,6 +456,54 @@ test.describe('/__jmap route', () => {
     await reader.cancel();
     server.close();
     server.closeAllConnections();
+  });
+
+  for (const [what, headers] of [
+    ['a navigation', { 'sec-fetch-dest': 'document', 'sec-fetch-site': 'same-origin' }],
+    ['a frame', { 'sec-fetch-dest': 'iframe', 'sec-fetch-site': 'same-origin' }],
+    ['a worker script', { 'sec-fetch-dest': 'worker', 'sec-fetch-site': 'same-origin' }],
+    ['another site', { 'sec-fetch-dest': 'empty', 'sec-fetch-site': 'cross-site' }],
+    ['an opaque frame', { 'sec-fetch-dest': 'empty', 'sec-fetch-site': 'none' }],
+    ['no browser headers at all', {}],
+  ] as [string, Record<string, string>][]) {
+    test(`${what} gets 403 and reaches nothing`, async () => {
+      const before = seen.length;
+      const answer = await through(`/__jmap/${idOf(origin)}/html`, {}, true, headers);
+      expect(answer.status).toBe(403);
+      expect(seen.length).toBe(before);
+    });
+  }
+
+  test('an answer cannot render on the app origin: sandboxed, and its type is gone', async () => {
+    const answer = await through(`/__jmap/${idOf(origin)}/html`);
+    expect(answer.status).toBe(200);
+    expect(answer.headers.get('content-type')).toBe('application/octet-stream');
+    expect(answer.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'");
+    expect(answer.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(answer.headers.get('content-disposition')).toBeNull();
+    expect(answer.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  test('JSON stays JSON', () => {
+    expect(safeContentType('application/json; charset=utf-8')).toBe('application/json; charset=utf-8');
+    expect(safeContentType('application/problem+json')).toBe('application/problem+json');
+    for (const type of ['text/html', 'image/svg+xml', 'text/xml', 'application/xhtml+xml', 'text/json-html', null]) {
+      expect(safeContentType(type), String(type)).toBe('application/octet-stream');
+    }
+  });
+
+  test('a redirect to a server nobody approved is not followed', async () => {
+    const answer = await through(`/__jmap/${idOf(origin)}/redirect-out`);
+    expect(answer.status).toBe(502);
+    expect(answer.text).toContain('not been approved');
+  });
+
+  test('a POST redirect fails clearly, without reaching the target', async () => {
+    const before = seen.filter((request) => request.url === '/jmap/').length;
+    const answer = await through(`/__jmap/${idOf(origin)}/redirect-post`, { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
+    expect(answer.status).toBe(502);
+    expect(answer.text).toContain('redirected');
+    expect(seen.filter((request) => request.url === '/jmap/').length).toBe(before);
   });
 
   test('route parsing refuses what is not an origin', () => {
@@ -330,5 +546,115 @@ test.describe('the system CA store in the embedded server', () => {
     expect(result.system, 'the OS store is readable').toBeGreaterThan(0);
     expect(result.before, 'a private CA fails by default').not.toBe(200);
     expect(result.after, 'and works once added').toBe(200);
+  });
+});
+
+test.describe('/__jmap redirects between servers', () => {
+  const PAGE_FETCH = { 'sec-fetch-dest': 'empty', 'sec-fetch-site': 'same-origin' };
+
+  async function listen(handler: Parameters<typeof createHttpServer>[1]) {
+    const server = createHttpServer(handler);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    return { server, origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}` };
+  }
+
+  test('each hop is checked: an approved target is followed, without the password if the host changes', async () => {
+    const seen: { auth?: string }[] = [];
+    const second = await listen((req, res) => {
+      seen.push({ auth: req.headers.authorization });
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"second":true}');
+    });
+    // Same address, another name: a host change as far as credentials go.
+    const secondByName = second.origin.replace('127.0.0.1', 'localhost');
+    const first = await listen((_req, res) => {
+      res.writeHead(302, { location: `${secondByName}/x` }).end();
+    });
+    const front = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === first.origin || candidate === secondByName);
+    });
+    const id = Buffer.from(first.origin).toString('base64url');
+    const answer = await fetch(`${front.origin}/__jmap/${id}/start`, { headers: { ...PAGE_FETCH, authorization: 'Basic abc' } });
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({ second: true });
+    expect(seen).toEqual([{ auth: undefined }]);
+
+    // Taken off the list, the same redirect stops.
+    const frontStrict = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === first.origin);
+    });
+    const refused = await fetch(`${frontStrict.origin}/__jmap/${id}/start`, { headers: PAGE_FETCH });
+    expect(refused.status).toBe(502);
+    expect(seen).toHaveLength(1);
+    for (const { server } of [first, second, front, frontStrict]) {
+      server.close();
+      server.closeAllConnections();
+    }
+  });
+
+  test('a same-host move up to TLS may stay, though only http was approved', async () => {
+    // The hop itself fails here, since nothing listens with TLS: what counts is that it is tried, not refused.
+    const first = await listen((_req, res) => {
+      res.writeHead(301, { location: 'https://127.0.0.1:1/x' }).end();
+    });
+    const front = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === first.origin);
+    });
+    const id = Buffer.from(first.origin).toString('base64url');
+    const answer = await fetch(`${front.origin}/__jmap/${id}/start`, { headers: PAGE_FETCH });
+    expect(answer.status).toBe(502);
+    expect(await answer.text()).toContain('could not be reached');
+    for (const { server } of [first, front]) {
+      server.close();
+      server.closeAllConnections();
+    }
+  });
+});
+
+test.describe('the install prompt', () => {
+  const text: PromptText = {
+    pluginInstallTitle: (name) => `Install ${name}?`,
+    pluginPublisher: (publisher, verified) => `By ${publisher}${verified ? ' (verified)' : ''}`,
+    pluginNoPublisher: 'No publisher',
+    pluginPermissions: 'It asks to:',
+    pluginNoPermissions: 'No permissions',
+    pluginPrivileged: 'FULL ACCESS WARNING',
+    install: 'Install',
+    cancel: 'Cancel',
+  };
+  const detail = (tier?: string) => ({
+    extension: {
+      name: 'Secure Mail',
+      author: { displayName: 'Acme', githubLogin: 'acme', verified: true },
+      permissionDetails: [{ title: 'Read your mail', highRisk: true }, { title: 'Use the network' }],
+    },
+    preview: { version: '1.2.3', yanked: null },
+    bundle: { manifest: tier ? { tier } : {} },
+  });
+
+  test('names it, its publisher and what it may do, with Cancel as the default', () => {
+    const box = pluginPrompt(pluginFacts(detail(), 'secure-mail'), text);
+    expect(box.message).toBe('Install Secure Mail?');
+    expect(box.detail).toContain('By Acme (verified)');
+    expect(box.detail).toContain('Read your mail');
+    expect(box.detail).toContain('Use the network');
+    expect(box.detail).not.toContain('FULL ACCESS');
+    expect(box.type).toBe('question');
+    expect(box.buttons![box.defaultId!]).toBe('Cancel');
+    expect(box.buttons![box.cancelId!]).toBe('Cancel');
+  });
+
+  test('warns separately about the privileged tier', () => {
+    const box = pluginPrompt(pluginFacts(detail('privileged'), 'secure-mail'), text);
+    expect(box.detail).toContain('FULL ACCESS WARNING');
+    expect(box.type).toBe('warning');
+    expect(box.buttons![box.defaultId!]).toBe('Cancel');
+  });
+
+  test('a yanked version has nothing to install, and missing facts stay honest', () => {
+    expect(pluginFacts({ ...detail(), preview: { version: '1.2.3', yanked: true } }, 'x').version).toBeNull();
+    const bare = pluginFacts({ preview: { version: '1.0.0' } }, 'bare-slug');
+    expect(bare.name).toBe('bare-slug');
+    expect(pluginPrompt(bare, text).detail).toContain('No publisher');
+    expect(pluginPrompt(bare, text).detail).toContain('No permissions');
   });
 });

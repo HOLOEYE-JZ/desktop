@@ -59,6 +59,7 @@ test.describe('the packaged app', () => {
     expect(fuses.enableCookieEncryption).toBe('1');
     expect(fuses.enableEmbeddedAsarIntegrityValidation).toBe('1');
     expect(fuses.onlyLoadAppFromAsar).toBe('1');
+    expect(fuses.grantFileProtocolExtraPrivileges).toBe('0');
   });
 
   test('the unfused Electron binary would fail this, so the check can fail', () => {
@@ -90,6 +91,30 @@ test.describe('the packaged app', () => {
       expect(file, file).not.toMatch(/^(data|local-data|repos)\//);
       expect(file, file).not.toMatch(/(^|\/)\.env/);
       expect(file, file).not.toMatch(/plugin-signing\.key$/);
+    }
+    expect(relative.some((file) => file.startsWith('.next/cache/'))).toBe(false);
+    // The build machine's paths are out of what Next recorded.
+    const recorded = readFileSync(path.join(resources, '.next', 'required-server-files.json'), 'utf8');
+    expect(recorded).not.toContain(path.resolve(ROOT, '..', '..').split(path.sep).slice(0, 3).join('/'));
+    expect(recorded).toContain('/bulwark-build');
+  });
+
+  test('the first-run page still works with the file protocol\'s extra privileges off', async () => {
+    test.skip(process.platform !== 'win32', 'reads the window title through PowerShell');
+    const profile = tempProfile('packwelcome');
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(EXE, [`--user-data-dir=${path.join(profile, 'ud')}`, '--lang=en-US'], { env, stdio: 'ignore' });
+    try {
+      const title = () =>
+        spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue).MainWindowTitle`], { encoding: 'utf8' }).stdout.trim();
+      // Set by welcome.js, so the script ran.
+      await expect.poll(title, { timeout: 40_000, intervals: [1000] }).toMatch(/Welcome to Bulwark|Willkommen bei Bulwark/);
+    } finally {
+      child.kill();
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      removeProfile(profile);
     }
   });
 

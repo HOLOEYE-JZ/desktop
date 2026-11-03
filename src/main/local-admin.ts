@@ -8,7 +8,7 @@
  */
 
 import { Agent, request } from 'node:https';
-import { APP_HOST, LAUNCH_HEADER } from '../server/protocol';
+import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER } from '../server/protocol';
 
 /** Shorter than the 1 h session, so a request doesn't race the expiry. */
 const SESSION_LIFETIME_MS = 55 * 60 * 1000;
@@ -17,6 +17,7 @@ export interface LocalAdminOptions {
   port: number;
   certPem: string;
   launchSecret: string;
+  mainSecret: string;
   password: string;
 }
 
@@ -47,7 +48,7 @@ export class LocalAdmin {
   }
 
   private send(method: string, path: string, payload: unknown): Promise<AdminResponse & { setCookie: string[] }> {
-    const { port, launchSecret } = this.options;
+    const { port, launchSecret, mainSecret } = this.options;
     return new Promise((resolve, reject) => {
       const body = payload === undefined ? undefined : JSON.stringify(payload);
       const cookie = [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; ');
@@ -62,6 +63,7 @@ export class LocalAdmin {
           headers: {
             host: APP_HOST,
             [LAUNCH_HEADER]: launchSecret,
+            [MAIN_HEADER]: mainSecret,
             ...(cookie ? { cookie } : {}),
             ...(body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}),
           },

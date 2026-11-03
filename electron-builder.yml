@@ -27,6 +27,7 @@ electronFuses:
   enableNodeCliInspectArguments: false
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
+  grantFileProtocolExtraPrivileges: false
 win:
   # Signing hook: unsigned for now. A signing certificate or Azure signing goes here.
   # signtoolOptions: {}

@@ -17,8 +17,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
-import { APP_HOST, LAUNCH_HEADER, type HostMessage, type InitMessage } from './protocol';
-import { sanitizeRequest } from './sanitize';
+import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, type HostMessage, type InitMessage } from './protocol';
+import { isAdminLogin, sanitizeRequest } from './sanitize';
 
 const TRUST_KEY = Symbol.for('bulwark.desktop.trustedJmapOrigins');
 
@@ -95,8 +95,15 @@ async function start(init: InitMessage): Promise<void> {
   const handle = app.getRequestHandler();
 
   const secret = Buffer.from(init.launchSecret);
+  const mainSecret = Buffer.from(init.mainSecret);
   const server = createServer({ key: init.tls.key, cert: init.tls.cert }, (req: IncomingMessage, res: ServerResponse) => {
     if (!launchSecretMatches(req.headers[LAUNCH_HEADER], secret)) {
+      res.writeHead(403, { 'content-type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+    // Page script could use up the login budget and lock main out of the admin API.
+    if (isAdminLogin(req.method, req.url) && !launchSecretMatches(req.headers[MAIN_HEADER], mainSecret)) {
       res.writeHead(403, { 'content-type': 'text/plain' });
       res.end('Forbidden');
       return;

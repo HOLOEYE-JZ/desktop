@@ -106,6 +106,44 @@ for (const { label, url } of STALWARTS) {
   });
 }
 
+test.describe('quitting with an open composer', () => {
+  const server = STALWARTS[0].url;
+
+  async function jmap(using: string[], calls: unknown[]) {
+    const auth = `Basic ${Buffer.from(`${ACCOUNT}:${ENT_PASSWORD}`).toString('base64')}`;
+    const session = await (await fetch(`${server}/.well-known/jmap`, { headers: { Authorization: auth } })).json();
+    const accountId = session.primaryAccounts['urn:ietf:params:jmap:mail'];
+    const answer = await fetch(session.apiUrl, {
+      method: 'POST',
+      headers: { Authorization: auth, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ using, methodCalls: JSON.parse(JSON.stringify(calls).replaceAll('__ACCOUNT__', accountId)) }),
+    });
+    return (await answer.json()).methodResponses as [string, Record<string, unknown>, string][];
+  }
+
+  test('saves the draft on the way out', async () => {
+    const profile = tempProfile('draft');
+    const subject = `Quit draft ${Date.now()}`;
+    let { app, page } = await launchStandalone(profile);
+    await fakeOsIntegration(app);
+    await signIn(page, server);
+    await page.keyboard.press('c');
+    await page.locator('[data-testid="email-composer"]').waitFor({ state: 'visible', timeout: 15_000 });
+    await page.locator('[data-testid="composer-subject"]').fill(subject);
+    const typedAt = Date.now();
+    await app.close();
+    // Quit came straight after typing, before any autosave timer.
+    expect(Date.now() - typedAt).toBeLessThan(15_000);
+
+    const using = ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail'];
+    const query = await jmap(using, [['Email/query', { accountId: '__ACCOUNT__', filter: { subject } }, 'q']]);
+    const ids = query[0][1].ids as string[];
+    expect(ids.length, 'the draft is on the server').toBeGreaterThan(0);
+    await jmap(using, [['Email/set', { accountId: '__ACCOUNT__', destroy: ids }, 'd']]);
+    removeProfile(profile);
+  });
+});
+
 test.describe('a plain http server, through the UI', () => {
   // Stalwart behind a small http relay, as a LAN server would be without TLS.
   let relay: Server;

@@ -1,4 +1,4 @@
-/** Which addresses count as private, for the approval prompt. No Electron here, so tests can load it. */
+/** Which addresses count as usable and as private. No Electron here, so tests can load it. */
 
 import { promises as dns } from 'node:dns';
 import { isIP } from 'node:net';
@@ -37,6 +37,20 @@ export async function isPrivateHost(hostname: string): Promise<boolean> {
   }
 }
 
+const LABEL = /^[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?$/;
+
+/**
+ * A hostname or an IP literal. The URL parser lets `*` through in a host, and an
+ * origin goes on into a webRequest URL pattern, where `https://*` matches every
+ * host and `https://a*b.com` makes Electron throw.
+ */
+export function isRealHostname(hostname: string): boolean {
+  const host = hostname.replace(/^\[(.*)\]$/, '$1').toLowerCase();
+  if (isIP(host)) return true;
+  if (host.length === 0 || host.length > 253) return false;
+  return host.split('.').every((label) => LABEL.test(label));
+}
+
 /** Server origin of a URL the user typed, or null if it isn't usable. */
 export function serverOrigin(url: unknown): string | null {
   if (typeof url !== 'string') return null;
@@ -44,6 +58,7 @@ export function serverOrigin(url: unknown): string | null {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
     if (parsed.username || parsed.password) return null;
+    if (!isRealHostname(parsed.hostname)) return null;
     return parsed.origin;
   } catch {
     return null;

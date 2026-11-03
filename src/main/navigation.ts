@@ -8,14 +8,16 @@
  * instance's own cookies come back with it.
  */
 
-import { shell, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents, type WebPreferences } from 'electron';
+import { screen, shell, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents, type WebPreferences } from 'electron';
 import type { Mode } from '../shared/bridge';
-import { isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
+import { isJmapProxyPath, isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
+import { fitInto } from './window-placement';
 import { windowTypeOf, type WindowManager } from './windows';
 
-const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
+// What links in mail and contacts use. The OS has the handler, or nothing happens.
+const EXTERNAL_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:', 'sms:', 'xmpp:', 'webcal:']);
 
-/** http, https and mailto, for an address the OS can open. Nothing else leaves the app. */
+/** The schemes listed above, for an address the OS can open. Nothing else leaves the app. */
 export function openExternally(url: string): boolean {
   const parsed = parse(url);
   if (!parsed || !EXTERNAL_PROTOCOLS.has(parsed.protocol)) return false;
@@ -60,7 +62,7 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
       return { action: 'allow', overrideBrowserWindowOptions: bareWindowOptions(windows.webPreferences()) };
     }
     if (sameOrigin(parsed, options.origin)) {
-      if (parsed.pathname.startsWith('/api/')) return { action: 'deny' };
+      if (parsed.pathname.startsWith('/api/') || isJmapProxyPath(parsed.pathname)) return { action: 'deny' };
       const type = windowTypeOf(parsed.pathname);
       const key = frameName && frameName !== '_blank' ? frameName : url;
       if (windows.findByKey(key)) {
@@ -70,7 +72,8 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
       if (type === 'message' || type === 'composer') {
         // Keeps window.opener and the handle for a page without the bridge. did-create-window
         // below registers it with the manager.
-        return { action: 'allow', overrideBrowserWindowOptions: windows.windowOptions(type) };
+        // Its place comes from us: a page's features string can ask for any size or spot.
+        return { action: 'allow', overrideBrowserWindowOptions: { ...windows.windowOptions(type), ...windows.placeFor(type) } };
       }
       windows.open({ type, key, url });
       return { action: 'deny' };
@@ -87,7 +90,8 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
       windows.adopt(child, windowTypeOf(parsed!.pathname), key, details.url);
       return;
     }
-    // about:blank and blob: stay outside the manager, under the same guards.
+    // about:blank and blob: stay outside the manager, under the same guards, and on a screen.
+    child.setBounds(fitInto(child.getBounds(), screen.getDisplayMatching(child.getBounds()).workArea));
     guardContents(child.webContents, options);
   });
 }
@@ -99,7 +103,7 @@ function guardNavigation(contents: WebContents, options: GuardOptions): void {
 
   const allowed = (target: URL): boolean => {
     if (target.protocol === 'about:' && target.href === 'about:blank') return true;
-    if (sameOrigin(target, origin)) return true;
+    if (sameOrigin(target, origin)) return !isJmapProxyPath(target.pathname);
     if (mode !== 'instance' || target.protocol !== 'https:') return false;
     if (inSsoChain) return true;
     if (isSsoStart(target, origin)) {
@@ -114,7 +118,7 @@ function guardNavigation(contents: WebContents, options: GuardOptions): void {
     const target = parse(url);
     if (target && allowed(target)) return;
     event.preventDefault();
-    if (!target) return;
+    if (!target || (sameOrigin(target, origin) && isJmapProxyPath(target.pathname))) return;
     openExternally(url);
     // The webmail set a flag before leaving for the provider's logout page, so
     // its own login redirect would do nothing and the window would stay stuck.

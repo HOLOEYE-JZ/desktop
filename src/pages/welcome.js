@@ -27,6 +27,7 @@ const text = navigator.language.toLowerCase().startsWith('de') ? STRINGS.de : ST
 const byId = (id) => document.getElementById(id);
 const fill = { title: 'title', intro: 'intro', 'standalone-title': 'standaloneTitle', 'standalone-text': 'standaloneText', 'instance-title': 'instanceTitle', 'instance-text': 'instanceText', 'url-label': 'urlLabel', connect: 'connect' };
 for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
+document.title = text.title;
 
 byId('standalone').addEventListener('click', () => {
   void window.bulwarkWelcome.choose({ mode: 'standalone' });

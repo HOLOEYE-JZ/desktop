@@ -38,6 +38,10 @@ const mode = argument(PRELOAD_ARG.mode);
 
 if (allowedOrigin && window.location.protocol === 'https:' && window.location.origin === allowedOrigin) {
   const platform = process.platform as 'win32' | 'darwin' | 'linux';
+  const flushHandlers = new Set<() => Promise<unknown>>();
+  ipcRenderer.on(CHANNEL.lifecycleFlush, (_event, id: number) => {
+    void Promise.allSettled([...flushHandlers].map((handler) => handler())).then(() => ipcRenderer.send(CHANNEL.lifecycleFlushed, id));
+  });
   const common = {
     version: BRIDGE_VERSION,
     platform,
@@ -61,6 +65,20 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
     },
+    lifecycle: {
+      /**
+       * Before a window closes or the app quits, main asks the page to save what it
+       * has and waits a few seconds. A window with no handler closes at once.
+       */
+      onFlushRequest: (handler: () => Promise<unknown>) => {
+        flushHandlers.add(handler);
+        ipcRenderer.send(CHANNEL.lifecycleRegister, flushHandlers.size > 0);
+        return () => {
+          flushHandlers.delete(handler);
+          ipcRenderer.send(CHANNEL.lifecycleRegister, flushHandlers.size > 0);
+        };
+      },
+    },
   };
 
   const standalone = mode === 'standalone'
@@ -68,6 +86,7 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
         servers: {
           prepare: (serverUrl: string) => ipcRenderer.invoke(CHANNEL.serversPrepare, serverUrl),
           noteSession: (serverUrl: string, urls: SessionUrls) => ipcRenderer.send(CHANNEL.serversNoteSession, serverUrl, urls),
+          forget: (serverUrl: string, reason: 'failed' | 'signed-out') => ipcRenderer.send(CHANNEL.serversForget, serverUrl, reason),
         },
         auth: {
           beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin),

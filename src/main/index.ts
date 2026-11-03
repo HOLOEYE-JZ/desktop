@@ -78,6 +78,7 @@ if (!gotLock) app.exit(0);
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
+let appStartUrl = '';
 
 function serverDirectory(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, 'server');
@@ -134,6 +135,11 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     devTools,
     attachGuards: (window) => attachWindowGuards(window, guard),
   });
+  appStartUrl = mode === 'instance' ? validInstanceUrl(argValue('instance')) ?? validInstanceUrl(stateFile.data.instanceUrl) ?? `${origin}/` : `${origin}/`;
+  windowManager.on('stayed', () => {
+    switching = false;
+    quitFlushed = false;
+  });
   return windowManager;
 }
 
@@ -168,7 +174,10 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   let tlsPair: Awaited<ReturnType<typeof tlsMaterial>>;
   try {
     // getOrCreate never replaces one it can't read: that would wipe every account.
-    sessionSecret = await secrets.getOrCreate('session-secret', () => randomSecret(48));
+    // The first run makes the secret before it seeds the profile, so a seeded profile
+    // without one lost it. A new one would sign out every account just the same.
+    const seeded = existsSync(path.join(profile.adminConfig, 'config.json'));
+    sessionSecret = await secrets.getOrCreate('session-secret', () => randomSecret(48), { mustExist: seeded });
     const admin = await secrets.getOrReplace('admin-credential', () => randomSecret(32));
     adminPassword = admin.value;
     // A new credential only takes if the stored hash goes with the old one.
@@ -177,7 +186,8 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   } catch (error) {
     if (error instanceof SecretStoreError) {
       const text = strings();
-      await showErrorPage(text.errorSecretsTitle, text.errorSecretsBody);
+      if (error.code === 'missing') await showErrorPage(text.errorSecretMissingTitle, text.errorSecretMissingBody(secretsDir));
+      else await showErrorPage(text.errorSecretsTitle, text.errorSecretsBody);
       return;
     }
     throw error;
@@ -186,6 +196,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   seedProfile(profile);
 
   const launchSecret = randomBytes(32).toString('base64url');
+  const mainSecret = randomBytes(32).toString('base64url');
   // A development switch for the test of a replaced certificate.
   const pin = DEV && process.argv.includes('--bulwark-test-wrong-pin') ? 'sha256/wrong' : tlsPair.fingerprint;
   const session = setupAppSession(pin, launchSecret, () => {
@@ -206,6 +217,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         port: SERVER_PORT,
         parentPid: process.pid,
         launchSecret,
+        mainSecret,
         tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
         secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
         trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin),
@@ -213,7 +225,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     });
   let server = spawnServer(false);
   const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins) });
-  const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, password: adminPassword });
+  const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
   const windows = createWindowManager('standalone', APP_ORIGIN, session, theme);
   signIn = new LoopbackSignIn(() => windows.focus());
@@ -305,7 +317,7 @@ function showWelcome(theme: ThemeController): void {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
-    if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('file:')) throw new Error('Not allowed');
+    if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
     if (choice?.mode === 'standalone') {
       stateFile.data.mode = 'standalone';
     } else if (choice?.mode === 'instance') {
@@ -322,7 +334,8 @@ function showWelcome(theme: ThemeController): void {
     window.destroy();
     return { ok: true };
   });
-  void window.loadFile(WELCOME_PAGE);
+  // A data: page: with the grantFileProtocolExtraPrivileges fuse off, a file: one doesn't run.
+  void window.loadURL(`data:text/html;charset=utf-8;base64,${readFileSync(WELCOME_PAGE).toString('base64')}`);
 }
 
 async function boot(theme: ThemeController): Promise<void> {
@@ -341,13 +354,23 @@ async function boot(theme: ThemeController): Promise<void> {
   showWelcome(theme);
 }
 
+// Quitting closes the windows, and each may ask first. Nothing is forgotten until all
+// of them have gone, so choosing Stay keeps the mode.
+let switching = false;
+
 function switchMode(): void {
+  switching = true;
+  app.quit();
+}
+
+function finishSwitch(): void {
   stateFile.data.mode = undefined;
   stateFile.data.instanceUrl = undefined;
   stateFile.save();
   app.relaunch();
-  app.quit();
 }
+
+let quitFlushed = false;
 
 if (gotLock) {
   // Nothing may attach a webview or open a window behind the window manager's back.
@@ -355,9 +378,14 @@ if (gotLock) {
     contents.on('will-attach-webview', (event) => event.preventDefault());
   });
 
-  app.on('second-instance', () => {
-    windowManager?.focus();
-  });
+  // Another launch means "show me the app". With only a pop-out left open, that's a new main window.
+  const showMain = () => {
+    if (!windowManager) return;
+    if (windowManager.mainWindow()) windowManager.focus();
+    else windowManager.open({ type: 'main', url: appStartUrl });
+  };
+
+  app.on('second-instance', showMain);
 
   app.on('window-all-closed', () => {
     // Step 6 keeps the app running here when close-to-tray is on.
@@ -365,14 +393,22 @@ if (gotLock) {
   });
 
   app.on('activate', () => {
-    if (windowManager && windowManager.isEmpty()) {
-      windowManager.open({ type: 'main', url: `${windowManager.originUrl()}/` });
-    }
+    if (windowManager && windowManager.isEmpty()) showMain();
   });
 
-  app.on('before-quit', () => {
+  // Pages save first, within limits, and then the quit goes on. A preventDefault in a
+  // window's own close would call the quit off, so it's done here.
+  app.on('before-quit', (event) => {
     signIn?.closeAll();
     stateFile.save();
+    if (quitFlushed || !windowManager) return;
+    event.preventDefault();
+    quitFlushed = true;
+    void windowManager.flushAll().finally(() => app.quit());
+  });
+
+  app.on('will-quit', () => {
+    if (switching) finishSwitch();
   });
 
   app.whenReady().then(async () => {
