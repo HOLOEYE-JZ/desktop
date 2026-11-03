@@ -2,7 +2,10 @@
 // Copies a webmail build into ./webmail, the tree the app embeds.
 //
 //   node scripts/fetch-webmail.mjs --path <webmail checkout with .next/standalone>
-//   node scripts/fetch-webmail.mjs --tag <webmail tag>     (CI: clone, npm ci, build)
+//   node scripts/fetch-webmail.mjs --tag <webmail tag>     (a release: clone, npm ci, build)
+//   node scripts/fetch-webmail.mjs --ref <branch or tag>   (a beta: the same)
+//     with --commit <sha> to build what `--resolve` said earlier, however far it has moved
+//   node scripts/fetch-webmail.mjs --resolve <tag|ref> <name>  prints the commit, or fails
 //   node scripts/fetch-webmail.mjs --native win32-arm64,...  (sharp's binaries for more
 //     targets: on top of either of the above, or alone on a tree already here)
 //
@@ -77,6 +80,49 @@ export function findLinks(dir, found = []) {
   return found;
 }
 
+/**
+ * The commit a tag, or for `ref` also a branch, names in that repo. Null if it doesn't. A
+ * name git could take for a flag, or that's no plain ref, isn't asked about at all.
+ */
+export function remoteCommit(repo, kind, name) {
+  if (!/^[0-9A-Za-z][0-9A-Za-z._/-]*$/.test(name) || name.includes('..')) return null;
+  const refs = kind === 'tag' ? [`refs/tags/${name}`] : [`refs/heads/${name}`, `refs/tags/${name}`];
+  const listed = spawnSync('git', ['ls-remote', repo, ...refs, ...refs.map((ref) => `${ref}^{}`)], { encoding: 'utf8' });
+  if (listed.status !== 0) return null;
+  const lines = listed.stdout.split('\n').filter(Boolean).map((line) => line.split('\t'));
+  // An annotated tag lists its own object and, with ^{}, the commit.
+  const line = lines.find(([, ref]) => ref.endsWith('^{}')) ?? lines[0];
+  return line ? line[0] : null;
+}
+
+/** Fetches that one commit, checks that's what arrived, builds and copies it. */
+async function fromRemote(kind, name, destination, wanted) {
+  if (wanted && !/^[0-9a-f]{40}$/.test(wanted)) fail(`${wanted} is not a commit`);
+  const commit = wanted ?? remoteCommit(WEBMAIL_REPO, kind, name);
+  // A clear message, not git's, for the likely mistake: a tag that isn't out yet.
+  if (!commit) {
+    fail(
+      kind === 'tag'
+        ? `the webmail has no tag ${name}. Set config.webmailTag in package.json to the first tag that has build:desktop, or wait for that release.`
+        : `the webmail has no branch or tag ${name}.`,
+    );
+  }
+  const work = mkdtempSync(path.join(tmpdir(), 'bulwark-webmail-'));
+  run('git', ['-C', work, 'init', '-q']);
+  run('git', ['-C', work, 'remote', 'add', 'origin', WEBMAIL_REPO]);
+  run('git', ['-C', work, 'fetch', '-q', '--depth', '1', 'origin', commit]);
+  run('git', ['-C', work, 'checkout', '-q', 'FETCH_HEAD']);
+  const arrived = spawnSync('git', ['-C', work, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+  const origin = spawnSync('git', ['-C', work, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).stdout.trim();
+  if (arrived !== commit || origin !== WEBMAIL_REPO) fail(`${name} from ${WEBMAIL_REPO} should be ${commit}, but the clone is ${arrived} from ${origin}. Try again if it has just moved.`);
+  console.log(`[fetch-webmail] ${WEBMAIL_REPO} ${name} at ${commit}`);
+  run('npm', ['ci'], { cwd: work });
+  // Shows in the app's About card, so a beta can be traced.
+  run('npm', ['run', 'build:desktop'], { cwd: work, env: { ...process.env, GIT_COMMIT: commit } });
+  await fromPath(work, destination, commit);
+  rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+}
+
 function isInside(file, dir) {
   const relative = path.relative(dir, file);
   return !relative.startsWith('..') && !path.isAbsolute(relative);
@@ -129,7 +175,7 @@ function containsMarker(dir, marker) {
   return false;
 }
 
-async function fromPath(source, destination) {
+async function fromPath(source, destination, commit) {
   const standalone = path.join(source, '.next', 'standalone');
   if (!existsSync(standalone)) fail(`${standalone} does not exist. Build it with: npm run build:desktop`);
 
@@ -184,7 +230,7 @@ async function fromPath(source, destination) {
   const pkg = JSON.parse(readFileSync(path.join(destination, 'package.json'), 'utf8'));
   writeFileSync(
     path.join(destination, 'desktop-build.json'),
-    `${JSON.stringify({ version: pkg.version, source: path.basename(source), buildId: readFileSync(path.join(destination, '.next', 'BUILD_ID'), 'utf8').trim() }, null, 2)}\n`,
+    `${JSON.stringify({ version: pkg.version, source: path.basename(source), ...(commit ? { commit } : {}), buildId: readFileSync(path.join(destination, '.next', 'BUILD_ID'), 'utf8').trim() }, null, 2)}\n`,
   );
   const size = sizeOf(destination);
   console.log(`[fetch-webmail] ${destination}: ${Math.round(size / 1048576)} MB`);
@@ -200,30 +246,26 @@ function sizeOf(dir) {
 }
 
 async function main() {
+  const resolve = process.argv.indexOf('--resolve');
+  if (resolve !== -1) {
+    const commit = remoteCommit(WEBMAIL_REPO, process.argv[resolve + 1], process.argv[resolve + 2]);
+    if (!commit) fail(`the webmail has no ${process.argv[resolve + 1]} ${process.argv[resolve + 2]}`);
+    console.log(commit);
+    return;
+  }
   const destination = path.resolve(option('out') ?? path.join(ROOT, 'webmail'));
   const source = option('path');
   const tag = option('tag');
+  const ref = option('ref');
   const native = option('native');
-  if (source && tag) fail('--path or --tag, not both');
+  if ([source, tag, ref].filter(Boolean).length > 1) fail('one of --path, --tag and --ref');
   if (source) await fromPath(path.resolve(source), destination);
-  if (tag) {
-    // A clear message, not git's, for the likely mistake: a tag that isn't out yet.
-    const exists = spawnSync('git', ['ls-remote', '--exit-code', '--tags', WEBMAIL_REPO, `refs/tags/${tag}`], { stdio: 'ignore' });
-    if (exists.status !== 0) fail(`the webmail has no tag ${tag}. Set config.webmailTag in package.json to the first tag that has build:desktop, or wait for that release.`);
-    const work = mkdtempSync(path.join(tmpdir(), 'bulwark-webmail-'));
-    run('git', ['clone', '--depth', '1', '--branch', tag, WEBMAIL_REPO, work]);
-    // --branch takes a branch too, and a release only ever builds from a tag.
-    const isTag = spawnSync('git', ['-C', work, 'rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], { stdio: 'ignore' });
-    if (isTag.status !== 0) fail(`${tag} is not a tag of ${WEBMAIL_REPO}`);
-    run('npm', ['ci'], { cwd: work });
-    run('npm', ['run', 'build:desktop'], { cwd: work });
-    await fromPath(work, destination);
-    rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-  }
+  if (tag) await fromRemote('tag', tag, destination, option('commit'));
+  if (ref) await fromRemote('ref', ref, destination, option('commit'));
   if (native) {
     for (const added of addNativePlatforms(destination, native.split(','))) console.log(`[fetch-webmail] added ${added}`);
   }
-  if (!source && !tag && !native) fail('usage: fetch-webmail.mjs --path <webmail checkout> | --tag <tag> [--native <targets>] [--out <dir>]');
+  if (!source && !tag && !ref && !native) fail('usage: fetch-webmail.mjs --path <webmail checkout> | --tag <tag> | --ref <branch or tag> [--native <targets>] [--out <dir>]');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

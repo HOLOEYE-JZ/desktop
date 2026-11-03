@@ -28,6 +28,7 @@ import {
   installKind,
   isPrerelease,
   judgeFeedVersion,
+  nothingPublished,
   newestReleaseInFeed,
   updateAbility,
   updatePolicyFrom,
@@ -103,6 +104,7 @@ class Updater {
   private downloadToken: CancellationToken | null = null;
   private activeDownload: Promise<void> | null = null;
   private wanted: WantedDownload | null = null;
+  private readonly requests = new Set<Electron.ClientRequest>();
   private lastChannel: UpdateChannel | null = null;
 
   constructor(private readonly ctx: FeatureContext) {}
@@ -203,6 +205,16 @@ class Updater {
       if (this.wanted) this.setStatus('downloading', this.wanted.version, Math.round(progress.percent));
     });
     autoUpdater.on('update-downloaded', (info: UpdateInfo) => this.onDownloaded(info));
+    // electron-updater's cancel only settles its promise: nothing aborts the request, which
+    // runs on and keeps writing. So the requests it makes are kept here, to abort.
+    const executor = (autoUpdater as unknown as { httpExecutor: { createRequest: (...args: unknown[]) => Electron.ClientRequest } }).httpExecutor;
+    const createRequest = executor.createRequest.bind(executor);
+    executor.createRequest = (...args) => {
+      const request = createRequest(...args);
+      this.requests.add(request);
+      for (const end of ['close', 'abort', 'error'] as const) request.once(end as 'close', () => this.requests.delete(request));
+      return request;
+    };
     autoUpdater.on('error', (error: Error) => this.onError(error));
     this.updater = autoUpdater;
     return autoUpdater;
@@ -288,15 +300,11 @@ class Updater {
   /** Whatever is coming down or sitting on disk no longer counts. Waits until it has stopped. */
   private async abandonDownload(): Promise<void> {
     this.wanted = null;
-    const downloading = this.downloadToken !== null;
     this.downloadToken?.cancel();
     this.downloadToken = null;
-    if (this.updater) {
-      this.updater.autoInstallOnAppQuit = false;
-      // electron-updater's cancel only settles its promise: the request runs on and keeps
-      // writing. Nothing but the updater uses this session.
-      if (downloading) void this.updater.netSession.closeAllConnections();
-    }
+    for (const request of this.requests) request.abort();
+    this.requests.clear();
+    if (this.updater) this.updater.autoInstallOnAppQuit = false;
     // Not forever, whatever the network does: a setting mustn't hang on it.
     await Promise.race([this.activeDownload, new Promise((resolve) => setTimeout(resolve, ABANDON_WAIT_MS))]);
     this.activeDownload = null;
@@ -337,7 +345,8 @@ class Updater {
         this.notifyAvailable(version);
       }
     } catch (error) {
-      this.onError(error);
+      if (nothingPublished(error)) this.setStatus('up-to-date');
+      else this.onError(error);
     }
     return this.state();
   }

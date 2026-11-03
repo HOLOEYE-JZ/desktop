@@ -39,8 +39,9 @@ interface Running {
 const A = '0.9.0';
 const B = '0.9.1';
 const BETA = '1.0.0-beta.1';
+const BETA_2 = '1.0.0-beta.2';
 
-const hasFixtures = [A, B, BETA].every((version) => existsSync(path.join(FIXTURES, version, `Bulwark-Setup-${version}-x64.exe`)));
+const hasFixtures = [A, B, BETA, BETA_2].every((version) => existsSync(path.join(FIXTURES, version, `Bulwark-Setup-${version}-x64.exe`)));
 const roaming = path.join(process.env.APPDATA ?? '', 'Bulwark');
 let hadDefaultProfile = false;
 
@@ -411,6 +412,40 @@ test.describe('updates', () => {
     expect(after.channel).toBe('beta');
     const ready = await waitForStatus(page, 'ready');
     expect(ready.target).toBe(BETA);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
+    removeProfile(profile);
+  });
+
+  test('with only prereleases on GitHub, a beta finds the next beta', async () => {
+    installFixture(BETA);
+    // This repo's state at the start: no stable release, so `/releases/latest` is an error.
+    github.releases = [{ version: BETA_2, prerelease: true }, { version: BETA, prerelease: true }];
+    const { app, page, profile } = await launch(installedExe(), feed);
+    const ready = await waitForStatus(page, 'ready');
+    expect(ready.channel, 'a beta build is on beta without being told').toBe('beta');
+    expect(ready.target).toBe(BETA_2);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
+    removeProfile(profile);
+  });
+
+  test('with only prereleases on GitHub, a stable build takes none and has nothing to report', async () => {
+    installFixture(A);
+    github.releases = [{ version: BETA_2, prerelease: true }, { version: BETA, prerelease: true }];
+    const { app, page, profile } = await launch(installedExe(), feed);
+    const state = await waitForStatus(page, 'up-to-date', 'error', 'downloading', 'ready');
+    expect(state.channel).toBe('stable');
+    expect(state.status, 'no stable release yet is no failure').toBe('up-to-date');
+    expect(github.downloads()).toEqual([]);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
+    removeProfile(profile);
+  });
+
+  test('with no releases at all, nobody has anything to report', async () => {
+    installFixture(BETA);
+    github.releases = [];
+    const { app, page, profile } = await launch(installedExe(), feed);
+    const state = await waitForStatus(page, 'up-to-date', 'error');
+    expect(state.status).toBe('up-to-date');
     await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
     removeProfile(profile);
   });

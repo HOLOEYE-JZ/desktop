@@ -161,5 +161,5 @@ export async function expectMailShown(page: Page): Promise<void> {
 }
 
 export function requireAccount(): void {
-  if (!ENT_PASSWORD) throw new Error('Run under: vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test');
+  if (!ENT_PASSWORD) throw new Error("Set IT_ENT_PASSWORD to the test account's password");
 }

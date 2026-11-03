@@ -64,9 +64,18 @@ export function isPrerelease(version: string): boolean {
   return parts(version).pre.length > 0;
 }
 
-/** Forced > the user's choice > recommended > what this copy was at its first run > what this build is. */
+/**
+ * Forced > the user's choice > recommended. Then a beta is on beta, so it finds the next one,
+ * and a stable version stays on what this copy started as.
+ */
 export function effectiveChannel(policy: UpdatePolicy, userChoice: UpdateChannel | undefined, currentVersion: string, initial?: UpdateChannel): UpdateChannel {
-  return policy.channel ?? userChoice ?? policy.recommendedChannel ?? initial ?? (isPrerelease(currentVersion) ? 'beta' : 'stable');
+  return policy.channel ?? userChoice ?? policy.recommendedChannel ?? (isPrerelease(currentVersion) ? 'beta' : initial ?? 'stable');
+}
+
+/** A repo with nothing for this channel yet answers with these: not a failure, nothing to get. */
+export function nothingPublished(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' || code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS';
 }
 
 export type InstallKind = 'dev' | 'nsis' | 'windows-other' | 'mac-signed' | 'mac-unsigned' | 'appimage' | 'deb' | 'rpm' | 'linux-other';

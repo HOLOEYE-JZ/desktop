@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
+import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
 
@@ -31,6 +31,9 @@ test.describe('which channel applies', () => {
     expect(effectiveChannel({}, undefined, '1.0.0', 'beta')).toBe('beta');
     expect(effectiveChannel({}, 'stable', '1.0.0', 'beta')).toBe('stable');
     expect(effectiveChannel({ recommendedChannel: 'stable' }, undefined, '1.0.0', 'beta')).toBe('stable');
+    // A beta is on beta, whatever this copy started as, so it finds the next one.
+    expect(effectiveChannel({}, undefined, '1.1.0-beta.3', 'stable')).toBe('beta');
+    expect(effectiveChannel({ channel: 'stable' }, undefined, '1.1.0-beta.3', 'beta')).toBe('stable');
   });
 });
 
@@ -177,6 +180,16 @@ test.describe('what the policy reader passes on', () => {
 
   test('a recommended channel is only a default for the user', () => {
     expect(updatePolicyFrom({ ...defaults, UpdateChannel: entry('beta', 'recommended-machine', false) })).toEqual({ recommendedChannel: 'beta' });
+  });
+});
+
+test.describe('nothing published yet', () => {
+  test('is what electron-updater says when a channel has no release, and nothing else', () => {
+    expect(nothingPublished({ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' })).toBe(true);
+    expect(nothingPublished({ code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' })).toBe(true);
+    expect(nothingPublished({ code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })).toBe(false);
+    expect(nothingPublished(new Error('net::ERR_INTERNET_DISCONNECTED'))).toBe(false);
+    expect(nothingPublished(null)).toBe(false);
   });
 });
 

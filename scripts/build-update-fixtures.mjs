@@ -17,7 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-export const VERSIONS = ['0.9.0', '0.9.1', '1.0.0-beta.1'];
+export const VERSIONS = ['0.9.0', '0.9.1', '1.0.0-beta.1', '1.0.0-beta.2'];
 
 function run(command, args, env = {}) {
   // BULWARK_TEST_PACK: after-pack.cjs refuses a build with test switches without it.

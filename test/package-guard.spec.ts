@@ -278,6 +278,35 @@ test.describe('fetching the webmail', () => {
     rmSync(repo, { recursive: true, force: true });
   });
 
+  test('a ref must really be in the webmail repo, and look like a ref', async () => {
+    const { remoteCommit } = await import('../scripts/fetch-webmail.mjs');
+    const remote = mkdtempSync(path.join(tmpdir(), 'bw-remote-'));
+    const git = (...args: string[]) => {
+      const done = spawnSync('git', ['-C', remote, '-c', 'user.name=t', '-c', 'user.email=t@example.org', ...args], { encoding: 'utf8' });
+      expect(done.status, done.stderr).toBe(0);
+      return done.stdout.trim();
+    };
+    try {
+      git('init', '-q', '-b', 'main');
+      git('commit', '-q', '--allow-empty', '-m', 'one');
+      const first = git('rev-parse', 'HEAD');
+      git('tag', '1.0.0');
+      git('tag', '-a', '1.1.0', '-m', 'annotated');
+      git('commit', '-q', '--allow-empty', '-m', 'two');
+      const second = git('rev-parse', 'HEAD');
+
+      expect(remoteCommit(remote, 'ref', 'main')).toBe(second);
+      expect(remoteCommit(remote, 'ref', '1.0.0')).toBe(first);
+      expect(remoteCommit(remote, 'tag', '1.1.0'), 'the commit, not the tag object').toBe(first);
+      expect(remoteCommit(remote, 'tag', 'main'), 'a release never builds from a branch').toBeNull();
+      expect(remoteCommit(remote, 'ref', 'nope')).toBeNull();
+      expect(remoteCommit(remote, 'ref', '--upload-pack=evil'), 'not a flag for git').toBeNull();
+      expect(remoteCommit(remote, 'ref', 'a..b')).toBeNull();
+    } finally {
+      rmSync(remote, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+
   test('a link in the build fails before anything is copied', () => {
     const source = mkdtempSync(path.join(tmpdir(), 'bw-src-'));
     const secret = mkdtempSync(path.join(tmpdir(), 'bw-secret-'));
