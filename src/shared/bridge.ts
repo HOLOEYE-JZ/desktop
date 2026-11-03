@@ -4,6 +4,8 @@
  * BRIDGE_VERSION; adding a member doesn't.
  */
 
+import type { PolicySnapshot } from './policy-schema';
+
 export const BRIDGE_VERSION = 1;
 
 export type WindowType = 'main' | 'message' | 'composer' | 'settings';
@@ -19,7 +21,7 @@ export type Mode = 'standalone' | 'instance';
 
 export type ServerPrepareResult =
   | { ok: true; approved: boolean }
-  | { ok: false; reason: 'declined' | 'invalid' };
+  | { ok: false; reason: 'declined' | 'invalid' | 'policy' };
 
 export type BrowserSignInResult =
   | { ok: true; code: string; state: string }
@@ -38,6 +40,12 @@ export interface ThemeColours {
 export interface SystemTheme {
   dark: boolean;
   highContrast: boolean;
+}
+
+export interface PolicyBridge {
+  /** What's in force now. Synchronous: a page can read it in its first render. */
+  get: () => PolicySnapshot;
+  onChange: (listener: (snapshot: PolicySnapshot) => void) => () => void;
 }
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
@@ -168,6 +176,21 @@ export type LocalImportResumeResult =
   | Extract<LocalImportGrantResult, { ok: true }>
   | { ok: false; reason: 'later' | 'stopped' | 'busy' | 'invalid' | 'unknown'; refused?: string[] };
 
+export interface PrivacyState {
+  telemetry: { on: boolean; forcedOff: boolean };
+  crashReports: { on: boolean; forcedOff: boolean; uploadUrl: string };
+}
+
+export interface CrashFileInfo {
+  id: string;
+  createdAt: number;
+  bytes: number;
+}
+
+export type CrashSendResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -191,6 +214,17 @@ export const CHANNEL = {
   authCancel: 'bulwark:auth.cancel',
   pluginsInstall: 'bulwark:plugins.install',
   welcomeChoose: 'bulwark:welcome.choose',
+  policyGet: 'bulwark:policy.get',
+  policyChanged: 'bulwark:policy.changed',
+  privacyGet: 'bulwark:privacy.get',
+  privacySetTelemetry: 'bulwark:privacy.setTelemetry',
+  privacySetCrashReports: 'bulwark:privacy.setCrashReports',
+  privacySetCrashUploadUrl: 'bulwark:privacy.setCrashUploadUrl',
+  privacyListCrashes: 'bulwark:privacy.listCrashes',
+  privacySendCrash: 'bulwark:privacy.sendCrash',
+  privacyDeleteCrashes: 'bulwark:privacy.deleteCrashes',
+  privacyChanged: 'bulwark:privacy.changed',
+  welcomePrivacy: 'bulwark:welcome.privacy',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

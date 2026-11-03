@@ -117,6 +117,13 @@ async function fromPath(source, destination) {
   if (moduleDirs.length === 0) fail(`no node_modules under ${standalone}`);
   for (const modules of moduleDirs) copyMissing(modules, path.join(destination, 'node_modules'));
 
+  // The policy templates IT deploys, generated in the webmail. Shipped in the package.
+  const policies = path.join(source, 'desktop-policies');
+  if (existsSync(policies)) {
+    rmSync(path.join(ROOT, 'policies'), { recursive: true, force: true });
+    cpSync(policies, path.join(ROOT, 'policies'), { recursive: true });
+  }
+
   // Not part of standalone.
   cpSync(path.join(source, '.next', 'static'), path.join(destination, '.next', 'static'), { recursive: true });
   cpSync(path.join(source, 'public'), path.join(destination, 'public'), { recursive: true, dereference: true });

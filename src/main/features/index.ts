@@ -14,7 +14,9 @@ import type { WindowManager } from '../windows';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
 import { importFeature } from './import';
+import { policiesFeature } from './policies';
 import { keystoreFeature } from './keystore';
+import { privacyFeature } from './privacy';
 
 export interface FeatureContext {
   mode: Mode;
@@ -38,7 +40,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [keystoreFeature, importFeature];
+export const FEATURES: Feature[] = [policiesFeature, keystoreFeature, privacyFeature, importFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

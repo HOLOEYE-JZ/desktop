@@ -1,0 +1,300 @@
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from 'node:http';
+import { createServer as createHttpsServer, type Server } from 'node:https';
+import type { AddressInfo } from 'node:net';
+import path from 'node:path';
+import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { generateCertificate } from '../src/main/cert';
+import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, signIn, tempProfile, waitForLogin } from './helpers';
+
+/**
+ * Policies in the webmail itself: the login page, the settings lock, the plugin list.
+ * Needs a desktop build of the webmail branch that has them:
+ *
+ *   BULWARK_POLICY_SERVER_DIR=<fetch-webmail --out dir> npx playwright test test/policies-webmail.spec.ts
+ */
+const SERVER_DIR = process.env.BULWARK_POLICY_SERVER_DIR ?? '';
+const STALWART = 'https://stalwart-1.internal.bulwarkmail.org';
+const BASE = 'HKCU\\Software\\BulwarkTest';
+const ROOT = `${BASE}\\Policies\\web${process.pid}`;
+
+test.skip(!SERVER_DIR || process.platform !== 'win32', 'needs BULWARK_POLICY_SERVER_DIR');
+test.beforeAll(requireAccount);
+
+let run = 0;
+const running: { app: ElectronApplication; profile: string }[] = [];
+
+function reg(...args: string[]): void {
+  const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
+  if (result.status !== 0) throw new Error(`reg ${args.join(' ')}: ${result.stderr}`);
+}
+
+function fresh(): string {
+  run += 1;
+  return `${ROOT}\\${run}`;
+}
+
+const forced = (root: string, sub = '') => `${root}\\Machine${sub ? `\\${sub}` : ''}`;
+const setString = (where: string, name: string, value: string) => reg('add', where, '/v', name, '/t', 'REG_SZ', '/d', value, '/f');
+
+async function start(root: string, options: { state?: object; seed?: (profile: string) => void; args?: string[] } = {}): Promise<{ app: ElectronApplication; page: Page; profile: string }> {
+  const profile = tempProfile('polweb');
+  if (options.state) writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify(options.state));
+  options.seed?.(profile);
+  const app = await launch(profile, `--bulwark-test-policy-root=${root}`, '--bulwark-test-policy-poll=250', `--bulwark-server-dir=${SERVER_DIR}`, '--ignore-certificate-errors', ...(options.args ?? []));
+  const page = await shownPage(app);
+  await fakeOsIntegration(app);
+  running.push({ app, profile });
+  return { app, page, profile };
+}
+
+test.afterEach(async () => {
+  for (const { app, profile } of running.splice(0)) {
+    await app.close().catch(() => {});
+    removeProfile(profile);
+  }
+});
+
+test.afterAll(() => {
+  spawnSync('reg.exe', ['delete', BASE, '/f'], { windowsHide: true });
+});
+
+test.describe('standalone', () => {
+  test('a server off the list is refused on the login page, with the reason, before anything is sent', async () => {
+    const root = fresh();
+    setString(forced(root, 'AllowedJmapServers'), '1', STALWART);
+    const { app, page } = await start(root, { state: { mode: 'standalone' } });
+    const leaving: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().startsWith('https://other.example.org')) leaving.push(request.url());
+    });
+    await fillLogin(page, 'https://other.example.org', ACCOUNT, 'not-a-real-password');
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('desktop-policy-notice')).toContainText("doesn't allow this server");
+    expect(leaving).toEqual([]);
+    expect(await prompts(app)).toEqual([]);
+
+    // The route says the same, for a page that skips the form.
+    const status = await page.evaluate(async () => (await fetch('/api/auth/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ serverUrl: 'https://other.example.org', username: 'a', password: 'b' }),
+    })).status);
+    expect(status).toBe(403);
+
+    // A server on the list goes through.
+    await signIn(page, STALWART);
+    await expectMailShown(page);
+  });
+
+  test('plugins off: Settings show the lock, and the server list flags a plugin rather than dropping it', async () => {
+    const root = fresh();
+    setString(forced(root), 'PluginsMode', 'off');
+    const seed = (profile: string) => {
+      const dir = path.join(profile, 'webmail', 'admin', 'plugins');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, 'registry.json'), JSON.stringify({ plugins: [{ id: 'seeded-plugin', name: 'Seeded', version: '1.0.0', author: 'x', description: '', type: 'hook', permissions: [], entrypoint: 'index.js', enabled: true, bundleHash: 'a'.repeat(64) }] }));
+    };
+    const { page, profile } = await start(root, { state: { mode: 'standalone' }, seed });
+    await signIn(page, STALWART);
+
+    const listed = await page.evaluate(async () => (await fetch('/api/plugins')).json());
+    expect(listed.plugins).toEqual([expect.objectContaining({ id: 'seeded-plugin', refused: true })]);
+    const bundle = await page.evaluate(async () => (await fetch('/api/admin/plugins/seeded-plugin/bundle')).status);
+    expect(bundle).toBe(403);
+    // Nothing happened to the registry.
+    expect(JSON.parse(readFileSync(path.join(profile, 'webmail', 'admin', 'plugins', 'registry.json'), 'utf8')).plugins[0].id).toBe('seeded-plugin');
+
+    await page.goto(`${APP_ORIGIN}/settings/addons`);
+    const row = page.getByTestId('device-plugins-off');
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-org-locked]').first()).toContainText('Set by your organisation');
+    await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-policy-locked-setting.png') });
+
+    // Lifted while running: the page goes back without a restart.
+    reg('delete', forced(root), '/v', 'PluginsMode', '/f');
+    await expect(row).toBeHidden({ timeout: 30_000 });
+  });
+
+  test('offline forced off shows the lock on the storage settings', async () => {
+    const root = fresh();
+    setString(forced(root), 'OfflineEnabled', 'not-a-switch');
+    const { page } = await start(root, { state: { mode: 'standalone' } });
+    await signIn(page, STALWART);
+    await page.goto(`${APP_ORIGIN}/settings/backup`);
+    const locked = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { policy: { get(): { OfflineEnabled: unknown } } } }).bulwarkDesktop.policy.get().OfflineEnabled);
+    expect(locked).toMatchObject({ value: false, locked: true, invalid: 'not_a_switch' });
+    await expect(page.getByTestId('offline-forbidden')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('offline-forbidden').locator('[data-org-locked]')).toContainText('Set by your organisation');
+  });
+});
+
+/** Just enough JMAP for the webmail to sign in and show an inbox. Counts what it gets. */
+function fakeJmap(): { server: HttpServer; hits: () => number; origin: () => string } {
+  let count = 0;
+  const origin = () => `http://localhost:${(server.address() as AddressInfo).port}`;
+  const capabilities = { 'urn:ietf:params:jmap:core': { maxObjectsInGet: 500, maxObjectsInSet: 500, maxCallsInRequest: 16, maxSizeRequest: 10000000, maxSizeUpload: 10000000, maxConcurrentUpload: 4, maxConcurrentRequests: 4, collationAlgorithms: [] }, 'urn:ietf:params:jmap:mail': {}, 'urn:ietf:params:jmap:submission': {} };
+  const server = createHttpServer((req, res) => {
+    count += 1;
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET') {
+      res.end(JSON.stringify({
+        capabilities,
+        accounts: { a1: { name: ACCOUNT, isPersonal: true, isReadOnly: false, accountCapabilities: capabilities } },
+        primaryAccounts: { 'urn:ietf:params:jmap:mail': 'a1', 'urn:ietf:params:jmap:core': 'a1' },
+        username: ACCOUNT,
+        apiUrl: `${origin()}/jmap`,
+        downloadUrl: `${origin()}/d/{accountId}/{blobId}/{name}?accept={type}`,
+        uploadUrl: `${origin()}/u/{accountId}`,
+        eventSourceUrl: `${origin()}/e`,
+        state: 's1',
+      }));
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const { methodCalls = [] } = JSON.parse(body || '{}') as { methodCalls?: [string, unknown, string][] };
+      const methodResponses = methodCalls.map(([name, , id]) => {
+        if (name === 'Mailbox/get') {
+          return [name, { accountId: 'a1', state: 's1', notFound: [], list: [{ id: 'm1', name: 'Inbox', role: 'inbox', sortOrder: 1, totalEmails: 0, unreadEmails: 0, totalThreads: 0, unreadThreads: 0, myRights: { mayReadItems: true, mayAddItems: true, mayRemoveItems: true, maySetSeen: true, maySetKeywords: true, mayCreateChild: true, mayRename: true, mayDelete: true, maySubmit: true }, isSubscribed: true }] }, id];
+        }
+        if (name.endsWith('/query')) return [name, { accountId: 'a1', queryState: 'q1', canCalculateChanges: false, position: 0, ids: [], total: 0 }, id];
+        if (name.endsWith('/changes')) return [name, { accountId: 'a1', oldState: 's1', newState: 's1', hasMoreChanges: false, created: [], updated: [], destroyed: [] }, id];
+        return [name, { accountId: 'a1', state: 's1', notFound: [], list: [] }, id];
+      });
+      res.end(JSON.stringify({ methodResponses, sessionState: 's1' }));
+    });
+  });
+  return { server, hits: () => count, origin };
+}
+
+test.describe('an account on a server taken off the list', () => {
+  test('stops without signing out, keeping its data, and resumes with no sign-in when listed again', async () => {
+    const fake = fakeJmap();
+    await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
+    const root = fresh();
+    setString(forced(root, 'AllowedJmapServers'), '1', fake.origin());
+    const { page, profile } = await start(root, { state: { mode: 'standalone' } });
+    try {
+      await signIn(page, fake.origin());
+      await expect.poll(() => fake.hits()).toBeGreaterThan(1);
+
+      const stored = () => page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const files: string[] = [];
+        for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) files.push(name);
+        const registry = JSON.parse(localStorage.getItem('account-registry') ?? '{}') as { state?: { accounts?: { id: string; serverUrl: string }[] } };
+        return { files: files.sort(), accounts: registry.state?.accounts?.map((account) => [account.id, account.serverUrl]) };
+      });
+      // Its store opens a little after the first requests, and this test is about what stays.
+      await expect.poll(() => stored().then((now) => now.files), { timeout: 60_000 }).toContain('.bulwark-store');
+      const before = await stored();
+      const cookies = () => page.context().cookies(APP_ORIGIN).then((list) => list.map((cookie) => cookie.name).sort());
+      const cookiesBefore = await cookies();
+
+      // Off the list.
+      setString(forced(root, 'AllowedJmapServers'), '1', 'https://other.example');
+      await page.waitForURL(/\/login/, { timeout: 30_000 });
+      await waitForLogin(page);
+      await expect(page.getByTestId('desktop-policy-notice')).toContainText("doesn't allow this server");
+      await page.waitForTimeout(2000);
+      const quiet = fake.hits();
+      await page.waitForTimeout(6000);
+      expect(fake.hits()).toBe(quiet);
+
+      // Nothing is gone: the account, its session and its local data wait.
+      const during = await stored();
+      expect(before.accounts).toHaveLength(1);
+      expect(during.accounts).toEqual(before.accounts);
+      expect(during.files).toEqual(before.files);
+      expect(await cookies()).toEqual(cookiesBefore);
+      expect(JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).approvedServers.map((server: { origin: string }) => server.origin)).toEqual([fake.origin()]);
+
+      // The route refuses it too, keeping the cookie.
+      const restore = await page.evaluate(async () => (await fetch('/api/auth/session', { method: 'PUT' })).status);
+      expect(restore).toBe(403);
+
+      // Back on the list: no sign-in.
+      setString(forced(root, 'AllowedJmapServers'), '1', fake.origin());
+      await expectMailShown(page);
+      await expect.poll(() => fake.hits()).toBeGreaterThan(quiet);
+    } finally {
+      fake.server.close();
+    }
+  });
+});
+
+test.describe('on an instance', () => {
+  const certificate = generateCertificate('localhost');
+  let relay: Server;
+  let serverProcess: ChildProcess;
+  let instance = '';
+  let configDir = '';
+
+  test.beforeAll(async () => {
+    // The same build as a plain server: an instance whose admin allows a server of one's own.
+    configDir = tempProfile('polweb-instance');
+    mkdirSync(path.join(configDir, 'admin'), { recursive: true });
+    writeFileSync(path.join(configDir, 'admin', 'config.json'), JSON.stringify({ setupComplete: true, jmapServerUrl: STALWART, allowCustomJmapEndpoint: true }));
+    const port = 3200 + (process.pid % 90);
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      PORT: String(port),
+      HOSTNAME: '127.0.0.1',
+      NODE_ENV: 'production',
+      ADMIN_CONFIG_DIR: path.join(configDir, 'admin'),
+      ADMIN_STATE_DIR: path.join(configDir, 'state'),
+      SETTINGS_DATA_DIR: path.join(configDir, 'settings'),
+      SESSION_SECRET: 'a'.repeat(48),
+      BULWARK_UPDATE_CHECK: 'off',
+      BULWARK_TELEMETRY: 'off',
+    };
+    delete env.ELECTRON_RUN_AS_NODE;
+    serverProcess = spawn(process.execPath, ['server.js'], { cwd: SERVER_DIR, env, stdio: 'ignore' });
+    await expect.poll(async () => fetch(`http://127.0.0.1:${port}/api/config`).then((r) => r.status).catch(() => 0), { timeout: 60_000 }).toBe(200);
+
+    relay = createHttpsServer({ key: certificate.keyPem, cert: certificate.certPem }, (req, res) => {
+      const upstream = httpRequest(
+        { host: '127.0.0.1', port, path: req.url, method: req.method, headers: { ...req.headers, 'x-forwarded-proto': 'https', 'x-forwarded-host': req.headers.host } },
+        (answer) => {
+          res.writeHead(answer.statusCode ?? 502, answer.headers);
+          answer.pipe(res);
+        },
+      );
+      upstream.on('error', () => res.destroy());
+      req.pipe(upstream);
+    });
+    await new Promise<void>((resolve) => relay.listen(0, '127.0.0.1', resolve));
+    instance = `https://localhost:${(relay.address() as AddressInfo).port}/`;
+  });
+
+  test.afterAll(async () => {
+    relay?.close();
+    if (serverProcess?.pid) spawnSync('taskkill', ['/F', '/T', '/PID', String(serverProcess.pid)], { stdio: 'ignore' });
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    removeProfile(configDir);
+  });
+
+  test('forced: no field for a server of one\'s own, and sign-in goes to the instance\'s server', async () => {
+    const root = fresh();
+    setString(forced(root), 'InstanceUrl', instance);
+    const { page } = await start(root);
+    await waitForLogin(page);
+    await expect(page.locator('#jmap-endpoint')).toHaveCount(0);
+    await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-policy-forced-instance.png') });
+    await page.fill('#username', ACCOUNT);
+    await page.fill('#password', ENT_PASSWORD);
+    await page.keyboard.press('Enter');
+    await expectMailShown(page);
+  });
+
+  test('recommended: the field stays', async () => {
+    const root = fresh();
+    setString(forced(root, 'Recommended'), 'InstanceUrl', instance);
+    const { page } = await start(root);
+    await waitForLogin(page);
+    await expect(page.locator('#jmap-endpoint')).toBeVisible();
+  });
+});

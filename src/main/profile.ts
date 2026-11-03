@@ -59,15 +59,26 @@ const SEEDED_CONFIG = {
 
 /**
  * A user's upload is their own decision on their own machine, so it doesn't wait
- * for a local admin nobody can reach (lib/admin/types.ts:91-92). The hook for the
- * PluginsMode policy (step 6) is `applyPluginPolicy` in features/plugins.ts,
- * which overrides these.
+ * for a local admin nobody can reach (lib/admin/types.ts:91-92). `PluginsMode`
+ * off overrides these, through `pluginFeatures`.
  */
 export const SEEDED_FEATURES = {
   pluginsEnabled: true,
   pluginsUploadEnabled: true,
   requirePluginApproval: false,
 };
+
+/**
+ * With plugins off by policy the server's own switches go off too, which also closes
+ * the sandbox routes, the plugin proxy and the settings page. A list closes uploads: a
+ * package can name any id. When it's lifted they come back on: nothing the user set
+ * lives here.
+ */
+export function pluginFeatures(mode: 'allowed' | 'allowlist' | 'off'): Record<string, boolean> {
+  if (mode === 'off') return { ...SEEDED_FEATURES, pluginsEnabled: false, pluginsUploadEnabled: false };
+  if (mode === 'allowlist') return { ...SEEDED_FEATURES, pluginsUploadEnabled: false };
+  return SEEDED_FEATURES;
+}
 
 /**
  * Rewritten at each start since a user can edit these files: the keys above
@@ -94,6 +105,17 @@ const PASS_THROUGH: Record<NodeJS.Platform | string, string[]> = {
   linux: ['HOME', 'TMPDIR', 'USER', 'LANG', 'LC_ALL', 'PATH', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'],
 };
 
+/**
+ * `BULWARK_TELEMETRY=off` on this machine, as an admin would set it for any Bulwark. It beats
+ * the user's yes for usage info and crash reports alike. A yes is never read from here.
+ */
+export function telemetryOffInEnv(env: Record<string, string | undefined>): boolean {
+  const value = (env.BULWARK_TELEMETRY ?? '').toLowerCase();
+  if (value === 'off' || value === 'false' || value === '0' || value === 'no') return true;
+  const disabled = (env.BULWARK_TELEMETRY_DISABLED ?? '').toLowerCase();
+  return disabled === '1' || disabled === 'true' || disabled === 'yes';
+}
+
 /** Allowlist only. Secrets don't go here: they arrive by message (protocol.ts). */
 export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platform: NodeJS.Platform): Record<string, string> {
   const env: Record<string, string> = {};
@@ -107,7 +129,8 @@ export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platfo
     NEXT_TELEMETRY_DISABLED: '1',
     COOKIE_SECURE: 'true',
     BULWARK_UPDATE_CHECK: 'off',
-    BULWARK_TELEMETRY: 'off',
+    // The user's two switches decide, by message. Only an off gets past this allowlist.
+    ...(telemetryOffInEnv(source) ? { BULWARK_TELEMETRY: 'off' } : {}),
     LOG_LEVEL: 'warn',
     ADMIN_CONFIG_DIR: paths.adminConfig,
     ADMIN_STATE_DIR: paths.adminState,

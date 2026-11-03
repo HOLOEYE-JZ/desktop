@@ -21,10 +21,7 @@ import type { StateFile } from '../state';
 import { strings } from '../strings';
 import type { Feature } from './index';
 
-/**
- * KeystoreAllowedOrigins from OS policy. feat/policies calls this once its schema has the
- * key (lib/desktop/policy-schema.ts). Until then nothing is allowed by policy.
- */
+/** KeystoreAllowedOrigins from OS policy, read at each use. Set by features/policies.ts. */
 let allowedByPolicy: () => readonly unknown[] = () => [];
 
 export function setKeystoreAllowedOrigins(read: () => readonly unknown[]): void {
