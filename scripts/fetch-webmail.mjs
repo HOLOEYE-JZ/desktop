@@ -3,6 +3,8 @@
 //
 //   node scripts/fetch-webmail.mjs --path <webmail checkout with .next/standalone>
 //   node scripts/fetch-webmail.mjs --tag <webmail tag>     (CI: clone, npm ci, build)
+//   node scripts/fetch-webmail.mjs --native win32-arm64,...  (sharp's binaries for more
+//     targets: on top of either of the above, or alone on a tree already here)
 //
 // Next puts a standalone tree under its tracing root, so a worktree whose
 // node_modules is a junction elsewhere gets server.js and node_modules in two
@@ -17,6 +19,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rea
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { addNativePlatforms } from './server-natives.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEBMAIL_REPO = 'https://github.com/bulwarkmail/webmail.git';
@@ -158,17 +161,24 @@ async function main() {
   const destination = path.resolve(option('out') ?? path.join(ROOT, 'webmail'));
   const source = option('path');
   const tag = option('tag');
-  if (source && !tag) return fromPath(path.resolve(source), destination);
-  if (tag && !source) {
+  const native = option('native');
+  if (source && tag) fail('--path or --tag, not both');
+  if (source) await fromPath(path.resolve(source), destination);
+  if (tag) {
     const work = mkdtempSync(path.join(tmpdir(), 'bulwark-webmail-'));
     run('git', ['clone', '--depth', '1', '--branch', tag, WEBMAIL_REPO, work]);
+    // --branch takes a branch too, and a release only ever builds from a tag.
+    const isTag = spawnSync('git', ['-C', work, 'rev-parse', '--verify', '--quiet', `refs/tags/${tag}`], { stdio: 'ignore' });
+    if (isTag.status !== 0) fail(`${tag} is not a tag of ${WEBMAIL_REPO}`);
     run('npm', ['ci'], { cwd: work });
     run('npm', ['run', 'build:desktop'], { cwd: work });
     await fromPath(work, destination);
     rmSync(work, { recursive: true, force: true });
-    return;
   }
-  fail('usage: fetch-webmail.mjs --path <webmail checkout> | --tag <tag> [--out <dir>]');
+  if (native) {
+    for (const added of addNativePlatforms(destination, native.split(','))) console.log(`[fetch-webmail] added ${added}`);
+  }
+  if (!source && !tag && !native) fail('usage: fetch-webmail.mjs --path <webmail checkout> | --tag <tag> [--native <targets>] [--out <dir>]');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();

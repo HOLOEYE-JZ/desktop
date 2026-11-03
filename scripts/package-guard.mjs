@@ -1,15 +1,19 @@
-// The last look at a server tree before it ships, run by after-pack.cjs and
-// fetch-webmail.mjs. Fails on private files and links. Removes Next's cache.
+// The last look at a package before it ships, run by after-pack.cjs. Fails on private
+// files and links in the server tree, and on anything unknown next to it or in the
+// asar. Removes Next's cache.
 // Replaces the build machine's paths, which Next writes into its config and a few
 // chunks: they mean nothing on a user's machine and name the developer. Warns if
 // the home folder is still in there.
 
-import { lstatSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
 const FORBIDDEN_DIRS = new Set(['data', 'local-data', 'repos']);
 const FORBIDDEN_FILE = /^(\.env.*|plugin-signing\.key)$/;
+// A key is a key wherever it is. An `.env.example` in a package isn't a secret, and
+// Next's own routes may be named `data`, but nothing in a build may be called `.env`.
+const FORBIDDEN_DEEP = /^(\.env(\.(local|production|development|test)(\.local)?)?|plugin-signing\.key)$/;
 const TEXT_FILE = /\.(js|cjs|mjs|json|rsc|html|map|txt)$/;
 const PLACEHOLDER = '/bulwark-build';
 
@@ -44,8 +48,9 @@ export function findProblems(tree) {
     }
   };
   const visitLinksOnly = (dir) => {
-    for (const { full } of walk(dir)) {
+    for (const { full, entry } of walk(dir)) {
       if (lstatSync(full).isSymbolicLink()) problems.push(`${toPosix(path.relative(tree, full))} (link)`);
+      else if (entry.isFile() && FORBIDDEN_DEEP.test(entry.name)) problems.push(toPosix(path.relative(tree, full)));
     }
   };
   visit(tree);
@@ -100,6 +105,53 @@ export function findHomePaths(tree, home = homedir()) {
     if (needles.some((needle) => text.includes(needle))) found.push(toPosix(path.relative(tree, full)));
   }
   return found;
+}
+
+/** The paths in an asar, from its header: 16 bytes of pickle, then JSON. */
+export function asarFiles(file) {
+  const fd = openSync(file, 'r');
+  try {
+    const head = Buffer.alloc(16);
+    readSync(fd, head, 0, 16, 0);
+    const length = head.readUInt32LE(12);
+    const json = Buffer.alloc(length);
+    readSync(fd, json, 0, length, 16);
+    const found = [];
+    const visit = (node, prefix) => {
+      for (const [name, child] of Object.entries(node.files ?? {})) {
+        if (child.files) visit(child, `${prefix}${name}/`);
+        else found.push(`${prefix}${name}`);
+      }
+    };
+    visit(JSON.parse(json.toString('utf8')), '');
+    return found;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * The rest of resources/. app.asar holds the shell and nothing else, and only known
+ * things sit next to it. This catches a config change that would sweep in the repo.
+ */
+export function findResourceProblems(resources) {
+  const problems = [];
+  const known = /^(app\.asar|app\.asar\.unpacked|server|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|.*\.lproj|.*\.icns|.*\.nib|.*\.plist)$/;
+  for (const name of readdirSync(resources)) if (!known.test(name)) problems.push(`resources/${name}`);
+  const asar = path.join(resources, 'app.asar');
+  if (existsSync(asar)) {
+    for (const file of asarFiles(asar)) {
+      const allowed = file === 'package.json' || file.startsWith('dist/') || file.startsWith('node_modules/');
+      const name = file.split('/').pop();
+      if (!allowed || FORBIDDEN_DEEP.test(name)) problems.push(`app.asar/${file}`);
+    }
+  }
+  return problems.sort();
+}
+
+export function guardResources(resources) {
+  const problems = findResourceProblems(resources);
+  if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
 }
 
 /** Throws if the tree can't ship. Cleans what it can. */

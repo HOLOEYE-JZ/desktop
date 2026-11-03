@@ -15,17 +15,18 @@
     "fetch-webmail": "node scripts/fetch-webmail.mjs",
     "start": "node build.mjs && node scripts/run-electron.mjs .",
     "test": "node build.mjs && playwright test",
-    "pack:dir": "node build.mjs && electron-builder --dir"
+    "pack:dir": "node build.mjs && electron-builder --dir",
+    "dist:win": "node build.mjs && electron-builder --win --publish never",
+    "dist:mac": "node build.mjs && electron-builder --mac --publish never",
+    "dist:linux": "node build.mjs && electron-builder --linux --publish never"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/node": "^24.19.2",
     "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
+    "electron-updater": "^6.8.11",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
-  },
-  "dependencies": {
-    "electron-updater": "^6.8.11"
   }
 }
