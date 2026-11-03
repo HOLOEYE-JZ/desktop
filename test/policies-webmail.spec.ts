@@ -188,6 +188,8 @@ test.describe('an account on a server taken off the list', () => {
         const registry = JSON.parse(localStorage.getItem('account-registry') ?? '{}') as { state?: { accounts?: { id: string; serverUrl: string }[] } };
         return { files: files.sort(), accounts: registry.state?.accounts?.map((account) => [account.id, account.serverUrl]) };
       });
+      // Its store opens a little after the first requests, and this test is about what stays.
+      await expect.poll(() => stored().then((now) => now.files), { timeout: 60_000 }).toContain('.bulwark-store');
       const before = await stored();
       const cookies = () => page.context().cookies(APP_ORIGIN).then((list) => list.map((cookie) => cookie.name).sort());
       const cookiesBefore = await cookies();
