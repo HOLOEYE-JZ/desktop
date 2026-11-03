@@ -27,6 +27,8 @@ export class FakeGitHub {
   /** A release asset answers with a redirect to another host. */
   redirectDownloads = false;
   redirectedHits = 0;
+  /** Installer downloads the client hung up on before the end. */
+  abortedDownloads = 0;
   private server: Server | null = null;
 
   async start(): Promise<string> {
@@ -101,7 +103,10 @@ export class FakeGitHub {
             }
           });
           stream.on('end', () => res.end());
-          res.on('close', () => stream.destroy());
+          res.on('close', () => {
+            if (!res.writableFinished) this.abortedDownloads += 1;
+            stream.destroy();
+          });
           return;
         }
         stream.pipe(res);

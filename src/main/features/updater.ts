@@ -288,9 +288,15 @@ class Updater {
   /** Whatever is coming down or sitting on disk no longer counts. Waits until it has stopped. */
   private async abandonDownload(): Promise<void> {
     this.wanted = null;
+    const downloading = this.downloadToken !== null;
     this.downloadToken?.cancel();
     this.downloadToken = null;
-    if (this.updater) this.updater.autoInstallOnAppQuit = false;
+    if (this.updater) {
+      this.updater.autoInstallOnAppQuit = false;
+      // electron-updater's cancel only settles its promise: the request runs on and keeps
+      // writing. Nothing but the updater uses this session.
+      if (downloading) void this.updater.netSession.closeAllConnections();
+    }
     // Not forever, whatever the network does: a setting mustn't hang on it.
     await Promise.race([this.activeDownload, new Promise((resolve) => setTimeout(resolve, ABANDON_WAIT_MS))]);
     this.activeDownload = null;

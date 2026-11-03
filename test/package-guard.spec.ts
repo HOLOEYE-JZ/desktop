@@ -241,12 +241,21 @@ test.describe('what sits next to the server', () => {
     }
   });
 
-  test('an unknown file in resources/ is a problem', () => {
+  test('an unknown file in resources/ is a problem', async () => {
     const resources = dir();
     try {
       writeFileSync(path.join(resources, 'bulwark-build.json'), '{}');
       mkdirSync(path.join(resources, 'server.asar.unpacked'));
       expect(findResourceProblems(resources)).toEqual([]);
+      // What the other features ship: the policy templates and the native helper.
+      mkdirSync(path.join(resources, 'policies'));
+      const tree = path.join(resources, '..', `${path.basename(resources)}-native`);
+      mkdirSync(path.join(tree, 'native'), { recursive: true });
+      writeFileSync(path.join(tree, 'native', 'bulwark-native.node'), 'x');
+      await createRequire(path.join(ROOT, 'package.json'))('@electron/asar').createPackage(tree, path.join(resources, 'app.asar'));
+      rmSync(tree, { recursive: true, force: true });
+      expect(findResourceProblems(resources)).toEqual([]);
+      rmSync(path.join(resources, 'app.asar'));
       writeFileSync(path.join(resources, 'something.txt'), 'x');
       expect(findResourceProblems(resources)).toEqual(['resources/something.txt']);
     } finally {

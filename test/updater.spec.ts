@@ -114,6 +114,7 @@ test.describe('updates', () => {
   test.beforeEach(() => {
     github.requests = [];
     github.events = [];
+    github.abortedDownloads = 0;
     // A download a failed run left would count as already there.
     rmSync(path.join(process.env.LOCALAPPDATA!, 'bulwark-desktop-updater'), { recursive: true, force: true });
   });
@@ -319,6 +320,7 @@ test.describe('updates', () => {
     const back = await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('stable'));
     expect(back.channel).toBe('stable');
     expect(back.status).toBe('up-to-date');
+    await expect.poll(() => github.abortedDownloads, { timeout: 15_000, message: 'the download was really stopped' }).toBe(1);
     github.throttle = false;
     await new Promise((resolve) => setTimeout(resolve, 4000));
     expect((await stateOf(page)).status).toBe('up-to-date');
@@ -342,6 +344,7 @@ test.describe('updates', () => {
     await waitForStatus(page, 'downloading');
     await app.evaluate(() => (globalThis as any).__bulwarkUpdaterTest.setPolicy({ autoUpdate: false }));
     await waitForStatus(page, 'off');
+    await expect.poll(() => github.abortedDownloads, { timeout: 15_000, message: 'the download was really stopped' }).toBe(1);
     github.throttle = false;
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await page.evaluate(() => (window as any).bulwarkDesktop.updates.restart());
