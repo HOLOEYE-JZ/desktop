@@ -20,6 +20,15 @@ export interface ApprovedServer {
   approvedAt: number;
 }
 
+export interface StoredImportJob {
+  id: string;
+  origin: string;
+  touchedAt: number;
+  /** Thunderbird profile folders, to tell whether it's running. */
+  profiles: string[];
+  files: { path: string; root: string; kind: 'mbox' | 'maildir' | 'pst'; name: string; folder: string[] }[];
+}
+
 /** A window to bring back at the next start. */
 export interface SessionWindow {
   type: WindowType;
@@ -90,6 +99,8 @@ export interface ShellState {
   keystoreOrigins?: string[];
   /** The client certificate remembered for a `host:port`, by fingerprint. Gone at sign-out and account switch. */
   certificateChoices?: Record<string, string>;
+  /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
+  importJobs?: StoredImportJob[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

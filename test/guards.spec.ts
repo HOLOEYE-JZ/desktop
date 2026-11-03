@@ -128,7 +128,7 @@ test.describe('window prefs', () => {
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
     // `keystore` is only there where the native helper loaded: keystore-bridge.spec.ts.
-    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['auth', 'clipboard', 'dialogs', 'lifecycle', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
+    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['auth', 'clipboard', 'dialogs', 'lifecycle', 'localImport', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
   });
 
   test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {
@@ -186,6 +186,34 @@ test.describe('window prefs', () => {
       };
     }, APP_ORIGIN);
     expect(denied).toEqual({ subframe: 'Not allowed', foreign: 'Not allowed', main: 'allowed' });
+  });
+
+  test('each of the import channels goes through the same check', async () => {
+    // A raw ipcMain.handle in the feature would answer a frame. These can read files.
+    const channels = ['scan', 'grant', 'resume', 'release', 'releaseAll'].map((name) => `bulwark:localImport.${name}`);
+    const refused = await app.evaluate(async ({ BrowserWindow, ipcMain }, { origin, channels: names }) => {
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (e: unknown) => unknown> })._invokeHandlers;
+      const window = BrowserWindow.getAllWindows()[0];
+      const outcome = async (name: string, senderFrame: unknown) => {
+        const handler = handlers.get(name);
+        if (!handler) return 'no handler';
+        try {
+          await handler({ sender: window.webContents, senderFrame });
+          return 'allowed';
+        } catch (error) {
+          return (error as Error).message;
+        }
+      };
+      const out: Record<string, string[]> = {};
+      for (const name of names) {
+        out[name] = [
+          await outcome(name, { url: `${origin}/en/login`, parent: { url: origin } }),
+          await outcome(name, { url: 'https://evil.example/', parent: null }),
+        ];
+      }
+      return out;
+    }, { origin: APP_ORIGIN, channels });
+    for (const name of channels) expect(refused[name], name).toEqual(['Not allowed', 'Not allowed']);
   });
 
   test('no reload or devtools from the keyboard', async () => {
