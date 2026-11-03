@@ -365,7 +365,11 @@ test.describe('the app menu and windows', () => {
   test('a page\'s report goes with the page: loading another starts over', async () => {
     await setState({ 'message.reply': true });
     await expect.poll(async () => (await menuItem(app, 'message.reply'))?.enabled).toBe(true);
-    await page.reload();
+    // A page that reports nothing: the old report mustn't live on under it.
+    const before = page.url();
+    await page.goto(new URL('/api/health/live', before).toString());
+    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.enabled).toBe(false);
+    await page.goto(before);
     await waitForLogin(page);
     await expect.poll(async () => (await menuItem(app, 'message.reply'))?.enabled).toBe(false);
   });
@@ -769,6 +773,21 @@ test.describe('closing', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length)).toBe(2);
   });
 
+  test('closing the last pop-out with the main window minimised leaves the app running', async () => {
+    const other = await openPopout('m9');
+    await other.waitForLoadState('domcontentloaded');
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.minimize();
+    });
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.isMinimized())).toBe(true);
+    await other.evaluate(() => window.close());
+    await expect.poll(windowCount).toBe(1);
+    // Long enough for a close of the main window to have gone through.
+    await page.waitForTimeout(1500);
+    expect(await windowCount()).toBe(1);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMinimized())).toBe(true);
+  });
+
   test('when the last pop-out goes too, so does the hidden main window, and the app quits', async () => {
     const other = await openPopout('m3');
     await closeFirst();
@@ -834,6 +853,36 @@ test.describe('closing', () => {
     });
     await expect.poll(windowCount).toBe(1);
     expect(await page.evaluate(() => localStorage.getItem('asked-to-save'))).toBeNull();
+  });
+
+  test('a window closed as its page finishes loading isn\'t shown on its way out', async () => {
+    // Showing it then took the whole app down, about one close in five.
+    await app.evaluate(({ BrowserWindow }) => {
+      const g = globalThis as unknown as { __late: number };
+      g.__late = 0;
+      const show = BrowserWindow.prototype.show;
+      BrowserWindow.prototype.show = function patched(this: Electron.BrowserWindow) {
+        if ((this as unknown as { __closingNow?: boolean }).__closingNow) g.__late += 1;
+        return show.call(this);
+      };
+    });
+    for (let round = 0; round < 3; round++) {
+      await page.evaluate(
+        (name) => (window as unknown as { bulwarkDesktop: { windows: { open: (u: string, o: object) => void } } }).bulwarkDesktop.windows.open(`/en/login?${name}=1`, { name, width: 500, height: 500 }),
+        `late${round}`,
+      );
+      await expect.poll(windowCount).toBe(2);
+      await app.evaluate(({ BrowserWindow }) => {
+        const late = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('late') || !w.isVisible())!;
+        (late as unknown as { __closingNow: boolean }).__closingNow = true;
+        late.close();
+        // It finishes painting right then.
+        late.emit('ready-to-show');
+      });
+      await expect.poll(windowCount).toBe(1);
+    }
+    expect(await app.evaluate(() => (globalThis as unknown as { __late: number }).__late)).toBe(0);
+    expect(await page.evaluate(() => 1)).toBe(1);
   });
 
   test('the X asks the page to save, once', async () => {

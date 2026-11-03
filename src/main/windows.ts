@@ -25,7 +25,17 @@ import type { ChromeColours, ThemeController } from './theme';
 import { fitInto, isOnSomeDisplay, placeWindow, type Rect } from './window-placement';
 import { nextInCycle, sumAnswers } from './window-logic';
 
-export const TITLE_BAR_HEIGHT = 36;
+/** The app's toolbar row (h-14), so the window's buttons line up with what's next to them. */
+export const TITLE_BAR_HEIGHT = 56;
+/** Whatever's under the buttons shows through: the app draws to the top of the window. */
+const OVERLAY_COLOUR = '#00000000';
+
+/** Tiling window managers draw no frame and move windows themselves: a native frame is what they expect. */
+function desktopForcesNativeFrame(): boolean {
+  if (process.platform !== 'linux') return false;
+  const desktop = `${process.env.XDG_CURRENT_DESKTOP ?? ''}:${process.env.XDG_SESSION_DESKTOP ?? ''}`.toLowerCase();
+  return /\b(i3|sway|bspwm|awesome|dwm|hyprland|qtile|xmonad|river|niri)\b/.test(desktop);
+}
 
 const DEFAULT_SIZE: Record<WindowType, { width: number; height: number }> = {
   main: { width: 1280, height: 860 },
@@ -103,6 +113,11 @@ export interface ManagedWindow {
   flushable?: boolean;
   /** Saved: the next close goes straight through. */
   flushed?: boolean;
+  /**
+   * On its way out. Showing a window now takes the whole app down with it (exit code
+   * 0xffff7003), which happens when its page finishes loading just as it's closed.
+   */
+  closing?: boolean;
   /** What this window's open drafts come back as next time. */
   restoreUrls?: string[];
   /** When its page died lately. */
@@ -211,20 +226,31 @@ export class WindowManager extends EventEmitter<{
    * the page. Unknown means yes; `checkOverlay` corrects it and remembers.
    */
   wantsOverlay(): boolean {
-    if (process.platform === 'linux') return false;
+    if (desktopForcesNativeFrame()) return false;
     return this.options.state.data.overlayByOrigin[this.options.origin] !== false;
   }
 
   private chromeOptions(colours: ChromeColours): BrowserWindowConstructorOptions {
     if (!this.wantsOverlay()) return { autoHideMenuBar: true };
     if (process.platform === 'darwin') {
-      return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 12 }, titleBarOverlay: { height: TITLE_BAR_HEIGHT } };
+      // At the top of the rail, centred on the toolbar row.
+      return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 21 }, titleBarOverlay: { height: TITLE_BAR_HEIGHT } };
     }
     return {
       autoHideMenuBar: true,
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: colours.background, symbolColor: colours.symbol, height: TITLE_BAR_HEIGHT },
+      titleBarOverlay: { color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight() },
     };
+  }
+
+  /** The row grows with the page's zoom, and the buttons with it. */
+  private overlayHeight(): number {
+    return Math.round(TITLE_BAR_HEIGHT * 1.2 ** (this.options.state.data.zoomLevel ?? 0));
+  }
+
+  /** Zoom changed. */
+  refreshChrome(): void {
+    this.applyChrome(this.options.theme.colours());
   }
 
   /** The options of a new window apart from its place: for us, and for window.open. */
@@ -296,7 +322,8 @@ export class WindowManager extends EventEmitter<{
 
     const { webContents } = window;
     if (!warm) webContents.on('did-change-theme-color', (_event, colour) => this.options.theme.setFromPageColour(colour));
-    webContents.on('page-title-updated', () => this.emitChanged());
+    // After the event: the window takes the new title once its listeners have run.
+    webContents.on('page-title-updated', () => setTimeout(() => this.emitChanged(), 0));
     window.on('focus', () => {
       this.lastFocused = window.id;
       this.emitChanged();
@@ -320,7 +347,12 @@ export class WindowManager extends EventEmitter<{
         window.hide();
         return;
       }
-      if (!managed.flushable || managed.flushed) return;
+      // Quitting has saved. A page that said it had something since must not stop the
+      // quit: preventing a close while quitting calls the whole quit off.
+      if (!managed.flushable || managed.flushed || this.quitting) {
+        managed.closing = true;
+        return;
+      }
       event.preventDefault();
       void this.flushWindow(managed).then((answers) => {
         if (window.isDestroyed()) return;
@@ -329,6 +361,10 @@ export class WindowManager extends EventEmitter<{
         managed.flushed = true;
         window.close();
       });
+    });
+    // The page's own window.close() goes straight through, with no 'close' on the window.
+    webContents.once('close' as never, () => {
+      managed.closing = true;
     });
     // The OS is ending the session: there's no time for questions, only for saving.
     window.on('session-end', () => this.saveForSessionEnd());
@@ -355,7 +391,10 @@ export class WindowManager extends EventEmitter<{
         event.preventDefault();
         return;
       }
-      for (const other of this.windows.values()) other.flushed = false;
+      for (const other of this.windows.values()) {
+        other.flushed = false;
+        other.closing = false;
+      }
       this.quitting = false;
       this.emit('stayed');
     });
@@ -414,9 +453,12 @@ export class WindowManager extends EventEmitter<{
     return ![...this.windows.values()].some((w) => w !== managed && !w.window.isDestroyed() && this.onScreen(w));
   }
 
-  /** A pop-out still painting counts: only a main window can be hidden on purpose. */
+  /**
+   * A pop-out still painting counts: only a main window can be hidden on purpose. So does
+   * one that's minimised, which is on the taskbar, though isVisible() says no on Windows.
+   */
   private onScreen(managed: ManagedWindow): boolean {
-    return managed.type !== 'main' || managed.window.isVisible();
+    return managed.type !== 'main' || managed.window.isVisible() || managed.window.isMinimized();
   }
 
   /** A pop-out's page died. It comes back from its address, unless it keeps doing that. */
@@ -469,7 +511,6 @@ export class WindowManager extends EventEmitter<{
     const { state } = this.options;
     // Quit before anyone signed in, or halfway through: what was to come back still is.
     if (this.restoring) this.storeSession();
-    else if (this.savedSession.length > 0) state.data.session = this.savedSession;
     // A clean quit is no crash, however soon after the start.
     delete state.data.restoreAttempts;
     this.quitting = true;
@@ -489,13 +530,14 @@ export class WindowManager extends EventEmitter<{
       else window.show();
     };
     const fallback = setTimeout(() => {
-      if (!window.isDestroyed() && !window.isVisible()) show();
+      if (!window.isDestroyed() && !managed.closing && !window.isVisible()) show();
     }, SHOW_FALLBACK_MS);
     window.once('closed', () => clearTimeout(fallback));
     window.once('ready-to-show', () => {
       clearTimeout(fallback);
-      if (window.isDestroyed()) return;
+      if (window.isDestroyed() || managed.closing) return;
       void this.checkOverlay(managed).then((replaced) => {
+        if (managed.closing) return;
         if (!replaced && !window.isDestroyed() && !window.isVisible()) show();
         if (!replaced && managed.type === 'main' && this.popoutsUsedLately()) this.scheduleSpare(SPARE_FIRST_DELAY_MS);
       });
@@ -503,19 +545,19 @@ export class WindowManager extends EventEmitter<{
   }
 
   /**
-   * An older instance has no --titlebar-inset, so it can't take a frameless
+   * An older instance has no --titlebar-right-inset, so it can't take a frameless
    * window: rebuilt once with a native frame, still hidden, and remembered per
    * origin. The other way round only takes effect on the next window.
    * Returns true if the window was replaced.
    */
   private async checkOverlay(managed: ManagedWindow): Promise<boolean> {
-    if (process.platform === 'linux') return false;
+    if (desktopForcesNativeFrame()) return false;
     const { window, type, key, url } = managed;
     let knowsInset: unknown;
     try {
       if (new URL(window.webContents.getURL()).origin !== this.options.origin) return false;
       knowsInset = await window.webContents.executeJavaScript(
-        "getComputedStyle(document.documentElement).getPropertyValue('--titlebar-inset') !== ''",
+        "getComputedStyle(document.documentElement).getPropertyValue('--titlebar-right-inset') !== ''",
         true,
       );
     } catch {
@@ -557,9 +599,9 @@ export class WindowManager extends EventEmitter<{
     for (const window of all) {
       if (window.isDestroyed()) continue;
       window.setBackgroundColor(colours.background);
-      if (process.platform === 'win32' && this.wantsOverlay()) {
+      if (process.platform !== 'darwin' && this.wantsOverlay()) {
         try {
-          window.setTitleBarOverlay({ color: colours.background, symbolColor: colours.symbol, height: TITLE_BAR_HEIGHT });
+          window.setTitleBarOverlay({ color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight() });
         } catch {
           // A window that was made with a native frame has no overlay to colour.
         }

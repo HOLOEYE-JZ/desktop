@@ -52,8 +52,8 @@ export async function launch(profile: string, ...args: string[]): Promise<Electr
 }
 
 /**
- * The window the user sees. Not firstWindow(): a window whose page has no title bar
- * row is rebuilt once with a native frame before it's shown.
+ * The window the user sees. Not firstWindow(): a window whose page can't sit under the
+ * window's controls is rebuilt once with a native frame before it's shown.
  */
 export async function shownPage(app: ElectronApplication): Promise<Page> {
   const settled = () =>

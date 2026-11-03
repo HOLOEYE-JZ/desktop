@@ -85,6 +85,65 @@ async function setLayout(page: Page, layout: 'default' | 'mountain-view'): Promi
   await page.waitForTimeout(800);
 }
 
+/** The real pointer and buttons, in screen pixels: what the OS's own hit test sees. */
+function realMouse(steps: { x: number; y: number; press?: 'down' | 'up' | 'click' }[]): void {
+  const script = path.join(tmpdir(), `bulwark-mouse-${process.pid}.ps1`);
+  const lines = steps.map(({ x, y, press }) => {
+    const buttons = press === 'down' ? '[M]::mouse_event(2,0,0,0,0)' : press === 'up' ? '[M]::mouse_event(4,0,0,0,0)' : press === 'click' ? '[M]::mouse_event(2,0,0,0,0); Start-Sleep -Milliseconds 60; [M]::mouse_event(4,0,0,0,0)' : '';
+    return `[M]::SetCursorPos(${x}, ${y}) | Out-Null; Start-Sleep -Milliseconds 100; ${buttons}; Start-Sleep -Milliseconds 100`;
+  });
+  writeFileSync(script, `Add-Type @'
+using System.Runtime.InteropServices;
+public static class M {
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, uint e);
+}
+'@
+[M]::SetProcessDPIAware() | Out-Null
+${lines.join('\n')}
+`);
+  const run = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { encoding: 'utf8' });
+  if (run.status !== 0) throw new Error(run.stderr);
+}
+
+/** A point in the page, in screen pixels. */
+const onScreen = (app: ElectronApplication, x: number, y: number) => app.evaluate(({ BrowserWindow, screen }, [px, py]) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  const scale = screen.getDisplayMatching(window.getBounds()).scaleFactor;
+  const content = window.getContentBounds();
+  return { x: Math.round((content.x + px) * scale), y: Math.round((content.y + py) * scale) };
+}, [x, y] as const);
+
+const boundsOf = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  return { ...window.getBounds(), maximized: window.isMaximized() };
+});
+
+const pinWindow = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => {
+  const window = BrowserWindow.getAllWindows()[0];
+  window.setBounds({ x: 60, y: 40, width: 1240, height: 780 });
+  window.setAlwaysOnTop(true, 'screen-saver');
+  window.show();
+  window.moveTop();
+  window.focus();
+  return window.id;
+});
+
+const dragWorks = async (app: ElectronApplication, x: number, y: number) => {
+  const before = await boundsOf(app);
+  const from = await onScreen(app, x, y);
+  realMouse([
+    { ...from },
+    { ...from, press: 'down' },
+    { x: from.x + 30, y: from.y + 20 },
+    { x: from.x + 70, y: from.y + 50 },
+    { x: from.x + 70, y: from.y + 50, press: 'up' },
+  ]);
+  await expect.poll(() => boundsOf(app).then((now) => now.x !== before.x || now.y !== before.y), { timeout: 3000 }).toBe(true);
+  await app.evaluate(({ BrowserWindow }, box) => BrowserWindow.getAllWindows()[0].setBounds(box), { x: before.x, y: before.y, width: before.width, height: before.height });
+};
+
 /** Keeps a native menu reachable, so the test can close it after the picture. */
 async function holdMenus(app: ElectronApplication): Promise<void> {
   await app.evaluate(({ Menu }) => {
@@ -98,8 +157,75 @@ async function holdMenus(app: ElectronApplication): Promise<void> {
 
 const closeHeld = (app: ElectronApplication) => app.evaluate(() => (globalThis as unknown as { __held?: Electron.Menu }).__held?.closePopup());
 
+// The real mouse goes wherever the OS says, so this wants a desktop no other test is using.
+test('a real mouse: drag, double-click and clicks through the rows', async () => {
+  test.setTimeout(240_000);
+  const profile = tempProfile('mouse');
+  const { app, page } = await launchStandalone(profile);
+  try {
+    await page.locator('#username').waitFor({ timeout: 90_000 });
+    await pinWindow(app);
+    await page.waitForTimeout(800);
+    // The login has no row of its own, and still moves.
+    await dragWorks(app, 500, 25);
+    const field = (await page.locator('#username').boundingBox())!;
+    const fieldAt = await onScreen(app, field.x + 40, field.y + field.height / 2);
+    realMouse([{ ...fieldAt, press: 'click' }]);
+    await expect(page.locator('#username')).toBeFocused();
+
+    await fillLogin(page, SERVER, ACCOUNT, ENT_PASSWORD);
+    await page.keyboard.press('Enter');
+    await expectMailShown(page);
+    await pinWindow(app);
+    await page.waitForTimeout(1000);
+
+    // A row's empty part drags: the sidebar's, the list's, the reader's.
+    const viewport = page.viewportSize() ?? await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+    await dragWorks(app, viewport.width - 400, 25);
+    // The rail's empty middle does too.
+    await dragWorks(app, 25, 380);
+
+    // Windows' own hover on the real buttons, and Snap Layouts on maximise.
+    const area = await page.evaluate(() => {
+      const rect = (navigator as unknown as { windowControlsOverlay: { getTitlebarAreaRect(): { x: number; width: number; height: number } } }).windowControlsOverlay.getTitlebarAreaRect();
+      return { left: rect.x + rect.width, height: rect.height };
+    });
+    const button = (innerWidth: number) => (innerWidth - area.left) / 3;
+    const close = await onScreen(app, area.left + button(viewport.width) * 2.5, area.height / 2);
+    realMouse([{ ...close }]);
+    await page.waitForTimeout(500);
+    await capture(app, null, 'chrome-hover-close', { right: 0, bottom: 0 });
+    const maximise = await onScreen(app, area.left + button(viewport.width) * 1.5, area.height / 2);
+    realMouse([{ ...maximise }]);
+    await page.waitForTimeout(1500);
+    await capture(app, null, 'chrome-hover-maximise', { right: 0, bottom: 0 });
+    realMouse([{ x: maximise.x - 400, y: maximise.y + 400 }]);
+
+    // Double-click maximises, and again restores, as on a title bar.
+    const band = await onScreen(app, viewport.width - 400, 25);
+    realMouse([{ ...band, press: 'click' }, { ...band, press: 'click' }]);
+    await expect.poll(() => boundsOf(app).then((now) => now.maximized), { timeout: 5000 }).toBe(true);
+    await page.waitForTimeout(1000);
+    const bandMax = await onScreen(app, 800, 25);
+    realMouse([{ ...bandMax, press: 'click' }, { ...bandMax, press: 'click' }]);
+    await expect.poll(() => boundsOf(app).then((now) => now.maximized), { timeout: 5000 }).toBe(false);
+    await page.waitForTimeout(1000);
+
+    // What's in a row stays a thing to click.
+    const search = page.locator('[data-window-row] input').first();
+    const box = (await search.boundingBox())!;
+    const at = await onScreen(app, box.x + box.width / 2, box.y + box.height / 2);
+    realMouse([{ ...at, press: 'click' }]);
+    await expect(search).toBeFocused();
+
+  } finally {
+    await app.close().catch(() => {});
+    removeProfile(profile);
+  }
+});
+
 test('the desktop app, as it looks', async () => {
-  test.setTimeout(600_000);
+  test.setTimeout(900_000);
   const profile = tempProfile('shots');
   const ids: string[] = [];
   for (const [subject, body] of [
@@ -114,41 +240,58 @@ test('the desktop app, as it looks', async () => {
     await fillLogin(page, SERVER, ACCOUNT, ENT_PASSWORD);
     await page.keyboard.press('Enter');
     await expectMailShown(page);
-    await expect.poll(async () => {
-      if (await page.locator(`[data-email-id="${ids[0]}"]`).count()) return true;
-      await page.keyboard.press('Shift+G').catch(() => {});
-      return false;
-    }, { timeout: 60_000, intervals: [1500] }).toBe(true);
+    await expect(page.locator(`[data-email-id="${ids[0]}"]`)).toBeAttached({ timeout: 60_000 });
     await holdMenus(app);
-    const mainId = await app.evaluate(({ BrowserWindow }) => {
-      const window = BrowserWindow.getAllWindows()[0];
-      window.setBounds({ x: 60, y: 40, width: 1240, height: 780 });
-      // Other things run on this desktop, and a picture of them is no use.
-      window.setAlwaysOnTop(true, 'screen-saver');
-      window.show();
-      window.moveTop();
-      window.focus();
-      return window.id;
-    });
+    // Other things run on this desktop, and a picture of them is no use.
+    const mainId = await pinWindow(app);
     await page.waitForTimeout(800);
 
-    // The integrated title bar, in both themes.
+    // No title row anywhere: every page, its own top row under the window's controls.
+    const visit = async (url: string) => {
+      await page.evaluate((to) => {
+        window.location.href = to;
+      }, url);
+      await page.waitForLoadState('domcontentloaded');
+      await page.waitForTimeout(2500);
+    };
+    const setPro = (on: boolean) => page.evaluate((value) => {
+      const stored = JSON.parse(localStorage.getItem('settings-storage') ?? '{"state":{}}');
+      stored.state.proInterface = value;
+      localStorage.setItem('settings-storage', JSON.stringify(stored));
+    }, on);
+    // The shell without a real admin session: the page's own data isn't the point here.
+    await page.route('**/api/admin/auth', (route) => route.fulfill({ json: { enabled: true, authenticated: true } }));
+    const pages = ['calendar', 'contacts', 'files', 'settings', 'admin', 'pro'];
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(page, theme);
+      await capture(app, [mainId], `chrome-mail-empty-${theme}`);
+      await page.locator(`[data-email-id="${ids[0]}"]`).click();
+      await page.waitForTimeout(1200);
+      await capture(app, [mainId], `chrome-mail-message-${theme}`);
+      for (const name of pages) {
+        if (theme === 'dark' && name !== 'calendar' && name !== 'settings') continue;
+        if (name === 'pro') await setPro(true);
+        await visit(`/${name}`);
+        await capture(app, [mainId], `chrome-${name}-${theme}`);
+        if (name === 'pro') await setPro(false);
+      }
+      await visit('/');
+      await page.locator(`[data-email-id="${ids[0]}"]`).waitFor({ timeout: 60_000 });
+    }
     await setTheme(page, 'light');
-    await page.locator(`[data-email-id="${ids[0]}"]`).click();
-    await page.waitForTimeout(1200);
-    await capture(app, [mainId], 'titlebar-light');
-    await setTheme(page, 'dark');
-    await capture(app, [mainId], 'titlebar-dark');
 
-    // Mountain View takes the same title bar.
-    await setTheme(page, 'light');
+    // Mountain View takes the same chrome.
     await setLayout(page, 'mountain-view');
-    await capture(app, [mainId], 'titlebar-mountain-view');
+    await capture(app, [mainId], 'chrome-mountain-view-light');
+    await setTheme(page, 'dark');
+    await capture(app, [mainId], 'chrome-mountain-view-dark');
+    await setTheme(page, 'light');
     await setLayout(page, 'default');
     await page.waitForTimeout(500);
 
-    // The menu bar: Alt, then File, natively.
+    // The menu: Alt floats it, and a name opens it natively.
     await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].focus();
       const { webContents } = BrowserWindow.getAllWindows()[0];
       webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Alt' } as never);
       webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Alt' } as never);
@@ -177,7 +320,7 @@ test('the desktop app, as it looks', async () => {
     await closeHeld(app);
     await page.waitForTimeout(300);
 
-    // Two windows side by side.
+    // Pop-outs, in both themes, and two windows side by side.
     await page.locator(`[data-email-id="${ids[2]}"]`).dblclick();
     const message = await pageWith(app, '/popout/message/');
     await expect(message.locator('body')).toContainText('Your booking is confirmed', { timeout: 60_000 });
@@ -194,6 +337,27 @@ test('the desktop app, as it looks', async () => {
     });
     await page.waitForTimeout(1200);
     await capture(app, [mainId, popoutId], 'two-windows');
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(page, theme);
+      await capture(app, [popoutId], `chrome-popout-message-${theme}`);
+    }
+    await setTheme(page, 'light');
+    await app.evaluate(({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.hide(), popoutId);
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { openComposer: (t: object) => void } } }).bulwarkDesktop.windows.openComposer({ url: '/popout/compose', name: 'shots' }));
+    const composer = await pageWith(app, '/popout/compose');
+    await composer.locator('[data-composer-header]').waitFor({ timeout: 60_000 });
+    const composerId = await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/compose'))!;
+      window.setBounds({ x: 200, y: 60, width: 780, height: 700 });
+      window.setAlwaysOnTop(true, 'screen-saver');
+      window.moveTop();
+      return window.id;
+    });
+    await page.waitForTimeout(1200);
+    for (const theme of ['light', 'dark'] as const) {
+      await setTheme(page, theme);
+      await capture(app, [composerId], `chrome-popout-composer-${theme}`);
+    }
   } finally {
     await app.close().catch(() => {});
     removeProfile(profile);

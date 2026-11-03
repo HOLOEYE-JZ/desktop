@@ -46,6 +46,12 @@ const flagged = async (id: string, keyword: string) => {
   return !!(answer as { list: { keywords: Record<string, boolean> }[] }).list[0]?.keywords?.[keyword];
 };
 
+/**
+ * The composer's own cross. With the window's controls over the page it's hidden, since
+ * theirs is right beside it. A native frame shows it, and it asks the same way.
+ */
+const clickOwnClose = (composer: Page) => composer.getByTestId('composer-close').evaluate((el) => (el as HTMLElement).click());
+
 const labels = (items: SeenItem[] | undefined) => (items ?? []).map((item) => item.label).filter(Boolean);
 
 test.describe.configure({ mode: 'serial' });
@@ -294,8 +300,14 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
-  test('Alt shows the menu strip in the title bar, and a name opens that menu natively', async () => {
-    test.skip(process.platform !== 'win32', 'the strip is for Windows; macOS has its bar, Linux a native frame');
+  test('Alt floats the menu over the app, moves nothing, and a name opens that menu natively', async () => {
+    test.skip(process.platform !== 'win32', 'the strip is for Windows; macOS has its bar');
+    await expect(page.locator('[data-window-menu-bar]')).toHaveCount(0);
+    const layout = () => page.evaluate(() => {
+      const box = document.querySelector('[data-window-row-right]')!.getBoundingClientRect();
+      return [box.left, box.top, box.width, box.height];
+    });
+    const before0 = await layout();
     const alt = (type: 'keyDown' | 'keyUp') => app.evaluate(({ BrowserWindow }, t) => {
       BrowserWindow.getAllWindows()[0].webContents.sendInputEvent({ type: t, keyCode: 'Alt' } as never);
     }, type);
@@ -304,6 +316,8 @@ test.describe('windows, signed in', () => {
     const strip = page.locator('[data-window-menu-bar]');
     await expect(strip).toBeVisible({ timeout: 5000 });
     await expect(strip.getByRole('menuitem')).toHaveText(['File', 'Edit', 'View', 'Message', 'Go', 'Window', 'Help']);
+    expect(await strip.evaluate((el) => getComputedStyle(el).position)).toBe('fixed');
+    expect(await layout()).toEqual(before0);
     const before = await menuCount(app);
     await strip.getByRole('menuitem', { name: 'File' }).click();
     await expect.poll(() => menuCount(app)).toBeGreaterThan(before);
@@ -371,7 +385,7 @@ test.describe('composers', () => {
     await typeDraft(composer, subject);
     await fakeOsIntegration(app, 0);
     const count = (await prompts(app)).length;
-    await composer.getByRole('button', { name: /^close$/i }).first().click();
+    await clickOwnClose(composer);
     await expect.poll(async () => (await prompts(app)).length, { timeout: 10_000 }).toBe(count + 1);
     const prompt = (await prompts(app)).at(-1) as unknown as { buttons: string[] };
     expect(prompt.buttons).toEqual(['Save', 'Discard', 'Cancel']);
@@ -385,7 +399,7 @@ test.describe('composers', () => {
     const composer = await openComposerWindow();
     await typeDraft(composer, subject);
     await fakeOsIntegration(app, 1);
-    await composer.getByRole('button', { name: /^close$/i }).first().click();
+    await clickOwnClose(composer);
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 30_000 }).toBe(1);
     await page.waitForTimeout(1500);
     expect(await draftsWithSubject(SERVER, ACCOUNT, ENT_PASSWORD, subject)).toHaveLength(0);

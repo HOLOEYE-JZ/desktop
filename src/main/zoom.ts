@@ -41,5 +41,6 @@ export class ZoomController {
     this.state.data.zoomLevel = next;
     this.state.touch();
     for (const { window } of this.windows?.all() ?? []) window.webContents.setZoomLevel(next);
+    this.windows?.refreshChrome();
   }
 }
