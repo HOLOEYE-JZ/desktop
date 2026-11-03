@@ -95,6 +95,19 @@ export type KeystoreDecryptScheme =
   /** MGF1 on the same hash. */
   | { scheme: 'rsa-oaep'; hash: KeystoreHash; label?: Uint8Array };
 
+export type OsUnlockKind = 'hello' | 'touchid';
+
+export interface AppLockStatus {
+  locked: boolean;
+  enrolled: boolean;
+  os: OsUnlockKind | null;
+  osEnrolled: boolean;
+}
+
+export type OsUnlockAnswer =
+  | { ok: true; key: Uint8Array }
+  | { ok: false; reason: 'unavailable' | 'denied' | 'failed' | 'not-locked' };
+
 /** How main answers a keystore call. The preload turns a failure into `new Error(code)`. */
 export type KeystoreResult<T> = { ok: true; value: T } | { ok: false; code: string };
 /** A native menu built by the page: an HTML menu read back, so the two can't drift. */
@@ -194,6 +207,16 @@ export const CHANNEL = {
   authCancel: 'bulwark:auth.cancel',
   pluginsInstall: 'bulwark:plugins.install',
   welcomeChoose: 'bulwark:welcome.choose',
+  appLockStatus: 'bulwark:appLock.status',
+  appLockLock: 'bulwark:appLock.lock',
+  appLockEnroll: 'bulwark:appLock.enroll',
+  appLockProve: 'bulwark:appLock.prove',
+  appLockDisable: 'bulwark:appLock.disable',
+  appLockForget: 'bulwark:appLock.forget',
+  appLockOsEnroll: 'bulwark:appLock.osEnroll',
+  appLockOsRemove: 'bulwark:appLock.osRemove',
+  appLockOsUnlock: 'bulwark:appLock.osUnlock',
+  appLockRequest: 'bulwark:appLock.request',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

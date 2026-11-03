@@ -13,6 +13,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   BRIDGE_VERSION,
+  type AppLockStatus,
+  type OsUnlockAnswer,
   CHANNEL,
   PRELOAD_ARG,
   type KeystoreDecryptScheme,
@@ -104,6 +106,18 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
         open: (id: string, at: { x: number; y: number }) => ipcRenderer.send(CHANNEL.menuBarOpen, id, at),
         onEvent: (listener: (event: MenuBarEvent) => void) => subscribe(CHANNEL.menuBarEvent, listener),
       },
+    },
+    appLock: {
+      status: (): Promise<AppLockStatus> => ipcRenderer.invoke(CHANNEL.appLockStatus),
+      lock: () => ipcRenderer.send(CHANNEL.appLockLock),
+      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof),
+      prove: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockProve, proof),
+      disable: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockDisable, proof),
+      forget: (): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockForget),
+      osEnroll: (proof: Uint8Array, lockKey: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockOsEnroll, proof, lockKey),
+      osRemove: (): Promise<void> => ipcRenderer.invoke(CHANNEL.appLockOsRemove),
+      osUnlock: (): Promise<OsUnlockAnswer> => ipcRenderer.invoke(CHANNEL.appLockOsUnlock),
+      onLockRequest: (listener: () => void) => subscribe(CHANNEL.appLockRequest, listener),
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
