@@ -128,8 +128,15 @@ for (const { label, url } of STALWARTS) {
       requireAccount();
       profile = tempProfile('rmd');
       await start(true);
-      // The desktop app keeps a store by default. Its first sync takes a moment.
-      await running.page.waitForTimeout(SYNC_MS);
+      // Clicked only where the default hasn't turned it on. Its first sync takes a moment.
+      const { page } = running;
+      await page.goto(new URL('/settings/backup/offline', page.url()).toString());
+      const toggle = page.getByTestId('offline-switch');
+      await toggle.waitFor({ state: 'visible', timeout: MIN });
+      if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click();
+      await expect(page.getByTestId('offline-status')).toContainText('updated', { timeout: 3 * MIN });
+      await page.goto(new URL('/', page.url()).toString());
+      await page.waitForTimeout(SYNC_MS);
     });
 
     test.afterAll(async () => {
@@ -181,6 +188,18 @@ for (const { label, url } of STALWARTS) {
       expect(back.toastXml).toContain('content="5 min"');
       await running.page.waitForTimeout(30_000);
       expect(await toastsWith(running.app, title)).toHaveLength(1);
+    });
+
+    test('Open brings the window up on the event', async () => {
+      const { app, page } = running;
+      await hide(app);
+      const title = `rem-open-${RUN}-${label}`;
+      await eventFiringAt(title, Date.now() + SYNC_MS + 10_000);
+      const toast = await toastFor(app, title, 2 * MIN);
+      await press(app, 'open', toast, true);
+      await expect.poll(() => mainVisible(app)).toBe(true);
+      await expect(page).toHaveURL(/\/calendar/, { timeout: 30_000 });
+      await expect(page.locator('body')).toContainText(title, { timeout: 30_000 });
     });
 
     test('with the window in front it shows in the app, with the same choices', async () => {
@@ -278,9 +297,6 @@ for (const { label, url } of STALWARTS) {
       await expect.poll(read, { timeout: 15_000 }).toContain('Project review');
       const xml = read();
       for (const name of ['Join', 'Open', '5 min', '10 min', '15 min']) expect(xml).toContain(`content="${name}"`);
-      // The toast on screen, if anything lets it be seen.
-      const capture = path.join(ROOT, 'test', 'support', 'capture-toast.ps1');
-      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', capture, '-Out', path.join(SCREENSHOTS, 'desktop-reminders-toast.png')], { encoding: 'utf8', windowsHide: true });
       execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'reminders-spec-real', '-Clear'], { encoding: 'utf8', windowsHide: true });
     });
   });
