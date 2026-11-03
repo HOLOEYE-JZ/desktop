@@ -82,7 +82,7 @@ An AppImage has no such helper, so it only runs where user namespaces work. Bulw
 
 ### Betas
 
-Nothing needs setting up: the first push to `main` that isn't only docs publishes the first beta. **Nobody reviews a beta before it goes out**, as was asked. So anyone who can push to `main`, or whose pull request gets merged, reaches every install on the beta channel within the hour, with no signature to stop it. Protect `main`, and treat a merge as a release.
+Nothing needs setting up: the first push to `main` that isn't only docs publishes the first beta. **Nobody reviews a beta before it goes out**, as was asked. So anyone who can push to `main`, or whose pull request gets merged, reaches every install on the beta channel within hours (each checks every four), with no signature to stop it. Protect `main`, and treat a merge as a release.
 
 Stable installs never take a beta. A beta build stays on beta by itself unless a policy says otherwise. After a stable release, raise `version` in `package.json`: a beta of the same version sorts below it.
 

@@ -212,7 +212,14 @@ class Updater {
     executor.createRequest = (...args) => {
       const request = createRequest(...args);
       this.requests.add(request);
-      for (const end of ['close', 'abort', 'error'] as const) request.once(end as 'close', () => this.requests.delete(request));
+      const done = () => this.requests.delete(request);
+      // Not `close`: a request fires that once it has been sent, with the answer still to come.
+      request.once('abort', done);
+      request.once('error', done);
+      request.once('response', (response) => {
+        response.once('end', done);
+        response.once('error', done);
+      });
       return request;
     };
     autoUpdater.on('error', (error: Error) => this.onError(error));
@@ -252,6 +259,11 @@ class Updater {
 
   /** Offline, a release still uploading. Quiet: the next check tries again. What's on disk stays ready. */
   private onError(error: unknown): void {
+    // electron-updater emits this as well as rejecting, so it's decided here and only here.
+    if (nothingPublished(error)) {
+      if (this.status === 'checking') this.setStatus('up-to-date');
+      return;
+    }
     console.warn('[updater]', error instanceof Error ? error.message : error);
     if (this.status !== 'ready') this.setStatus('error');
   }
@@ -300,10 +312,13 @@ class Updater {
   /** Whatever is coming down or sitting on disk no longer counts. Waits until it has stopped. */
   private async abandonDownload(): Promise<void> {
     this.wanted = null;
-    this.downloadToken?.cancel();
-    this.downloadToken = null;
-    for (const request of this.requests) request.abort();
-    this.requests.clear();
+    if (this.downloadToken) {
+      this.downloadToken.cancel();
+      this.downloadToken = null;
+      // Only with a download on: nothing would ever settle a check whose request went away.
+      for (const request of this.requests) request.abort();
+      this.requests.clear();
+    }
     if (this.updater) this.updater.autoInstallOnAppQuit = false;
     // Not forever, whatever the network does: a setting mustn't hang on it.
     await Promise.race([this.activeDownload, new Promise((resolve) => setTimeout(resolve, ABANDON_WAIT_MS))]);
@@ -345,8 +360,7 @@ class Updater {
         this.notifyAvailable(version);
       }
     } catch (error) {
-      if (nothingPublished(error)) this.setStatus('up-to-date');
-      else this.onError(error);
+      this.onError(error);
     }
     return this.state();
   }

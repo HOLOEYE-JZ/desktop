@@ -74,8 +74,17 @@ export function effectiveChannel(policy: UpdatePolicy, userChoice: UpdateChannel
 
 /** A repo with nothing for this channel yet answers with these: not a failure, nothing to get. */
 export function nothingPublished(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' || code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS';
+  const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+  const text = typeof message === 'string' ? message : '';
+  if (code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS') return true;
+  // An empty feed. electron-updater looks for the first entry with a generic XML helper.
+  if (code === 'ERR_XML_MISSED_ELEMENT') return text.startsWith('No published versions');
+  // Only prereleases: GitHub answers 406 for the latest release, and electron-updater wraps
+  // that error in a "cannot parse" one. A 5xx or a lost connection gets here too, and stays an error.
+  if (code === 'ERR_UPDATER_INVALID_RELEASE_FEED' || code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND') {
+    return /production release exists: \w*Error: 40[46]\b/.test(text);
+  }
+  return false;
 }
 
 export type InstallKind = 'dev' | 'nsis' | 'windows-other' | 'mac-signed' | 'mac-unsigned' | 'appimage' | 'deb' | 'rpm' | 'linux-other';

@@ -185,7 +185,13 @@ test.describe('what the policy reader passes on', () => {
 
 test.describe('nothing published yet', () => {
   test('is what electron-updater says when a channel has no release, and nothing else', () => {
-    expect(nothingPublished({ code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' })).toBe(true);
+    const noStable = (status: string) =>
+      `Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: HttpError: ${status}\nHeaders: {}`;
+    expect(nothingPublished({ code: 'ERR_UPDATER_INVALID_RELEASE_FEED', message: noStable('406 Not Acceptable') })).toBe(true);
+    expect(nothingPublished({ code: 'ERR_UPDATER_INVALID_RELEASE_FEED', message: noStable('503 Unavailable') })).toBe(false);
+    expect(nothingPublished({ code: 'ERR_UPDATER_INVALID_RELEASE_FEED', message: 'Cannot parse releases feed: TypeError: x of null' })).toBe(false);
+    expect(nothingPublished({ code: 'ERR_XML_MISSED_ELEMENT', message: 'No published versions on GitHub' })).toBe(true);
+    expect(nothingPublished({ code: 'ERR_XML_MISSED_ELEMENT', message: 'No element "link"' })).toBe(false);
     expect(nothingPublished({ code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' })).toBe(true);
     expect(nothingPublished({ code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND' })).toBe(false);
     expect(nothingPublished(new Error('net::ERR_INTERNET_DISCONNECTED'))).toBe(false);

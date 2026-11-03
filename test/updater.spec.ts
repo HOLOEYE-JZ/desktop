@@ -317,6 +317,8 @@ test.describe('updates', () => {
     await waitForStatus(page, 'up-to-date');
     await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('beta'));
     await waitForStatus(page, 'downloading');
+    // The status comes before the request: one given up on before it starts proves nothing.
+    await expect.poll(() => github.downloads().length, { timeout: 30_000 }).toBe(1);
 
     const back = await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('stable'));
     expect(back.channel).toBe('stable');
@@ -343,6 +345,7 @@ test.describe('updates', () => {
     github.throttle = true;
     const { app, page, profile } = await launch(installedExe(), feed);
     await waitForStatus(page, 'downloading');
+    await expect.poll(() => github.downloads().length, { timeout: 30_000 }).toBe(1);
     await app.evaluate(() => (globalThis as any).__bulwarkUpdaterTest.setPolicy({ autoUpdate: false }));
     await waitForStatus(page, 'off');
     await expect.poll(() => github.abortedDownloads, { timeout: 15_000, message: 'the download was really stopped' }).toBe(1);
