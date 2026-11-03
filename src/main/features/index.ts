@@ -24,6 +24,7 @@ import { policiesFeature } from './policies';
 import { osIntegration } from './os';
 import { keystoreFeature } from './keystore';
 import { privacyFeature } from './privacy';
+import { clientCertificatesFeature } from './client-certificates';
 
 export interface FeatureContext {
   mode: Mode;
@@ -53,7 +54,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature];
+export const FEATURES: Feature[] = [policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature, clientCertificatesFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

@@ -88,6 +88,8 @@ export interface ShellState {
   keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
+  /** The client certificate remembered for a `host:port`, by fingerprint. Gone at sign-out and account switch. */
+  certificateChoices?: Record<string, string>;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

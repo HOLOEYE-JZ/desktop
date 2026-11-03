@@ -605,7 +605,7 @@ test.describe('every key has someone acting on it', () => {
 
   test('a key nobody wired yet names who owes it', () => {
     const pending = POLICY_KEYS.filter((key) => 'pendingConsumer' in POLICY_CONSUMERS[key]);
-    expect(pending.sort()).toEqual(['AppLockRequired', 'AppLockTimeoutMinutes', 'AutoSelectCertificateForUrls', 'AutoUpdate', 'QuickComposeShortcut', 'UpdateChannel'].sort());
+    expect(pending.sort()).toEqual(['AppLockRequired', 'AppLockTimeoutMinutes', 'AutoUpdate', 'QuickComposeShortcut', 'UpdateChannel'].sort());
     for (const key of pending) expect((POLICY_CONSUMERS[key] as { pendingConsumer: string }).pendingConsumer).toMatch(/\S{3}/);
   });
 });

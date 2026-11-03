@@ -221,6 +221,12 @@ const en = {
   keystoreCertificate: (subject: string) => `Certificate: ${subject}`,
   keystoreOverRate: 'It has used this very often in the last minute.',
   keystorePerOperation: 'This certificate can also sign you in elsewhere, so you are asked each time.',
+  certificateTitle: '{host} asks for a certificate',
+  certificateDetail: "The server wants to know who you are. A certificate you choose goes to this server only. If you don't know this server, don't send one.",
+  certificateIssued: 'Issued by {issuer}, valid until {date}',
+  certificateRemember: 'Remember this for {host}',
+  certificateNone: "Don't send a certificate",
+  certificateMore: 'More certificates…',
 };
 
 const de: typeof en = {
@@ -313,6 +319,12 @@ const de: typeof en = {
   keystoreCertificate: (subject) => `Zertifikat: ${subject}`,
   keystoreOverRate: 'Es hat das in der letzten Minute sehr oft verwendet.',
   keystorePerOperation: 'Mit diesem Zertifikat können Sie sich auch anderswo anmelden. Deshalb werden Sie jedes Mal gefragt.',
+  certificateTitle: '{host} fragt nach einem Zertifikat',
+  certificateDetail: 'Der Server möchte wissen, wer Sie sind. Ein Zertifikat, das Sie wählen, geht nur an diesen Server. Wenn Sie den Server nicht kennen, senden Sie keines.',
+  certificateIssued: 'Ausgestellt von {issuer}, gültig bis {date}',
+  certificateRemember: 'Für {host} merken',
+  certificateNone: 'Kein Zertifikat senden',
+  certificateMore: 'Weitere Zertifikate…',
   telemetryAskTitle: 'Nutzungsdaten senden?',
   telemetryAskDetail: 'Einmal am Tag sendet Bulwark eine zufällige ID, die App-Version, die Node-Version, Ihr Betriebssystem, wie lange die App schon läuft und die Art der Verbindung. Bei einem eigenen Mailserver auch, welche Funktionen aktiv sind, eine ungefähre Zahl der Konten und wie viele Plugins und Designs Sie haben. Niemals E-Mails, Adressen oder Servernamen. Sie können das jederzeit ausschalten.',
   telemetryAskYes: 'Nutzungsdaten senden',

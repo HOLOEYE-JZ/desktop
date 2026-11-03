@@ -1,20 +1,30 @@
 /**
- * The one `session.webRequest.onBeforeRequest` of a session. Electron keeps a single
- * listener per event and session, and a second call silently replaces the first, so
- * every rule that cancels requests goes through here.
+ * The one `onBeforeRequest` and the one `onHeadersReceived` of a session. Electron keeps a
+ * single listener per event and session, and a second call silently replaces the first, so
+ * every rule that cancels or rewrites goes through here.
  */
 
-import type { Session } from 'electron';
+import type { HeadersReceivedResponse, OnBeforeRequestListenerDetails, OnHeadersReceivedListenerDetails, Session } from 'electron';
 
-export type RequestRule = (url: string) => boolean;
+export type RequestRule = (url: string, details: OnBeforeRequestListenerDetails) => boolean;
+
+/** `*://` doesn't take in WebSockets. */
+const EVERY_REQUEST = ['*://*/*', 'ws://*/*', 'wss://*/*'];
 
 export class RequestGate {
   private readonly rules = new Set<RequestRule>();
+  private readonly endListeners = new Set<(id: number) => void>();
 
   constructor(session: Session) {
-    session.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
-      callback({ cancel: this.refuses(details.url) });
+    session.webRequest.onBeforeRequest({ urls: EVERY_REQUEST }, (details, callback) => {
+      callback({ cancel: this.refuses(details.url, details) });
     });
+    const ended = (details: { id: number }) => {
+      for (const listener of this.endListeners) listener(details.id);
+    };
+    session.webRequest.onCompleted({ urls: EVERY_REQUEST }, ended);
+    session.webRequest.onErrorOccurred({ urls: EVERY_REQUEST }, ended);
+    session.webRequest.onBeforeRedirect({ urls: EVERY_REQUEST }, ended);
   }
 
   add(rule: RequestRule): () => void {
@@ -22,8 +32,14 @@ export class RequestGate {
     return () => this.rules.delete(rule);
   }
 
-  refuses(url: string): boolean {
-    for (const rule of this.rules) if (rule(url)) return true;
+  /** A request ended, or left for another address. */
+  onEnded(listener: (id: number) => void): () => void {
+    this.endListeners.add(listener);
+    return () => this.endListeners.delete(listener);
+  }
+
+  refuses(url: string, details: OnBeforeRequestListenerDetails): boolean {
+    for (const rule of this.rules) if (rule(url, details)) return true;
     return false;
   }
 }
@@ -35,6 +51,69 @@ export function requestGate(session: Session): RequestGate {
   if (!gate) {
     gate = new RequestGate(session);
     gates.set(session, gate);
+  }
+  return gate;
+}
+
+/** What a part makes of a response. Null: not its business. */
+export type ResponsePart = (details: OnHeadersReceivedListenerDetails) => HeadersReceivedResponse | null;
+
+/**
+ * A part names the addresses it wants to see, so other traffic never passes through main.
+ * It also sees what another part asked for, and checks the address itself. A cancel beats
+ * everything else, and otherwise the first answer counts.
+ */
+export class ResponseGate {
+  private readonly parts = new Map<string, { urls: readonly string[]; run: ResponsePart }>();
+
+  constructor(private readonly session: Session) {}
+
+  set(name: string, urls: readonly string[], run: ResponsePart): void {
+    if (urls.length === 0) this.parts.delete(name);
+    else this.parts.set(name, { urls, run });
+    this.install();
+  }
+
+  /** Whether Electron takes this filter. It throws on one it doesn't, and the listener goes with it. */
+  accepts(url: string): boolean {
+    try {
+      this.session.webRequest.onHeadersReceived({ urls: [url] }, null as never);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      this.install();
+    }
+  }
+
+  private install(): void {
+    const urls = [...new Set([...this.parts.values()].flatMap((part) => part.urls))];
+    if (urls.length === 0) {
+      this.session.webRequest.onHeadersReceived(null);
+      return;
+    }
+    this.session.webRequest.onHeadersReceived({ urls }, (details, callback) => {
+      let first: HeadersReceivedResponse | null = null;
+      for (const part of this.parts.values()) {
+        const answer = part.run(details);
+        if (answer?.cancel) {
+          callback(answer);
+          return;
+        }
+        first ??= answer;
+      }
+      callback(first ?? {});
+    });
+  }
+}
+
+const responseGates = new WeakMap<Session, ResponseGate>();
+
+export function responseGate(session: Session): ResponseGate {
+  let gate = responseGates.get(session);
+  if (!gate) {
+    gate = new ResponseGate(session);
+    responseGates.set(session, gate);
   }
   return gate;
 }

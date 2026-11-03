@@ -89,6 +89,9 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     version: BRIDGE_VERSION,
     platform,
     mode,
+    certificates: {
+      clearChoices: (): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices),
+    },
     windows: {
       open: (url: string, options: { name: string; width: number; height: number }) =>
         ipcRenderer.send(CHANNEL.windowsOpen, url, options),
