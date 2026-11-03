@@ -574,7 +574,8 @@ test.describe('closing', () => {
   };
   const windowCount = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
   const closeFirst = () => app.evaluate(({ BrowserWindow }) => {
-    BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.close();
+    // Not by its page: at this point it may still be on its way to the login page.
+    BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))!.close();
   });
   const onFlush = (on: Page, answer: unknown) => on.evaluate((value) => {
     (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (h: () => Promise<unknown>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(async () => value);
@@ -604,7 +605,8 @@ test.describe('closing', () => {
     await closeFirst();
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length)).toBe(1);
     const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
-    await other.evaluate(() => window.close());
+    // The window can be gone before the answer comes back.
+    await other.evaluate(() => window.close()).catch(() => undefined);
     await gone;
   });
 
