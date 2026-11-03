@@ -71,6 +71,8 @@ async function waitForStatus(page: Page, ...statuses: string[]) {
 }
 
 async function menuItem(app: ElectronApplication, id: string): Promise<boolean> {
+  // The menu is rebuilt a moment after a status changes.
+  await new Promise((resolve) => setTimeout(resolve, 200));
   return app.evaluate(({ Menu }, itemId) => Boolean(Menu.getApplicationMenu()?.getMenuItemById(itemId)), id);
 }
 

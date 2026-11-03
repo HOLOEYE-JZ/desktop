@@ -12,7 +12,6 @@
 
 import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebFrameMain } from 'electron';
 import { CHANNEL, type ThemeColours, type WindowType } from '../shared/bridge';
-import { setCommandState } from './menu';
 import { openExternally } from './navigation';
 import { isJmapProxyPath } from './navigation-rules';
 import type { FeatureContext } from './features';
@@ -102,14 +101,34 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   ctx.on(CHANNEL.windowsFocus, (_event, _window, id) => {
     windows.focus(typeof id === 'number' ? id : undefined);
   });
+  ctx.on(CHANNEL.windowsCloseSelf, (_event, window) => {
+    if (window) windows.closeSelf(window);
+  });
+  ctx.on(CHANNEL.windowsSetRestore, (_event, window, urls) => {
+    if (!window || !Array.isArray(urls)) return;
+    // Only composers come back this way, and only on this origin.
+    const valid = urls.slice(0, 20).flatMap((url) => {
+      const target = resolveAppUrl(url, origin);
+      return target && windowTypeOf(target.pathname) === 'composer' ? [target.toString()] : [];
+    });
+    windows.setRestoreUrls(window, valid);
+  });
+  ctx.on(CHANNEL.windowsSetRestoreEnabled, (_event, _window, enabled) => {
+    if (typeof enabled === 'boolean') windows.setRestoreEnabled(enabled);
+  });
+  ctx.on(CHANNEL.windowsSessionReady, () => windows.emit('sessionReady'));
+  ctx.on(CHANNEL.windowsSpareReady, (_event, window) => {
+    if (window) windows.spareReady(window);
+  });
   ctx.handle(CHANNEL.windowsList, () => windows.list());
 
+  ctx.handle(CHANNEL.themeGetSystem, () => theme.system());
   ctx.on(CHANNEL.themeSet, (_event, _window, value) => {
     theme.set((value ?? {}) as ThemeColours);
   });
 
   ctx.on(CHANNEL.menuSetState, (_event, window, state) => {
-    if (window && state && typeof state === 'object') setCommandState(window, state as never);
+    if (window && state && typeof state === 'object') ctx.menu.setCommandState(window, state as never);
   });
 
   ctx.on(CHANNEL.shellOpenExternal, (_event, _window, url) => {
@@ -119,8 +138,8 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   ctx.on(CHANNEL.lifecycleRegister, (_event, window, wants) => {
     if (window) windows.setFlushable(window, wants === true);
   });
-  ctx.on(CHANNEL.lifecycleFlushed, (_event, _window, id) => {
-    if (typeof id === 'number') windows.flushDone(id);
+  ctx.on(CHANNEL.lifecycleFlushed, (_event, _window, id, answers) => {
+    if (typeof id === 'number') windows.flushDone(id, answers);
   });
 
   if (ctx.mode !== 'standalone') return;

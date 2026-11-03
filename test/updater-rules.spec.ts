@@ -3,6 +3,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
+import { cleanLabels } from '../src/main/strings';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -184,6 +185,10 @@ test.describe('what the policy reader passes on', () => {
 });
 
 test.describe('nothing published yet', () => {
+  test('the webmail can translate what the updater says', () => {
+    expect(cleanLabels({ updateReadyTitle: 'x', menuRestartToUpdate: 'y', updateNotAKey: 'z', sandboxTitle: 'w' })).toEqual({ updateReadyTitle: 'x', menuRestartToUpdate: 'y' });
+  });
+
   test('is what electron-updater says when a channel has no release, and nothing else', () => {
     const noStable = (status: string) =>
       `Cannot parse releases feed: Error: Unable to find latest version on GitHub (https://github.com/o/r/releases/latest), please ensure a production release exists: HttpError: ${status}\nHeaders: {}`;

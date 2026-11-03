@@ -12,7 +12,7 @@ export const STALWARTS = [
   { label: '1.0', url: 'https://stalwart-1.internal.bulwarkmail.org' },
   { label: '0.16', url: 'https://stalwart.internal.bulwarkmail.org' },
 ];
-export const ACCOUNT = 'ent-alice@example.org';
+export const ACCOUNT = process.env.BULWARK_TEST_ACCOUNT ?? 'ent-alice@example.org';
 export const ENT_PASSWORD = process.env.IT_ENT_PASSWORD ?? '';
 export const SCREENSHOTS = 'C:\\Users\\info\\Downloads\\jmap-webmail\\local-data\\desktop-offline-screenshots';
 
@@ -40,16 +40,20 @@ export async function launch(profile: string, ...args: string[]): Promise<Electr
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
   delete env.ELECTRON_RUN_AS_NODE;
+  // A warm spare is one more window, 8 s after the main one shows. Tests that want it ask.
+  const spare = args.includes('--bulwark-test-spare') ? [] : ['--bulwark-no-spare'];
+  // BULWARK_TEST_WEBMAIL: a webmail build of this branch, instead of ./webmail.
+  const server = process.env.BULWARK_TEST_WEBMAIL ? [`--bulwark-server-dir=${process.env.BULWARK_TEST_WEBMAIL}`] : [];
   return electron.launch({
-    args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', ...args],
+    args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', ...spare, ...server, ...args],
     cwd: ROOT,
     env,
   });
 }
 
 /**
- * The window the user sees. Not firstWindow(): a window whose page has no title bar
- * row is rebuilt once with a native frame before it's shown.
+ * The window the user sees. Not firstWindow(): a window whose page can't sit under the
+ * window's controls is rebuilt once with a native frame before it's shown.
  */
 export async function shownPage(app: ElectronApplication): Promise<Page> {
   const settled = () =>

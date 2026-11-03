@@ -20,6 +20,15 @@ export interface ApprovedServer {
   approvedAt: number;
 }
 
+/** A window to bring back at the next start. */
+export interface SessionWindow {
+  type: WindowType;
+  url: string;
+  key?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+  maximized?: boolean;
+}
+
 /** Telemetry and crash report consent. Absent means nobody said yes: off. See features/privacy.ts. */
 export interface PrivacyChoices {
   /** The first run asked, or the user answered in settings. */
@@ -49,6 +58,15 @@ export interface ShellState {
   updateChannelInitial?: UpdateChannel;
   /** The last version a notification was shown for. */
   updateNotified?: string;
+  /** What was open at quit. Off by the setting in the webmail. */
+  session?: SessionWindow[];
+  restoreWindows?: boolean;
+  /** Starts in a row that began restoring and didn't get far. */
+  restoreAttempts?: number;
+  /** When a pop-out last opened: whether a warm spare is worth its memory. */
+  lastPopoutAt?: number;
+  /** Chromium's zoom level: 0 is 100%. */
+  zoomLevel?: number;
   privacy?: PrivacyChoices;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;
@@ -58,6 +76,8 @@ export interface ShellState {
   partitions?: string[];
   /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
   offlineClearedForPolicy?: boolean;
+  /** A hash of the key DPAPI stopped opening, once the user was told their sign-ins went with it. */
+  keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
 }

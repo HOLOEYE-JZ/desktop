@@ -4,20 +4,38 @@
  * monitor-safe placement, and no white flash (hidden until first paint, with the
  * theme's background).
  *
+ * Closing: the last main window hides while a pop-out is open, because a pop-out
+ * borrows its session from it. When the last window on screen goes, a hidden main
+ * goes too and the app quits, unless `setCloseToBackground` says to stay.
+ *
+ * Pop-outs open from a warm spare: a hidden window that has the pop-out code
+ * loaded, so one comes up at once. See `activateSpare`.
+ *
  * Step 6 features listen to the events (`created`, `changed`) and use `list`,
  * `focus` and `broadcast`. They don't create windows themselves.
  */
 
 import { EventEmitter } from 'node:events';
 import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
-import { CHANNEL, PRELOAD_ARG, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
-import type { StateFile } from './state';
+import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
+import type { SessionWindow, StateFile } from './state';
 import { native } from './native';
-import { strings } from './strings';
+import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
-import { placeWindow, type Rect } from './window-placement';
+import { fitInto, isOnSomeDisplay, placeWindow, type Rect } from './window-placement';
+import { nextInCycle, sumAnswers } from './window-logic';
 
-export const TITLE_BAR_HEIGHT = 36;
+/** The app's toolbar row (h-14), so the window's buttons line up with what's next to them. */
+export const TITLE_BAR_HEIGHT = 56;
+/** Whatever's under the buttons shows through: the app draws to the top of the window. */
+const OVERLAY_COLOUR = '#00000000';
+
+/** Tiling window managers draw no frame and move windows themselves: a native frame is what they expect. */
+function desktopForcesNativeFrame(): boolean {
+  if (process.platform !== 'linux') return false;
+  const desktop = `${process.env.XDG_CURRENT_DESKTOP ?? ''}:${process.env.XDG_SESSION_DESKTOP ?? ''}`.toLowerCase();
+  return /\b(i3|sway|bspwm|awesome|dwm|hyprland|qtile|xmonad|river|niri)\b/.test(desktop);
+}
 
 const DEFAULT_SIZE: Record<WindowType, { width: number; height: number }> = {
   main: { width: 1280, height: 860 },
@@ -37,6 +55,28 @@ const MIN_SIZE: Record<WindowType, { minWidth: number; minHeight: number }> = {
 const SHOW_FALLBACK_MS = 6000;
 /** How long a closing window waits for its page to save. The page's own limit is shorter. */
 const FLUSH_TIMEOUT_MS = 4000;
+/** After the main window paints, for someone who used pop-outs lately: nothing at start-up competes with it. */
+const SPARE_FIRST_DELAY_MS = 8000;
+const SPARE_NEXT_DELAY_MS = 1500;
+/** A spare costs a renderer: only for someone who used a pop-out in this long. */
+const SPARE_RECENT_USE_MS = 7 * 24 * 3600_000;
+/** And it goes when it sat unused this long. The next pop-out loads, and brings it back. */
+const SPARE_IDLE_LIMIT_MS = 30 * 60_000;
+/** A page that doesn't know about spares (an older instance) never says it's ready. */
+const SPARE_READY_LIMIT_MS = 30_000;
+/** A spare that didn't answer shows the pop-out by loading it. */
+const SPARE_TAKEN_LIMIT_MS = 1500;
+/** Windows from last time open only this long after the start: a sign-in later is a new day. */
+const RESTORE_LIMIT_MS = 60_000;
+/** One window at a time, so a dozen don't fight the main window for the server. */
+const RESTORE_STAGGER_MS = 250;
+/** Still running this long after restoring: those windows didn't take the app down. */
+const RESTORE_STABLE_MS = 30_000;
+/** Two starts in a row that didn't get that far: the third goes without them. */
+const RESTORE_MAX_ATTEMPTS = 2;
+/** A page that keeps dying isn't reloaded forever. */
+const CRASH_WINDOW_MS = 60_000;
+const MAX_CRASH_RELOADS = 2;
 
 /** The window type a same-origin URL belongs in. Locale prefix optional. */
 export function windowTypeOf(pathname: string): WindowType {
@@ -53,6 +93,13 @@ export interface OpenOptions {
   /** Identity: opening the same key again focuses that window. */
   key?: string;
   size?: { width: number; height: number };
+  /** Its own place, for a window coming back from last time. */
+  place?: Rect;
+  /** Load the page rather than take the spare. */
+  noSpare?: boolean;
+  /** Come up behind the window in use: one coming back from last time. */
+  inactive?: boolean;
+  maximized?: boolean;
 }
 
 export interface ManagedWindow {
@@ -66,6 +113,24 @@ export interface ManagedWindow {
   flushable?: boolean;
   /** Saved: the next close goes straight through. */
   flushed?: boolean;
+  /**
+   * On its way out. Showing a window now takes the whole app down with it (exit code
+   * 0xffff7003), which happens when its page finishes loading just as it's closed.
+   */
+  closing?: boolean;
+  /** What this window's open drafts come back as next time. */
+  restoreUrls?: string[];
+  /** When its page died lately. */
+  crashes?: number[];
+}
+
+export interface FlushSummary {
+  /** A window had something to save. */
+  asked: boolean;
+  /** Drafts that didn't get saved, counting windows that ran out of time. */
+  failed: number;
+  /** Mail waiting to go out. */
+  unsent: number;
 }
 
 export interface WindowManagerOptions {
@@ -76,8 +141,19 @@ export interface WindowManagerOptions {
   mode: Mode;
   preloadPath: string;
   devTools: boolean;
+  /** Keep a warm spare. Off in tests that count windows. */
+  spare?: boolean;
+  /** How long an unused spare stays. For a test: the real wait is half an hour. */
+  spareIdleMs?: number;
   /** Navigation and window-open guards, applied to every window including pop-ups. */
   attachGuards: (window: BrowserWindow) => void;
+}
+
+interface Spare {
+  window: BrowserWindow;
+  ready: boolean;
+  limit: NodeJS.Timeout;
+  idle?: NodeJS.Timeout;
 }
 
 export class WindowManager extends EventEmitter<{
@@ -86,17 +162,40 @@ export class WindowManager extends EventEmitter<{
   changed: [WindowInfo[]];
   /** The user chose to stay on a page, so whatever was closing it is off. */
   stayed: [];
+  /** A main window is signed in, with a session to lend. */
+  sessionReady: [];
+  /** A window went to another document: what its old page said no longer holds. */
+  navigated: [BrowserWindow];
 }> {
   private readonly windows = new Map<number, ManagedWindow>();
   private lastFocused: number | null = null;
   private nextFlushId = 1;
-  private readonly flushWaits = new Map<number, () => void>();
+  private readonly flushWaits = new Map<number, (answers: FlushAnswer[]) => void>();
+  private quitting = false;
+  private closeToBackground: () => boolean = () => false;
+  private spare: Spare | null = null;
+  private spareTimer: NodeJS.Timeout | null = null;
+  /** No more tries this run: the page has no spare route. */
+  private spareUnsupported = false;
+  private savedSession: SessionWindow[];
+  private restoring = false;
+  private restoreDeferred = false;
+  private readonly startedAt = Date.now();
 
   constructor(private readonly options: WindowManagerOptions) {
     super();
     options.theme.onChange((colours) => this.applyChrome(colours));
     options.theme.onSystemChange((system) => this.broadcast(CHANNEL.themeSystem, system));
-    this.on('changed', (windows) => this.broadcast(CHANNEL.windowsChanged, windows));
+    this.on('changed', (windows) => {
+      this.broadcast(CHANNEL.windowsChanged, windows);
+      this.storeSession();
+    });
+    const { state } = options;
+    this.savedSession = state.data.restoreWindows === false ? [] : (state.data.session ?? []);
+    if (state.data.restoreWindows === false && state.data.session) {
+      delete state.data.session;
+      state.touch();
+    }
   }
 
   /** What every window with the bridge runs on. Also used for window.open pop-ups. */
@@ -126,21 +225,32 @@ export class WindowManager extends EventEmitter<{
    * without the row nothing can drag the window, and the controls would cover
    * the page. Unknown means yes; `checkOverlay` corrects it and remembers.
    */
-  private wantsOverlay(): boolean {
-    if (process.platform === 'linux') return false;
+  wantsOverlay(): boolean {
+    if (desktopForcesNativeFrame()) return false;
     return this.options.state.data.overlayByOrigin[this.options.origin] !== false;
   }
 
   private chromeOptions(colours: ChromeColours): BrowserWindowConstructorOptions {
     if (!this.wantsOverlay()) return { autoHideMenuBar: true };
     if (process.platform === 'darwin') {
-      return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 12 }, titleBarOverlay: { height: TITLE_BAR_HEIGHT } };
+      // At the top of the rail, centred on the toolbar row.
+      return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 21 }, titleBarOverlay: { height: TITLE_BAR_HEIGHT } };
     }
     return {
       autoHideMenuBar: true,
       titleBarStyle: 'hidden',
-      titleBarOverlay: { color: colours.background, symbolColor: colours.symbol, height: TITLE_BAR_HEIGHT },
+      titleBarOverlay: { color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight() },
     };
+  }
+
+  /** The row grows with the page's zoom, and the buttons with it. */
+  private overlayHeight(): number {
+    return Math.round(TITLE_BAR_HEIGHT * 1.2 ** (this.options.state.data.zoomLevel ?? 0));
+  }
+
+  /** Zoom changed. */
+  refreshChrome(): void {
+    this.applyChrome(this.options.theme.colours());
   }
 
   /** The options of a new window apart from its place: for us, and for window.open. */
@@ -158,10 +268,11 @@ export class WindowManager extends EventEmitter<{
 
   /** Remembered, cascaded, on the current monitor. */
   placeFor(type: WindowType, size?: { width: number; height: number }): Rect {
-    const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed());
+    // Not a main window hidden behind its pop-outs. One still painting does count: a second window opened right after it must not land on top.
+    const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed() && (w.type !== 'main' || w.window.isVisible()));
     const sameType = others.filter((w) => w.type === type).at(-1)?.window.getNormalBounds();
-    const focused = this.focusedManaged()?.window.getNormalBounds();
-    const anchor = focused ?? others.at(-1)?.window.getNormalBounds();
+    const focused = this.focusedManaged()?.window;
+    const anchor = (focused && others.some((w) => w.window === focused) ? focused.getNormalBounds() : undefined) ?? others.at(-1)?.window.getNormalBounds();
     const current = anchor ? screen.getDisplayMatching(anchor) : screen.getPrimaryDisplay();
     return placeWindow({
       size: size ?? DEFAULT_SIZE[type],
@@ -182,13 +293,18 @@ export class WindowManager extends EventEmitter<{
         return existing.window;
       }
     }
-    const place = this.placeFor(options.type, options.size);
+    if (options.type === 'message' || options.type === 'composer') this.notePopoutUse();
+    if (!options.noSpare) {
+      const warm = this.activateSpare(options, key);
+      if (warm) return warm;
+    }
+    const place = options.place ?? this.placeFor(options.type, options.size);
     const window = new BrowserWindow({ ...this.windowOptions(options.type), ...place });
     // The constructor is further off than setBounds on a scaled display.
     window.setBounds(place);
-    const managed = this.adopt(window, options.type, key, options.url);
+    const managed = this.adopt(window, options.type, key, options.url, false, options.inactive);
     managed.initialBounds = window.getNormalBounds();
-    if (options.type === 'main' && this.options.state.data.windowBounds.main?.maximized) window.maximize();
+    if (options.maximized || (options.type === 'main' && this.options.state.data.windowBounds.main?.maximized)) window.maximize();
     void window.loadURL(options.url).catch(() => {
       // A failed load shows Chromium's error page; the guards and ready-to-show still apply.
     });
@@ -196,31 +312,66 @@ export class WindowManager extends EventEmitter<{
   }
 
   /** Takes in a window made by window.open as well as our own. */
-  adopt(window: BrowserWindow, type: WindowType, key: string | null, url: string): ManagedWindow {
+  adopt(window: BrowserWindow, type: WindowType, key: string | null, url: string, warm = false, inactive = false): ManagedWindow {
     const managed: ManagedWindow = { window, type, key, url };
     this.windows.set(window.id, managed);
-    this.options.attachGuards(window);
-    this.showWhenPainted(managed);
+    if (!warm) {
+      this.options.attachGuards(window);
+      this.showWhenPainted(managed, inactive);
+    }
 
     const { webContents } = window;
-    webContents.on('did-change-theme-color', (_event, colour) => this.options.theme.setFromPageColour(colour));
-    webContents.on('page-title-updated', () => this.emitChanged());
+    if (!warm) webContents.on('did-change-theme-color', (_event, colour) => this.options.theme.setFromPageColour(colour));
+    // After the event: the window takes the new title once its listeners have run.
+    webContents.on('page-title-updated', () => setTimeout(() => this.emitChanged(), 0));
     window.on('focus', () => {
       this.lastFocused = window.id;
       this.emitChanged();
     });
+    window.on('hide', () => {
+      this.emitChanged();
+      // Everything is in the tray: nobody is about to open a pop-out.
+      if (this.noneVisible()) this.destroySpare();
+    });
+    window.on('show', () => this.emitChanged());
     for (const event of ['resize', 'move', 'maximize', 'unmaximize'] as const) {
-      window.on(event as 'resize', () => this.rememberBounds(managed));
+      window.on(event as 'resize', () => {
+        this.rememberBounds(managed);
+        this.storeSession();
+      });
     }
     window.on('close', (event) => {
       this.rememberBounds(managed);
-      if (!managed.flushable || managed.flushed) return;
+      if (this.shouldHide(managed)) {
+        event.preventDefault();
+        window.hide();
+        return;
+      }
+      // Quitting has saved. A page that said it had something since must not stop the
+      // quit: preventing a close while quitting calls the whole quit off.
+      if (!managed.flushable || managed.flushed || this.quitting) {
+        managed.closing = true;
+        return;
+      }
       event.preventDefault();
-      void this.flushWindow(managed).then(() => {
+      void this.flushWindow(managed).then((answers) => {
+        if (window.isDestroyed()) return;
+        const { failed, unsent } = sumAnswers(answers);
+        if (!this.confirmLeaving(window, failed, this.isLastOnScreen(managed) ? unsent : 0)) return;
         managed.flushed = true;
-        if (!window.isDestroyed()) window.close();
+        window.close();
       });
     });
+    // The page's own window.close() goes straight through, with no 'close' on the window.
+    webContents.once('close' as never, () => {
+      managed.closing = true;
+    });
+    // The OS is ending the session: there's no time for questions, only for saving.
+    window.on('session-end', () => this.saveForSessionEnd());
+    webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.emit('navigated', window);
+    });
+    if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
     webContents.on('will-prevent-unload', (event) => {
       const text = strings();
@@ -240,7 +391,11 @@ export class WindowManager extends EventEmitter<{
         event.preventDefault();
         return;
       }
-      for (const other of this.windows.values()) other.flushed = false;
+      for (const other of this.windows.values()) {
+        other.flushed = false;
+        other.closing = false;
+      }
+      this.quitting = false;
       this.emit('stayed');
     });
     window.once('closed', () => {
@@ -248,6 +403,7 @@ export class WindowManager extends EventEmitter<{
       if (this.lastFocused === window.id) this.lastFocused = null;
       this.emit('closed', managed);
       this.emitChanged();
+      this.afterClosed();
     });
 
     this.emit('created', managed);
@@ -255,35 +411,153 @@ export class WindowManager extends EventEmitter<{
     return managed;
   }
 
-  private showWhenPainted(managed: ManagedWindow): void {
+  /** True if the window may go. A prompt only when something would be lost. */
+  private confirmLeaving(window: BrowserWindow, failed: number, unsent: number): boolean {
+    if (failed === 0 && unsent === 0) return true;
+    // A hidden main window asking would leave Stay with nothing on screen.
+    if (window.isMinimized()) window.restore();
+    if (!window.isVisible()) window.show();
+    const text = strings();
+    const choice = dialog.showMessageBoxSync(window, {
+      type: 'warning',
+      title: 'Bulwark',
+      message: failed > 0 ? text.unsavedTitle : text.unsentTitle,
+      detail: failed > 0 ? text.unsavedDetail : unsentDetail(text, unsent),
+      buttons: [failed > 0 ? text.closeAnyway : text.closeNow, text.stay],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (choice === 0) return true;
+    this.emit('stayed');
+    return false;
+  }
+
+  /**
+   * The last main window with pop-outs open only hides: they borrow its session.
+   * The same when the app is to stay in the background (tray, macOS).
+   */
+  private shouldHide(managed: ManagedWindow): boolean {
+    if (this.quitting || managed.type !== 'main') return false;
+    const others = [...this.windows.values()].filter((w) => w !== managed && !w.window.isDestroyed());
+    if (others.some((w) => w.type === 'main')) return false;
+    return others.length > 0 || this.staysInBackground();
+  }
+
+  private staysInBackground(): boolean {
+    return process.platform === 'darwin' || this.closeToBackground();
+  }
+
+  private isLastOnScreen(managed: ManagedWindow): boolean {
+    if (this.staysInBackground()) return false;
+    return ![...this.windows.values()].some((w) => w !== managed && !w.window.isDestroyed() && this.onScreen(w));
+  }
+
+  /**
+   * A pop-out still painting counts: only a main window can be hidden on purpose. So does
+   * one that's minimised, which is on the taskbar, though isVisible() says no on Windows.
+   */
+  private onScreen(managed: ManagedWindow): boolean {
+    return managed.type !== 'main' || managed.window.isVisible() || managed.window.isMinimized();
+  }
+
+  /** A pop-out's page died. It comes back from its address, unless it keeps doing that. */
+  private onPageGone(managed: ManagedWindow, reason: string): void {
     const { window } = managed;
+    if (reason === 'clean-exit' || window.isDestroyed()) return;
+    const now = Date.now();
+    managed.crashes = [...(managed.crashes ?? []).filter((at) => now - at < CRASH_WINDOW_MS), now];
+    if (managed.crashes.length > MAX_CRASH_RELOADS) {
+      managed.flushable = false;
+      window.close();
+      return;
+    }
+    window.webContents.reload();
+  }
+
+  private savingForSessionEnd = false;
+
+  /** Whichever window hears first saves them all. The list of windows stays as it is. */
+  private saveForSessionEnd(): void {
+    if (this.savingForSessionEnd) return;
+    this.savingForSessionEnd = true;
+    this.quitting = true;
+    this.options.state.save();
+    void this.flushAll();
+  }
+
+  /** A pop-out closed. If only a hidden main is left and nothing keeps the app running, it goes too. */
+  private afterClosed(): void {
+    if (this.windows.size === 0) {
+      this.destroySpare();
+      return;
+    }
+    if (this.quitting || this.staysInBackground()) return;
+    const left = [...this.windows.values()].filter((w) => !w.window.isDestroyed());
+    if (left.some((w) => this.onScreen(w))) return;
+    for (const { window } of left) window.close();
+  }
+
+  /**
+   * Whether closing the last window leaves the app running. The tray feature calls
+   * this with its `closeToTray` setting. macOS stays regardless, as apps do there.
+   */
+  setCloseToBackground(check: () => boolean): void {
+    this.closeToBackground = check;
+  }
+
+  /** From here on closing a window closes it. Undone by choosing Stay in a prompt. */
+  beginQuit(): void {
+    const { state } = this.options;
+    // Quit before anyone signed in, or halfway through: what was to come back still is.
+    if (this.restoring) this.storeSession();
+    // A clean quit is no crash, however soon after the start.
+    delete state.data.restoreAttempts;
+    this.quitting = true;
+    this.destroySpare();
+    this.options.state.save();
+  }
+
+  cancelQuit(): void {
+    this.quitting = false;
+    for (const managed of this.windows.values()) managed.flushed = false;
+  }
+
+  private showWhenPainted(managed: ManagedWindow, inactive = false): void {
+    const { window } = managed;
+    const show = () => {
+      if (inactive) window.showInactive();
+      else window.show();
+    };
     const fallback = setTimeout(() => {
-      if (!window.isDestroyed() && !window.isVisible()) window.show();
+      if (!window.isDestroyed() && !managed.closing && !window.isVisible()) show();
     }, SHOW_FALLBACK_MS);
     window.once('closed', () => clearTimeout(fallback));
     window.once('ready-to-show', () => {
       clearTimeout(fallback);
-      if (window.isDestroyed()) return;
+      if (window.isDestroyed() || managed.closing) return;
       void this.checkOverlay(managed).then((replaced) => {
-        if (!replaced && !window.isDestroyed() && !window.isVisible()) window.show();
+        if (managed.closing) return;
+        if (!replaced && !window.isDestroyed() && !window.isVisible()) show();
+        if (!replaced && managed.type === 'main' && this.popoutsUsedLately()) this.scheduleSpare(SPARE_FIRST_DELAY_MS);
       });
     });
   }
 
   /**
-   * An older instance has no --titlebar-inset, so it can't take a frameless
+   * An older instance has no --titlebar-right-inset, so it can't take a frameless
    * window: rebuilt once with a native frame, still hidden, and remembered per
    * origin. The other way round only takes effect on the next window.
    * Returns true if the window was replaced.
    */
   private async checkOverlay(managed: ManagedWindow): Promise<boolean> {
-    if (process.platform === 'linux') return false;
+    if (desktopForcesNativeFrame()) return false;
     const { window, type, key, url } = managed;
     let knowsInset: unknown;
     try {
       if (new URL(window.webContents.getURL()).origin !== this.options.origin) return false;
       knowsInset = await window.webContents.executeJavaScript(
-        "getComputedStyle(document.documentElement).getPropertyValue('--titlebar-inset') !== ''",
+        "getComputedStyle(document.documentElement).getPropertyValue('--titlebar-right-inset') !== ''",
         true,
       );
     } catch {
@@ -298,7 +572,7 @@ export class WindowManager extends EventEmitter<{
     // The new one first: with no windows left, the app would quit.
     this.windows.delete(window.id);
     window.removeAllListeners('closed');
-    this.open({ type, key: key ?? undefined, url });
+    this.open({ type, key: key ?? undefined, url, noSpare: true });
     window.destroy();
     return true;
   }
@@ -320,12 +594,14 @@ export class WindowManager extends EventEmitter<{
   }
 
   private applyChrome(colours: ChromeColours): void {
-    for (const { window } of this.windows.values()) {
+    const all = [...this.windows.values()].map((w) => w.window);
+    if (this.spare) all.push(this.spare.window);
+    for (const window of all) {
       if (window.isDestroyed()) continue;
       window.setBackgroundColor(colours.background);
-      if (process.platform === 'win32' && this.wantsOverlay()) {
+      if (process.platform !== 'darwin' && this.wantsOverlay()) {
         try {
-          window.setTitleBarOverlay({ color: colours.background, symbolColor: colours.symbol, height: TITLE_BAR_HEIGHT });
+          window.setTitleBarOverlay({ color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight() });
         } catch {
           // A window that was made with a native frame has no overlay to colour.
         }
@@ -333,59 +609,307 @@ export class WindowManager extends EventEmitter<{
     }
   }
 
+  // ─── The warm spare ─────────────────────────────────────────
+
+  private popoutsUsedLately(): boolean {
+    const last = this.options.state.data.lastPopoutAt;
+    return typeof last === 'number' && Date.now() - last < SPARE_RECENT_USE_MS;
+  }
+
+  private notePopoutUse(): void {
+    this.options.state.data.lastPopoutAt = Date.now();
+    this.options.state.touch();
+    this.scheduleSpare(SPARE_NEXT_DELAY_MS);
+  }
+
+  /** The page's language changed: a spare holds the old one, and its strings. */
+  dropSpare(): void {
+    this.destroySpare();
+    if (this.popoutsUsedLately()) this.scheduleSpare(SPARE_NEXT_DELAY_MS);
+  }
+
+  private scheduleSpare(delay: number): void {
+    if (this.options.spare === false || this.spareUnsupported || this.spare || this.spareTimer || this.quitting) return;
+    this.spareTimer = setTimeout(() => {
+      this.spareTimer = null;
+      this.createSpare();
+    }, delay);
+    this.spareTimer.unref?.();
+  }
+
+  private createSpare(): void {
+    if (this.spare || this.quitting || this.windows.size === 0) return;
+    const window = new BrowserWindow({ ...this.windowOptions('composer'), ...DEFAULT_SIZE.composer });
+    this.options.attachGuards(window);
+    window.webContents.on('did-change-theme-color', (_event, colour) => this.options.theme.setFromPageColour(colour));
+    const limit = setTimeout(() => {
+      this.spareUnsupported = true;
+      this.destroySpare();
+    }, SPARE_READY_LIMIT_MS);
+    this.spare = { window, ready: false, limit };
+    window.once('closed', () => {
+      clearTimeout(limit);
+      if (this.spare?.window === window) this.spare = null;
+    });
+    void window.loadURL(`${this.options.origin}/popout/spare`).catch(() => {});
+  }
+
+  /** The spare page has loaded and waits. */
+  spareReady(window: BrowserWindow): void {
+    if (this.spare?.window !== window) return;
+    clearTimeout(this.spare.limit);
+    this.spare.ready = true;
+    const held = this.spare;
+    held.idle = setTimeout(() => {
+      if (this.spare === held) this.destroySpare();
+    }, this.options.spareIdleMs ?? SPARE_IDLE_LIMIT_MS);
+    held.idle.unref?.();
+  }
+
+  private destroySpare(): void {
+    if (this.spareTimer) clearTimeout(this.spareTimer);
+    this.spareTimer = null;
+    const spare = this.spare;
+    this.spare = null;
+    if (spare?.idle) clearTimeout(spare.idle);
+    if (spare && !spare.window.isDestroyed()) spare.window.destroy();
+  }
+
+  /**
+   * Makes the spare into the pop-out: its place and size, then the page swaps in
+   * the route without a load and the window shows. Only `message` and `composer`,
+   * which is all the spare page knows how to become.
+   */
+  private activateSpare(options: OpenOptions, key: string | null): BrowserWindow | null {
+    if (options.type !== 'message' && options.type !== 'composer') return null;
+    const spare = this.spare;
+    if (!spare?.ready || spare.window.isDestroyed()) return null;
+    this.spare = null;
+    if (spare.idle) clearTimeout(spare.idle);
+    const { window } = spare;
+    const place = options.place ?? this.placeFor(options.type, options.size);
+    const { minWidth, minHeight } = MIN_SIZE[options.type];
+    window.setMinimumSize(minWidth, minHeight);
+    window.setBounds(place);
+    const managed = this.adopt(window, options.type, key, options.url, true);
+    managed.initialBounds = window.getNormalBounds();
+    let taken = false;
+    // The page says other things first (its theme, its menu state).
+    const onMessage = (_event: unknown, channel: string) => {
+      if (channel !== CHANNEL.windowsSpareTaken) return;
+      taken = true;
+      window.webContents.removeListener('ipc-message', onMessage);
+    };
+    window.webContents.on('ipc-message', onMessage);
+    window.webContents.send(CHANNEL.windowsSpareActivate, options.url);
+    window.show();
+    setTimeout(() => {
+      if (!taken && !window.isDestroyed()) void window.loadURL(options.url).catch(() => {});
+    }, SPARE_TAKEN_LIMIT_MS).unref?.();
+    this.scheduleSpare(SPARE_NEXT_DELAY_MS);
+    return window;
+  }
+
+  // ─── Saving before a window goes ────────────────────────────
+
   setFlushable(window: BrowserWindow, flushable: boolean): void {
     const managed = this.windows.get(window.id);
     if (managed) managed.flushable = flushable;
   }
 
-  flushDone(id: number): void {
-    this.flushWaits.get(id)?.();
+  flushDone(id: number, answers: unknown): void {
+    this.flushWaits.get(id)?.(Array.isArray(answers) ? (answers as FlushAnswer[]) : []);
   }
 
   /** Asks the page to save and waits, within limits: a hung page can't keep a window open. */
-  private flushWindow(managed: ManagedWindow): Promise<void> {
-    if (!managed.flushable || managed.window.isDestroyed()) return Promise.resolve();
+  private flushWindow(managed: ManagedWindow): Promise<FlushAnswer[]> {
+    if (!managed.flushable || managed.window.isDestroyed()) return Promise.resolve([]);
     return new Promise((resolve) => {
       const id = this.nextFlushId++;
-      const finish = () => {
+      const finish = (answers: FlushAnswer[]) => {
         clearTimeout(timer);
         this.flushWaits.delete(id);
-        resolve();
+        resolve(answers);
       };
-      const timer = setTimeout(finish, FLUSH_TIMEOUT_MS);
+      const timer = setTimeout(() => finish([{ timedOut: true }]), FLUSH_TIMEOUT_MS);
       this.flushWaits.set(id, finish);
       managed.window.webContents.send(CHANNEL.lifecycleFlush, id);
     });
   }
 
-  /** Before a quit, every window at once. True if any had something to save. */
-  async flushAll(): Promise<boolean> {
+  /** Before a quit, every window at once. */
+  async flushAll(): Promise<FlushSummary> {
     const pending = [...this.windows.values()].filter((w) => w.flushable && !w.flushed && !w.window.isDestroyed());
-    await Promise.all(pending.map((w) => this.flushWindow(w)));
+    const answers = await Promise.all(pending.map((w) => this.flushWindow(w)));
     for (const w of pending) w.flushed = true;
-    return pending.length > 0;
+    const { failed, unsent } = sumAnswers(answers.flat());
+    return { asked: pending.length > 0, failed, unsent };
   }
 
+  /** The page decided: it has saved, or discarded, and asks to go. No second save. */
+  closeSelf(window: BrowserWindow): void {
+    const managed = this.windows.get(window.id);
+    if (managed) managed.flushed = true;
+    window.close();
+  }
+
+  // ─── Coming back next time ──────────────────────────────────
+
+  setRestoreUrls(window: BrowserWindow, urls: string[]): void {
+    const managed = this.windows.get(window.id);
+    if (!managed) return;
+    managed.restoreUrls = urls;
+    this.storeSession();
+  }
+
+  private sessionWindows(): SessionWindow[] {
+    const entries: SessionWindow[] = [];
+    for (const managed of this.windows.values()) {
+      const { window, type, key } = managed;
+      if (window.isDestroyed()) continue;
+      const bounds = window.getNormalBounds();
+      // A composer comes back through its draft, or not at all.
+      if (type === 'message' || type === 'settings') {
+        let url = managed.url;
+        try {
+          const current = window.webContents.getURL();
+          if (new URL(current).origin === this.options.origin && windowTypeOf(new URL(current).pathname) === type) url = current;
+        } catch {
+          // Still loading: what it was opened with.
+        }
+        entries.push({ type, url, key: key ?? undefined, bounds, maximized: window.isMaximized() });
+      } else if (type === 'main' && key !== 'main') {
+        entries.push({ type, url: managed.url, key: key ?? undefined, bounds, maximized: window.isMaximized() });
+      }
+      for (const url of managed.restoreUrls ?? []) {
+        entries.push({ type: 'composer', url, key: `restored:${url}`, bounds: type === 'composer' ? bounds : undefined, maximized: type === 'composer' && window.isMaximized() });
+      }
+    }
+    return entries;
+  }
+
+  /** Local data was wiped: what was to come back names drafts and messages that no longer are. */
+  forgetSession(): void {
+    const { state } = this.options;
+    this.savedSession = [];
+    delete state.data.session;
+    delete state.data.restoreAttempts;
+    state.save();
+  }
+
+  private storeSession(): void {
+    // Quitting closes the windows one by one, which would forget them.
+    if (this.quitting) return;
+    // With the setting off nothing is written. Before the restore, the old list stands.
+    const { state } = this.options;
+    if (state.data.restoreWindows === false || (this.savedSession.length > 0 && !this.restoring)) return;
+    state.data.session = [...this.sessionWindows(), ...this.savedSession];
+    state.touch();
+  }
+
+  setRestoreEnabled(enabled: boolean): void {
+    const { state } = this.options;
+    state.data.restoreWindows = enabled;
+    if (!enabled) {
+      this.savedSession = [];
+      delete state.data.session;
+    }
+    state.touch();
+  }
+
+  /**
+   * The main window has a session to lend, so what was open last time can come back.
+   * Once, and only near the start.
+   */
+  restoreSession(): void {
+    if (this.savedSession.length === 0 || this.restoring) return;
+    // Started hidden, for the tray: they come when the main window does.
+    const main = this.mainWindow();
+    if (main && !main.isVisible()) {
+      if (!this.restoreDeferred) {
+        this.restoreDeferred = true;
+        main.once('show', () => this.restoreSession());
+      }
+      return;
+    }
+    const { state } = this.options;
+    const saved = this.savedSession;
+    if (!this.restoreDeferred && Date.now() - this.startedAt > RESTORE_LIMIT_MS) {
+      this.savedSession = [];
+      this.storeSession();
+      return;
+    }
+    // Two starts that crashed doing this: not a third. Written before the first
+    // window opens, since a crash leaves no time for it after.
+    const attempts = state.data.restoreAttempts ?? 0;
+    if (attempts >= RESTORE_MAX_ATTEMPTS) {
+      this.savedSession = [];
+      delete state.data.restoreAttempts;
+      this.storeSession();
+      state.save();
+      return;
+    }
+    state.data.restoreAttempts = attempts + 1;
+    state.save();
+    setTimeout(() => {
+      delete state.data.restoreAttempts;
+      state.touch();
+    }, RESTORE_STABLE_MS).unref?.();
+
+    this.restoring = true;
+    const valid = saved.filter((entry) => this.validSessionEntry(entry));
+    const openNext = (index: number) => {
+      if (this.quitting) return;
+      if (index >= valid.length) {
+        this.restoring = false;
+        this.savedSession = [];
+        this.storeSession();
+        return;
+      }
+      const entry = valid[index];
+      this.savedSession = valid.slice(index + 1);
+      const bounds = entry.bounds && isOnSomeDisplay(entry.bounds, screen.getAllDisplays()) ? fitInto(entry.bounds, screen.getDisplayMatching(entry.bounds).workArea) : undefined;
+      this.open({ type: entry.type, url: entry.url, key: entry.key, place: bounds, noSpare: true, inactive: true, maximized: entry.maximized });
+      setTimeout(() => openNext(index + 1), RESTORE_STAGGER_MS);
+    };
+    openNext(0);
+  }
+
+  private validSessionEntry(entry: SessionWindow): boolean {
+    try {
+      const url = new URL(entry.url);
+      return url.protocol === 'https:' && url.origin === this.options.origin && windowTypeOf(url.pathname) === entry.type;
+    } catch {
+      return false;
+    }
+  }
+
+  // ─── Finding and focusing ───────────────────────────────────
+
   findByKey(key: string): ManagedWindow | undefined {
-    return [...this.windows.values()].find((w) => w.key === key && !w.window.isDestroyed());
+    return [...this.windows.values()].find((w) => w.key === key && !w.closing && !w.window.isDestroyed());
   }
 
   managedFor(window: BrowserWindow): ManagedWindow | undefined {
     return this.windows.get(window.id);
   }
 
+  all(): ManagedWindow[] {
+    return [...this.windows.values()].filter((w) => !w.window.isDestroyed());
+  }
+
   mainWindow(): BrowserWindow | undefined {
     return [...this.windows.values()].find((w) => w.type === 'main' && !w.window.isDestroyed())?.window;
   }
 
-  private focusedManaged(): ManagedWindow | undefined {
+  focusedManaged(): ManagedWindow | undefined {
     const focused = BrowserWindow.getFocusedWindow();
     if (focused && this.windows.has(focused.id)) return this.windows.get(focused.id);
     return this.lastFocused !== null ? this.windows.get(this.lastFocused) : undefined;
   }
 
   focusWindow(window: BrowserWindow): void {
-    if (window.isDestroyed()) return;
+    if (window.isDestroyed() || this.windows.get(window.id)?.closing) return;
     if (window.isMinimized()) window.restore();
     if (!window.isVisible()) window.show();
     window.focus();
@@ -397,17 +921,25 @@ export class WindowManager extends EventEmitter<{
     if (window) this.focusWindow(window);
   }
 
+  /** Ctrl+`: the next window on screen, in the order they opened. */
+  cycle(direction: 1 | -1 = 1): void {
+    const shown = this.all().filter((w) => w.window.isVisible());
+    const next = nextInCycle(shown.map((w) => w.window.id), this.focusedManaged()?.window.id, direction);
+    if (next !== null) this.focus(next);
+  }
+
   list(): WindowInfo[] {
     const focused = BrowserWindow.getFocusedWindow()?.id;
     return [...this.windows.values()]
       .filter((w) => !w.window.isDestroyed())
-      .map(({ window, type }) => ({ id: window.id, type, title: window.getTitle(), focused: window.id === focused }));
+      .map(({ window, type }) => ({ id: window.id, type, title: window.getTitle(), focused: window.id === focused, visible: window.isVisible() }));
   }
 
   broadcast(channel: string, payload: unknown): void {
     for (const { window } of this.windows.values()) {
       if (!window.isDestroyed()) window.webContents.send(channel, payload);
     }
+    if (this.spare && !this.spare.window.isDestroyed()) this.spare.window.webContents.send(channel, payload);
   }
 
   private emitChanged(): void {
@@ -416,6 +948,11 @@ export class WindowManager extends EventEmitter<{
 
   isEmpty(): boolean {
     return this.windows.size === 0;
+  }
+
+  /** Nothing on screen: another launch or a dock click brings the main window back. */
+  noneVisible(): boolean {
+    return !this.all().some((w) => w.window.isVisible());
   }
 
   originUrl(): string {

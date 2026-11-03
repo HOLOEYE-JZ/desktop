@@ -7,6 +7,80 @@
 import { app } from 'electron';
 
 const en = {
+  unsavedTitle: 'A draft could not be saved',
+  unsavedDetail: 'If you close now, what you wrote since the last save is lost.',
+  closeAnyway: 'Close anyway',
+  unsentTitle: 'Some mail has not been sent yet',
+  unsentOne: 'One message is waiting to be sent. It goes out the next time you open Bulwark.',
+  unsentMany: '{count} messages are waiting to be sent. They go out the next time you open Bulwark.',
+  closeNow: 'Quit',
+  menuNewMessage: 'New message',
+  menuNewWindow: 'New window',
+  menuPrint: 'Print…',
+  menuSavePdf: 'Save as PDF…',
+  menuClose: 'Close',
+  menuQuit: 'Quit',
+  menuUndo: 'Undo',
+  menuRedo: 'Redo',
+  menuCut: 'Cut',
+  menuCopy: 'Copy',
+  menuPaste: 'Paste',
+  menuSelectAll: 'Select all',
+  menuSearch: 'Search mail',
+  menuView: '&View',
+  menuRefresh: 'Check for new mail',
+  menuReadingPane: 'Reading pane',
+  menuPaneRight: 'On the right',
+  menuPaneBelow: 'Below the list',
+  menuPaneOff: 'Off',
+  menuZoomIn: 'Zoom in',
+  menuZoomOut: 'Zoom out',
+  menuZoomReset: 'Actual size',
+  menuFullScreen: 'Full screen',
+  menuMessage: '&Message',
+  menuReply: 'Reply',
+  menuReplyAll: 'Reply all',
+  menuForward: 'Forward',
+  menuMarkRead: 'Mark as read',
+  menuMarkUnread: 'Mark as unread',
+  menuStar: 'Star',
+  menuMove: 'Move to…',
+  menuArchive: 'Archive',
+  menuSpam: 'Mark as spam',
+  menuDelete: 'Delete',
+  menuOpenInWindow: 'Open in new window',
+  menuGo: '&Go',
+  menuGoInbox: 'Inbox',
+  menuGoSent: 'Sent',
+  menuGoDrafts: 'Drafts',
+  menuGoNext: 'Next message',
+  menuGoPrevious: 'Previous message',
+  menuGoNextUnread: 'Next unread message',
+  menuGoMail: 'Mail',
+  menuGoCalendar: 'Calendar',
+  menuGoContacts: 'Contacts',
+  menuGoFiles: 'Files',
+  menuGoBack: 'Back',
+  menuGoForward: 'Forward',
+  menuMinimize: 'Minimize',
+  menuCycle: 'Next window',
+  menuHelp: '&Help',
+  menuShortcuts: 'Keyboard shortcuts',
+  menuDocs: 'Documentation',
+  menuSettings: 'Settings…',
+  menuAbout: 'About Bulwark',
+  windowNames: { main: 'Bulwark', message: 'Message', composer: 'New message', settings: 'Settings' } as Record<'main' | 'message' | 'composer' | 'settings', string>,
+  contextCut: 'Cut',
+  contextCopy: 'Copy',
+  contextPaste: 'Paste',
+  contextSelectAll: 'Select all',
+  contextAddToDictionary: 'Add "{word}" to dictionary',
+  contextNoSuggestions: 'No suggestions',
+  contextOpenLink: 'Open link',
+  contextCopyLink: 'Copy link',
+  contextCopyAddress: 'Copy address',
+  contextSaveImage: 'Save image…',
+  contextCopyImage: 'Copy image',
   telemetryAskTitle: 'Send usage info?',
   telemetryAskDetail: "Once a day, Bulwark sends a random ID, the app version, the Node version, your operating system, how long the app has been running and how it connects. With your own mail server, also which features are on, a rough number of accounts and how many plugins and themes you have. Never mail, addresses or server names. You can turn this off at any time.",
   telemetryAskYes: 'Send usage info',
@@ -39,6 +113,10 @@ const en = {
   stay: 'Stay',
   errorSecretMissingTitle: "Bulwark's key file is missing",
   errorSecretMissingBody: (dir: string) => `This profile was set up before, but the key that protects your sign-ins is gone from ${dir}. Bulwark won't make a new one, because that would sign out every account and remove their offline mail. Restore the file from a backup and start Bulwark again. To start over instead, delete the folder above the keys folder.`,
+  errorKeyNotSavedTitle: "Bulwark couldn't save its key",
+  errorKeyNotSavedBody: "Bulwark needs to save an encryption key before it can keep your sign-ins, and the system did not let it. Nothing was changed or deleted. Check that the disk has free space, that you have permission to write to Bulwark's folder, and that no antivirus program is blocking it. Then restart Bulwark.",
+  signInsLostTitle: 'Please sign in again',
+  signInsLostDetail: 'Windows can no longer open the key that protected your sign-ins. This happens after a password reset, or when a profile moves to another user. Your mail on the server is not affected.',
   errorSecretsTitle: "Bulwark can't read its keys",
   errorSecretsBody:
     'The key that protects your sign-ins is encrypted with your system account, and this system can\'t decrypt it right now. Nothing was changed or deleted, so your accounts and offline mail are still there. Check that you are signed in to the same system account, and that the system key store is unlocked, then start Bulwark again.',
@@ -78,10 +156,10 @@ const en = {
   policyLater: 'Later',
   signInDone: 'You are signed in. You can close this window and go back to Bulwark.',
   signInFailed: 'Signing in did not work. Go back to Bulwark and try again.',
-  menuFile: 'File',
-  menuEdit: 'Edit',
-  menuWindow: 'Window',
-  menuSwitchMode: 'Change Connection…',
+  menuFile: '&File',
+  menuEdit: '&Edit',
+  menuWindow: '&Window',
+  menuSwitchMode: 'Change connection…',
   ok: 'OK',
   menuRestartToUpdate: 'Restart to update',
   menuCheckForUpdates: 'Check for updates…',
@@ -120,6 +198,80 @@ const en = {
 };
 
 const de: typeof en = {
+  unsavedTitle: 'Ein Entwurf konnte nicht gespeichert werden',
+  unsavedDetail: 'Wenn Sie jetzt schließen, geht verloren, was Sie seit dem letzten Speichern geschrieben haben.',
+  closeAnyway: 'Trotzdem schließen',
+  unsentTitle: 'Einige E-Mails wurden noch nicht gesendet',
+  unsentOne: 'Eine Nachricht wartet auf den Versand. Sie wird gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
+  unsentMany: '{count} Nachrichten warten auf den Versand. Sie werden gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
+  closeNow: 'Beenden',
+  menuNewMessage: 'Neue Nachricht',
+  menuNewWindow: 'Neues Fenster',
+  menuPrint: 'Drucken…',
+  menuSavePdf: 'Als PDF speichern…',
+  menuClose: 'Schließen',
+  menuQuit: 'Beenden',
+  menuUndo: 'Rückgängig',
+  menuRedo: 'Wiederholen',
+  menuCut: 'Ausschneiden',
+  menuCopy: 'Kopieren',
+  menuPaste: 'Einfügen',
+  menuSelectAll: 'Alles auswählen',
+  menuSearch: 'E-Mails suchen',
+  menuView: '&Ansicht',
+  menuRefresh: 'Nach neuen E-Mails suchen',
+  menuReadingPane: 'Lesebereich',
+  menuPaneRight: 'Rechts',
+  menuPaneBelow: 'Unter der Liste',
+  menuPaneOff: 'Aus',
+  menuZoomIn: 'Vergrößern',
+  menuZoomOut: 'Verkleinern',
+  menuZoomReset: 'Originalgröße',
+  menuFullScreen: 'Vollbild',
+  menuMessage: '&Nachricht',
+  menuReply: 'Antworten',
+  menuReplyAll: 'Allen antworten',
+  menuForward: 'Weiterleiten',
+  menuMarkRead: 'Als gelesen markieren',
+  menuMarkUnread: 'Als ungelesen markieren',
+  menuStar: 'Markieren',
+  menuMove: 'Verschieben nach…',
+  menuArchive: 'Archivieren',
+  menuSpam: 'Als Spam markieren',
+  menuDelete: 'Löschen',
+  menuOpenInWindow: 'In neuem Fenster öffnen',
+  menuGo: '&Gehe zu',
+  menuGoInbox: 'Posteingang',
+  menuGoSent: 'Gesendet',
+  menuGoDrafts: 'Entwürfe',
+  menuGoNext: 'Nächste Nachricht',
+  menuGoPrevious: 'Vorherige Nachricht',
+  menuGoNextUnread: 'Nächste ungelesene Nachricht',
+  menuGoMail: 'E-Mail',
+  menuGoCalendar: 'Kalender',
+  menuGoContacts: 'Kontakte',
+  menuGoFiles: 'Dateien',
+  menuGoBack: 'Zurück',
+  menuGoForward: 'Vorwärts',
+  menuMinimize: 'Minimieren',
+  menuCycle: 'Nächstes Fenster',
+  menuHelp: '&Hilfe',
+  menuShortcuts: 'Tastenkürzel',
+  menuDocs: 'Dokumentation',
+  menuSettings: 'Einstellungen…',
+  menuAbout: 'Über Bulwark',
+  windowNames: { main: 'Bulwark', message: 'Nachricht', composer: 'Neue Nachricht', settings: 'Einstellungen' },
+  contextCut: 'Ausschneiden',
+  contextCopy: 'Kopieren',
+  contextPaste: 'Einfügen',
+  contextSelectAll: 'Alles auswählen',
+  contextAddToDictionary: '„{word}“ zum Wörterbuch hinzufügen',
+  contextNoSuggestions: 'Keine Vorschläge',
+  contextOpenLink: 'Link öffnen',
+  contextCopyLink: 'Link kopieren',
+  contextCopyAddress: 'Adresse kopieren',
+  contextSaveImage: 'Bild speichern…',
+  contextCopyImage: 'Bild kopieren',
   keystoreAllowSession: 'Für diese Sitzung zulassen',
   keystoreAllowOnce: 'Einmal zulassen',
   keystoreDeny: 'Ablehnen',
@@ -167,6 +319,10 @@ const de: typeof en = {
   stay: 'Bleiben',
   errorSecretMissingTitle: 'Die Schlüsseldatei von Bulwark fehlt',
   errorSecretMissingBody: (dir) => `Dieses Profil wurde schon eingerichtet, aber der Schlüssel, der Ihre Anmeldungen schützt, fehlt in ${dir}. Bulwark erstellt keinen neuen, denn das würde alle Konten abmelden und ihre Offline-E-Mails entfernen. Stellen Sie die Datei aus einer Sicherung wieder her und starten Sie Bulwark neu. Um neu zu beginnen, löschen Sie den Ordner über dem Schlüsselordner.`,
+  errorKeyNotSavedTitle: 'Bulwark konnte seinen Schlüssel nicht speichern',
+  errorKeyNotSavedBody: 'Bulwark muss einen Schlüssel speichern, bevor es Ihre Anmeldungen aufbewahren kann, und das System hat es nicht zugelassen. Es wurde nichts geändert oder gelöscht. Prüfen Sie, ob auf dem Datenträger Platz frei ist, ob Sie in den Ordner von Bulwark schreiben dürfen und ob ein Antivirenprogramm ihn blockiert. Starten Sie Bulwark dann neu.',
+  signInsLostTitle: 'Bitte melden Sie sich erneut an',
+  signInsLostDetail: 'Windows kann den Schlüssel, der Ihre Anmeldungen geschützt hat, nicht mehr öffnen. Das passiert nach dem Zurücksetzen eines Passworts oder wenn ein Profil zu einem anderen Benutzer wechselt. Ihre E-Mails auf dem Server sind davon nicht betroffen.',
   errorSecretsTitle: 'Bulwark kann seine Schlüssel nicht lesen',
   errorSecretsBody:
     'Der Schlüssel, der Ihre Anmeldungen schützt, ist mit Ihrem Systemkonto verschlüsselt, und das System kann ihn gerade nicht entschlüsseln. Es wurde nichts geändert oder gelöscht, Ihre Konten und Offline-E-Mails sind also noch da. Prüfen Sie, ob Sie mit demselben Systemkonto angemeldet sind und der Schlüsselspeicher des Systems entsperrt ist, und starten Sie Bulwark dann neu.',
@@ -206,9 +362,9 @@ const de: typeof en = {
   policyLater: 'Später',
   signInDone: 'Sie sind angemeldet. Sie können dieses Fenster schließen und zu Bulwark zurückkehren.',
   signInFailed: 'Die Anmeldung hat nicht geklappt. Gehen Sie zurück zu Bulwark und versuchen Sie es noch einmal.',
-  menuFile: 'Datei',
-  menuEdit: 'Bearbeiten',
-  menuWindow: 'Fenster',
+  menuFile: '&Datei',
+  menuEdit: '&Bearbeiten',
+  menuWindow: '&Fenster',
   menuSwitchMode: 'Verbindung ändern…',
   ok: 'OK',
   menuRestartToUpdate: 'Neu starten und aktualisieren',
@@ -232,11 +388,44 @@ const de: typeof en = {
   sandboxDetail: 'Dieses Linux blockiert die Sicherheits-Sandbox, die Ihre E-Mails vom Rest Ihres Computers trennt, und ein AppImage kann das nicht umgehen. Ohne sie läuft Bulwark nicht. Installieren Sie stattdessen das deb- oder rpm-Paket von https://bulwarkmail.org/download: Es bringt mit, was die Sandbox braucht.',
 };
 
+let uiLanguage: string | null = null;
+let labels: Partial<typeof en> = {};
+
+/** Plain text keys the webmail may translate, so the menus speak all its languages. */
+const LABEL_KEY = /^(menu|context|leave|stay|closeAnyway|closeNow|unsaved|unsent|update)/;
+
+/** Keeps what fits: a known key with text, of a sane length, and no function replaced. */
+export function cleanLabels(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!LABEL_KEY.test(key) || typeof value !== 'string' || !value.trim() || value.length > 300) continue;
+    if (typeof (en as Record<string, unknown>)[key] === 'string') out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The webmail's language, once it has said, with its translations of the menus and
+ * dialogs. Until then the OS's language, for what shows in early start-up: English
+ * or German, built in.
+ */
+export function setUiLanguage(language: string, translated?: unknown): void {
+  uiLanguage = language;
+  labels = cleanLabels(translated) as Partial<typeof en>;
+}
+
+/** The line about mail waiting at quit. */
+export function unsentDetail(text: Pick<typeof en, 'unsentOne' | 'unsentMany'>, count: number): string {
+  return count === 1 ? text.unsentOne : text.unsentMany.replaceAll('{count}', String(count));
+}
+
 /** Plain text with {name} placeholders, so the webmail can translate it (labels). */
 export function fill(text: string, values: Record<string, string>): string {
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
 }
 
 export function strings(): typeof en {
-  return app.getLocale().toLowerCase().startsWith('de') ? de : en;
+  const built = (uiLanguage ?? app.getLocale()).toLowerCase().startsWith('de') ? de : en;
+  return { ...built, ...labels };
 }

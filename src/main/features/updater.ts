@@ -19,7 +19,6 @@ import path from 'node:path';
 import { app, BrowserWindow, dialog, Notification, powerMonitor } from 'electron';
 import type { AppUpdater, CancellationToken, UpdateInfo } from 'electron-updater';
 import { CHANNEL, type UpdateChannel, type UpdateState } from '../../shared/bridge';
-import { setUpdateMenu } from '../menu';
 import { openExternally } from '../navigation';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../update-policy';
 import {
@@ -105,6 +104,7 @@ class Updater {
   private activeDownload: Promise<void> | null = null;
   private wanted: WantedDownload | null = null;
   private readonly requests = new Set<Electron.ClientRequest>();
+  private menuLines = '';
   private lastChannel: UpdateChannel | null = null;
 
   constructor(private readonly ctx: FeatureContext) {}
@@ -157,12 +157,17 @@ class Updater {
     this.publish();
   }
 
+  /** Only when a line changes: progress comes many times a second, and a new menu closes an open one. */
   private refreshMenu(): void {
+    const lines = JSON.stringify(this.menuItems().map(({ id, label, enabled }) => [id, label, enabled]));
+    if (lines === this.menuLines) return;
+    this.menuLines = lines;
+    this.ctx.menu.refresh();
+  }
+
+  private menuItems(): Electron.MenuItemConstructorOptions[] {
     const text = strings();
-    if (!this.allowed || this.ability === 'none') {
-      setUpdateMenu([]);
-      return;
-    }
+    if (!this.allowed || this.ability === 'none') return [];
     const items: Electron.MenuItemConstructorOptions[] = [];
     if (this.status === 'ready' && this.target) {
       items.push({ id: 'update-restart', label: text.menuRestartToUpdate, click: () => this.restart() });
@@ -179,7 +184,7 @@ class Updater {
         click: () => void this.checkFromMenu(),
       });
     }
-    setUpdateMenu(items);
+    return items;
   }
 
   /** electron-updater only when it's first needed, so it costs a start nothing. */
@@ -480,6 +485,7 @@ class Updater {
 
   setup(): void {
     const { ctx } = this;
+    ctx.menu.extend('file', () => this.menuItems());
     ctx.handle(CHANNEL.updatesState, () => this.state());
     ctx.handle(CHANNEL.updatesCheck, () => this.check());
     ctx.handle(CHANNEL.updatesSetChannel, (_event, _window, channel) => this.setChannel(channel));
