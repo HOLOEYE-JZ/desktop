@@ -271,9 +271,14 @@ class Updater {
       () => {},
       () => {},
     );
-    return run.finally(() => {
-      if (this.downloadToken === token) this.downloadToken = null;
-    });
+    return run
+      .catch((error) => {
+        // A download given up on isn't a failure: whoever gave it up says what happens next.
+        if (this.wanted?.version === version) this.onError(error);
+      })
+      .finally(() => {
+        if (this.downloadToken === token) this.downloadToken = null;
+      });
   }
 
   /** Whatever is coming down or sitting on disk no longer counts. Waits until it has stopped. */
@@ -316,14 +321,13 @@ class Updater {
         this.setStatus('up-to-date');
       } else if (this.ability === 'install') {
         this.setStatus('downloading', version, 0);
-        await this.download(updater, version, false);
+        void this.download(updater, version, false);
       } else {
         this.setStatus('available', version);
         this.notifyAvailable(version);
       }
     } catch (error) {
-      // A download given up on isn't a failure: whoever gave it up says what happens next.
-      if (this.wanted || (this.status as string) === 'checking') this.onError(error);
+      this.onError(error);
     }
     return this.state();
   }
@@ -417,11 +421,7 @@ class Updater {
     // The answer took a while: is this still what's on offer?
     if (response !== 0 || this.status !== 'older-available' || this.target !== target || !this.allowed) return this.state();
     this.setStatus('downloading', target, 0);
-    try {
-      await this.download(this.load(), target, true);
-    } catch (error) {
-      if (this.wanted) this.onError(error);
-    }
+    void this.download(this.load(), target, true);
     return this.state();
   }
 
