@@ -30,6 +30,13 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   private proofHash: string | null = null;
   private lockedNow = true;
 
+  /** Features start in some order, and whichever asks first reads the profile. */
+  initForProfile(userData: string, origin: string): void {
+    const site = createHash('sha256').update(origin).digest('hex').slice(0, 16);
+    const file = path.join(userData, 'app-lock', `${site}.json`);
+    if (this.file !== file) this.init(file);
+  }
+
   /** Reads what's known about this profile. */
   init(file: string): void {
     this.file = file;

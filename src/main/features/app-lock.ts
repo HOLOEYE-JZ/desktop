@@ -60,7 +60,7 @@ function setup(ctx: FeatureContext): void {
   const folder = path.join(app.getPath('userData'), 'app-lock');
   const secrets = new SecretStore(folder);
   const osKeyName = `${OS_KEY_NAME}-${site}`;
-  appLockGate.init(path.join(folder, `${site}.json`));
+  appLockGate.initForProfile(app.getPath('userData'), ctx.origin);
 
   let prompting = false;
   const oneAtATime = async <T>(busy: T, run: () => Promise<T>): Promise<T> => {
