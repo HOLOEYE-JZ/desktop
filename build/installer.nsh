@@ -190,9 +190,10 @@ bulwarkPoliciesDone:
   !insertmacro bulwarkWritePolicies
 !macroend
 
-; What the app writes under HKCU at runtime (src/main/features/os-default-app.ts, os-toasts.ts)
-; goes when the app is uninstalled. An update runs this too, with ${isUpdated} set: the app
-; writes them again at its next start, but only a real uninstall should drop the login item.
+; What the app writes at runtime outside its folder goes at a real uninstall (see also
+; src/main/features/os-default-app.ts, os-toasts.ts). An update runs this too, with
+; ${isUpdated} set, and those stay: the app keeps its pending download, the app writes the
+; rest again at its next start, and only a real uninstall should drop the login item.
 !macro customUnInstall
   ${ifNot} ${isUpdated}
     DeleteRegValue HKCU "Software\RegisteredApplications" "Bulwark"
@@ -211,5 +212,28 @@ bulwarkPoliciesDone:
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Bulwark"
     RMDir /r "$LOCALAPPDATA\Bulwark\os-files"
     RMDir "$LOCALAPPDATA\Bulwark"
+    RMDir /r "$LOCALAPPDATA\bulwark-desktop-updater"
+    ; Electron registers a COM server for toasts under a CLSID it may make up itself. Any
+    ; that names this install goes.
+    Push $R6
+    Push $R7
+    Push $R8
+    StrCpy $R6 0
+    ${Do}
+      EnumRegKey $R7 HKCU "Software\Classes\CLSID" $R6
+      ${If} $R7 == ""
+        ${ExitDo}
+      ${EndIf}
+      ReadRegStr $R8 HKCU "Software\Classes\CLSID\$R7\LocalServer32" ""
+      ${If} $R8 == "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+      ${OrIf} $R8 == '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+        DeleteRegKey HKCU "Software\Classes\CLSID\$R7"
+      ${Else}
+        IntOp $R6 $R6 + 1
+      ${EndIf}
+    ${Loop}
+    Pop $R8
+    Pop $R7
+    Pop $R6
   ${endIf}
 !macroend

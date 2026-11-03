@@ -1,0 +1,466 @@
+name: Release
+
+# Every push to main publishes a beta: <version in package.json>-beta.<run number>, built from
+# a clean checkout, with the webmail built from its main at the one commit `prepare` read. A
+# tag v<version> is a release: the same, with the webmail built from the tag in package.json
+# (`config.webmailTag`), so no developer's data can get in. A hand-pushed v*-beta.* tag works
+# the same way, if package.json says that version. A manual run builds and publishes nothing.
+#
+# The build jobs hold no write token. The release job runs no checked-out code. It makes a
+# draft, uploads every file with a `.sha256` next to it, signs a build provenance attestation
+# and only then publishes, so electron-updater never sees a half-filled release:
+# `gh attestation verify <file> --repo bulwarkmail/desktop`.
+#
+# Signing: Windows is unsigned for now, see the hook in electron-builder.yml. macOS signs and
+# notarizes on a tag when the repository has its secrets, and is unsigned otherwise. Betas
+# publish with nobody looking. Stable releases wait for a reviewer in the `release`
+# environment: whoever can publish here can put code on every install. See "First stable
+# release" in the README. Actions are pinned by commit.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+    # Not looked at for tags, so a tag always builds. A docs-only push makes no beta.
+    paths-ignore:
+      - "**.md"
+      - "LICENSE"
+      - "packaging/**"
+  workflow_dispatch:
+    inputs:
+      webmail_ref:
+        description: "Webmail branch or tag to build from. Builds only, publishes nothing."
+        required: false
+        default: "main"
+
+permissions:
+  contents: read
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+# No workflow-wide concurrency group: it would cancel a run that's already publishing. Each
+# build job has its own, so a newer push to main ends an older build, and the release job of
+# that run then doesn't start. The release job has one that cancels nothing.
+
+jobs:
+  prepare:
+    name: Decide what to build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      webmail_ref: ${{ steps.versions.outputs.webmail_ref }}
+      webmail_commit: ${{ steps.versions.outputs.webmail_commit }}
+      publish: ${{ steps.versions.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      # For a tag, fails in seconds instead of after three builds: a package.json that says
+      # another version would offer itself as an update forever. Every job builds the one
+      # webmail commit read here, however far main has moved by then.
+      - name: Read versions
+        id: versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+          INPUT_WEBMAIL_REF: ${{ inputs.webmail_ref }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          publish=false
+          if [ "$REF_TYPE" = "tag" ]; then
+            if [ "$REF_NAME" != "v$version" ]; then
+              echo "::error title=Version mismatch::Tag $REF_NAME but package.json says $version"
+              exit 1
+            fi
+            kind=tag
+            ref="$(node -p "require('./package.json').config.webmailTag")"
+            publish=true
+          else
+            kind=ref
+            ref="${INPUT_WEBMAIL_REF:-main}"
+            version="${version%%-*}-beta.$RUN_NUMBER"
+            if [ "$EVENT_NAME" = "push" ]; then publish=true; fi
+          fi
+          if ! commit="$(node scripts/fetch-webmail.mjs --resolve "$kind" "$ref")"; then
+            echo "::error title=No such webmail $kind::The webmail has no $kind $ref. For a release, set config.webmailTag in package.json to the first tag that has build:desktop."
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "webmail_ref=$ref"
+            echo "webmail_commit=$commit"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows (x64, arm64)
+    needs: prepare
+    runs-on: windows-latest
+    timeout-minutes: 90
+    concurrency:
+      group: build-windows-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref_type != 'tag' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Not committed: only this run's packages carry it.
+      - name: Set the version
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm pkg set "version=$VERSION"
+
+      # sharp for the other architecture comes along here: a build on x64 only holds its own.
+      - name: Build the webmail
+        env:
+          WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
+          WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
+        shell: bash
+        run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT" --native win32-arm64
+
+      - name: Build the native helper
+        shell: bash
+        run: |
+          node scripts/build-native.mjs --arch x64
+          node scripts/build-native.mjs --arch arm64
+
+      # One binary per architecture: before-pack.cjs puts the right one in node_modules.
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs --arch x64,arm64
+
+      # Fuses and a real start. On a test pack, since a production build refuses the
+      # switches a test needs and restarts itself without them. It's thrown away.
+      - name: Test a package
+        shell: bash
+        run: |
+          node node_modules/electron/install.js
+          node scripts/pack-test.mjs
+          npx playwright test test/fuses.spec.ts
+          rm -rf release
+
+      - name: Build the shell
+        run: npm run build
+
+      - name: Build installers
+        run: npx electron-builder --win --x64 --arm64 --publish never
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-windows
+          path: |
+            release/*.exe
+            release/*.msi
+            release/*.yml
+            !release/builder-debug.yml
+            !release/builder-effective-config.yaml
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS (universal)
+    needs: prepare
+    runs-on: macos-latest
+    timeout-minutes: 90
+    concurrency:
+      group: build-macos-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref_type != 'tag' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set the version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm pkg set "version=$VERSION"
+
+      # Both of sharp's architectures: a universal app holds them side by side.
+      - name: Build the webmail
+        env:
+          WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
+          WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
+        run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT" --native darwin-x64,darwin-arm64
+
+      - name: Build the native helper
+        run: |
+          node scripts/build-native.mjs --arch x64
+          node scripts/build-native.mjs --arch arm64
+
+      # Built per architecture, and the universal merge makes one binary of the two.
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs --arch x64,arm64
+
+      - name: Build the shell
+        run: npm run build
+
+      # With the secrets: Developer ID signature, hardened runtime, notarization. Without:
+      # an ad-hoc signature, or Apple silicon won't start it at all, and Gatekeeper warns.
+      # Hardened runtime with ad-hoc would refuse the bundle's own native modules.
+      - name: Build installers
+        env:
+          # Only on a tag: a beta from main has no business with the signing keys.
+          MAC_CERTIFICATE: ${{ github.ref_type == 'tag' && secrets.MAC_CERTIFICATE || '' }}
+          MAC_CERTIFICATE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MAC_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY_BASE64: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_BASE64 || '' }}
+          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+        run: |
+          signing=()
+          if [ -n "$MAC_CERTIFICATE" ]; then
+            export CSC_LINK="$MAC_CERTIFICATE" CSC_KEY_PASSWORD="$MAC_CERTIFICATE_PASSWORD"
+          else
+            signing=(-c.mac.identity=- -c.mac.hardenedRuntime=false)
+            unset APPLE_API_KEY_ID APPLE_API_ISSUER
+          fi
+          if [ -n "${APPLE_API_KEY_BASE64:-}" ] && [ -n "$MAC_CERTIFICATE" ]; then
+            export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+            printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$APPLE_API_KEY"
+          fi
+          unset APPLE_API_KEY_BASE64 MAC_CERTIFICATE MAC_CERTIFICATE_PASSWORD
+          npx electron-builder --mac --universal --publish never "${signing[@]}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+            release/*.yml
+            !release/builder-debug.yml
+            !release/builder-effective-config.yaml
+          if-no-files-found: error
+          retention-days: 7
+
+  linux:
+    name: Linux (${{ matrix.arch }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    concurrency:
+      group: build-linux-${{ matrix.arch }}-${{ github.ref }}
+      cancel-in-progress: ${{ github.ref_type != 'tag' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        run: rustup toolchain install stable --profile minimal
+
+      # rpmbuild for the rpm. electron-builder's bundled fpm is x64 only. Xvfb and the
+      # keyring for the smoke test.
+      - name: Install build tools
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm xvfb dbus-x11 gnome-keyring x11-utils
+          if [ "$ARCH" = "arm64" ]; then
+            sudo apt-get install -y ruby ruby-dev build-essential
+            sudo gem install --no-document fpm -v 1.16.0
+            echo "USE_SYSTEM_FPM=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set the version
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: npm pkg set "version=$VERSION"
+
+      - name: Build the webmail
+        env:
+          WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
+          WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
+        run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT"
+
+      - name: Build the native helper
+        run: node scripts/build-native.mjs
+
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs --optional
+
+      # On a test pack: production refuses --user-data-dir and --no-sandbox and an unpacked
+      # folder has no SUID helper. The sandbox is not what this tests. It's thrown away.
+      - name: Smoke test
+        env:
+          SMOKE_NO_SANDBOX: "1"
+        run: |
+          node scripts/pack-test.mjs
+          bash scripts/linux-smoke.sh release/linux*-unpacked/bulwark
+          rm -rf release
+
+      - name: Build the shell
+        run: npm run build
+
+      - name: Build installers
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: npx electron-builder --linux "--$ARCH" --publish never
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.yml
+            !release/builder-debug.yml
+            !release/builder-effective-config.yaml
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish the release
+    needs: [prepare, windows, macos, linux]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Once it starts, it finishes. A newer run's publish waits its turn.
+    concurrency:
+      group: publish-${{ github.repository }}
+      cancel-in-progress: false
+    # Betas wait for nobody, as asked. A stable release waits for this environment's reviewers,
+    # once they're set up: see the README.
+    environment: ${{ contains(needs.prepare.outputs.version, '-') && 'beta' || 'release' }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      # The installers. latest.yml only says what an installer holds, so it gets no checksum of
+      # its own, but it is attested: it says which file to trust.
+      - name: Checksum installers
+        working-directory: release
+        run: |
+          for file in *.exe *.msi *.dmg *.zip *.AppImage *.deb *.rpm; do
+            sha256sum "$file" > "$file.sha256"
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: |
+            release/*.exe
+            release/*.msi
+            release/*.dmg
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/*.yml
+
+      - name: Write the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
+          WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
+          SHA: ${{ github.sha }}
+        run: |
+          previous="$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')"
+          {
+            case "$VERSION" in
+              *-*)
+                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway.'
+                echo
+                ;;
+            esac
+            echo "Built from the webmail's $WEBMAIL_REF at bulwarkmail/webmail@$WEBMAIL_COMMIT."
+            echo
+            if [ -n "$previous" ]; then
+              echo "Since $previous:"
+              echo
+              gh api "repos/$GH_REPO/compare/$previous...$SHA" --jq '.commits[] | "- " + (.commit.message | split("\n")[0])' | tail -n 30
+            else
+              echo "The first release. Latest commits:"
+              echo
+              gh api "repos/$GH_REPO/commits?sha=$SHA&per_page=20" --jq '.[] | "- " + (.commit.message | split("\n")[0])'
+            fi
+          } > "$RUNNER_TEMP/notes.md"
+
+      # A tag this job creates with GITHUB_TOKEN starts no workflow, so a beta can't set off
+      # another run. A prerelease is never Latest, which is what stable installs ask for.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          tag="v$VERSION"
+          flags=()
+          case "$VERSION" in
+            *-*) flags+=(--prerelease --latest=false) ;;
+          esac
+          gh release create "$tag" --draft --target "$SHA" --title "Bulwark $VERSION" --notes-file "$RUNNER_TEMP/notes.md" "${flags[@]}"
+          gh release upload "$tag" release/* --clobber
+          gh release edit "$tag" --draft=false "${flags[@]}"

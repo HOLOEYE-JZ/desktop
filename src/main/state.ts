@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Mode, OsSettings, ThemeColours, WindowType } from '../shared/bridge';
+import type { Mode, OsSettings, ThemeColours, UpdateChannel, WindowType } from '../shared/bridge';
 
 export interface StoredBounds {
   x: number;
@@ -60,6 +60,12 @@ export interface ShellState {
   osCloseNoticeShown?: boolean;
   /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
   osToastSecret?: string;
+  /** The user's own channel. A policy goes first (update-rules.ts). */
+  updateChannel?: UpdateChannel;
+  /** The channel this copy started on, until someone chooses (updater.ts). */
+  updateChannelInitial?: UpdateChannel;
+  /** The last version a notification was shown for. */
+  updateNotified?: string;
   /** What was open at quit. Off by the setting in the webmail. */
   session?: SessionWindow[];
   restoreWindows?: boolean;

@@ -23,6 +23,7 @@ import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { holdEarlyLaunches } from './features/os-launch';
 import { setToastActivator } from './features/os-toasts';
+import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
@@ -35,6 +36,7 @@ import { MenuController } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
 import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
+import { sandboxRefused } from './sandbox-check';
 import { connectionMustChange, decideStart, restartKey, type StartDecision } from './policy-start';
 import { deniedSwitches, withoutDeniedSwitches } from './switch-guard';
 import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
@@ -60,7 +62,10 @@ declare const __BULWARK_TEST_PROFILE__: string;
 // Before anything else, with or without a policy: see switch-guard.ts.
 if (!__BULWARK_TEST_BUILD__) {
   const denied = deniedSwitches(process.argv);
-  if (denied.length > 0) {
+  // An AppImage's AppRun adds --no-sandbox where the sandbox can't work. Restarting without it
+  // would die in Chromium before any window. Left alone, the app says why and exits.
+  const refusing = sandboxRefused({ platform: process.platform, appImage: process.env.APPIMAGE, noSandboxSwitch: process.argv.includes('--no-sandbox'), disableSandboxEnv: process.env.ELECTRON_DISABLE_SANDBOX });
+  if (denied.length > 0 && !refusing) {
     console.warn(`Ignoring these switches: ${denied.join(', ')}`);
     for (const name of denied) app.commandLine.removeSwitch(name);
     app.relaunch({ args: withoutDeniedSwitches(process.argv).slice(1) });
@@ -166,7 +171,7 @@ let sessionReady = false;
 const linkLimit = new LinkRateLimit();
 
 function serverDirectory(): string {
-  if (app.isPackaged) return path.join(process.resourcesPath, 'server');
+  if (app.isPackaged) return path.join(process.resourcesPath, 'server.asar');
   const chosen = __BULWARK_TEST_BUILD__ && DEV ? argValue('bulwark-server-dir') : undefined;
   return chosen ?? path.join(HERE, '..', 'webmail');
 }
@@ -373,6 +378,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
       append,
       init: {
         type: 'init',
+        serverDir: serverDirectory(),
         port: SERVER_PORT,
         parentPid: process.pid,
         launchSecret,
@@ -571,6 +577,8 @@ async function boot(theme: ThemeController): Promise<void> {
 }
 
 function restartNow(): void {
+  // Installing now would kill the app relaunched here. It's on disk for the next quit.
+  holdUpdateInstall();
   app.relaunch();
   // Quitting asks each page to save first (before-quit).
   app.quit();
@@ -639,6 +647,8 @@ function switchMode(): void {
 }
 
 function finishSwitch(): void {
+  // Installing now would kill the app relaunched below. It's on disk for the next quit.
+  holdUpdateInstall();
   stateFile.data.mode = undefined;
   stateFile.data.instanceUrl = undefined;
   stateFile.data.askConnection = true;
@@ -765,6 +775,12 @@ if (gotLock) {
   });
 
   app.whenReady().then(async () => {
+    if (sandboxRefused({ platform: process.platform, appImage: process.env.APPIMAGE, noSandboxSwitch: app.commandLine.hasSwitch('no-sandbox'), disableSandboxEnv: process.env.ELECTRON_DISABLE_SANDBOX })) {
+      const text = strings();
+      dialog.showMessageBoxSync({ type: 'error', title: 'Bulwark', message: text.sandboxTitle, detail: text.sandboxDetail, buttons: [text.ok], noLink: true });
+      app.exit(1);
+      return;
+    }
     menu = buildMenu();
     menu.rebuild();
     const theme = new ThemeController(stateFile);

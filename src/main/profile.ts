@@ -130,6 +130,7 @@ export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platfo
     NODE_ENV: 'production',
     NEXT_TELEMETRY_DISABLED: '1',
     COOKIE_SECURE: 'true',
+    APP_NAME: 'Bulwark',
     BULWARK_UPDATE_CHECK: 'off',
     // The user's two switches decide, by message. Only an off gets past this allowlist.
     ...(telemetryOffInEnv(source) ? { BULWARK_TELEMETRY: 'off' } : {}),

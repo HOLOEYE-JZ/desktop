@@ -40,6 +40,8 @@ import {
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
+  type UpdateChannel,
+  type UpdateState,
   type WindowInfo,
 } from '../shared/bridge';
 import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
@@ -141,6 +143,15 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       copyFile: (name: string, data: ArrayBuffer): Promise<boolean> => ipcRenderer.invoke(CHANNEL.clipboardCopyFile, name, data),
       /** Signed out: nothing copied from that account stays on disk. */
       clearFiles: () => ipcRenderer.send(CHANNEL.clipboardClearFiles),
+    },
+    updates: {
+      state: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesState),
+      check: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesCheck),
+      setChannel: (channel: UpdateChannel): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesSetChannel, channel),
+      installOlder: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesInstallOlder),
+      restart: () => ipcRenderer.send(CHANNEL.updatesRestart),
+      openDownload: () => ipcRenderer.send(CHANNEL.updatesOpenDownload),
+      onChanged: (listener: (state: UpdateState) => void) => subscribe(CHANNEL.updatesChanged, listener),
     },
     policy: {
       get: () => policySnapshot,
