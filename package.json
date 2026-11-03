@@ -1,6 +1,7 @@
 {
   "name": "bulwark-desktop",
   "productName": "Bulwark",
+  "desktopName": "bulwark.desktop",
   "version": "0.1.0",
   "description": "Bulwark Mail for the desktop",
   "license": "AGPL-3.0-only",

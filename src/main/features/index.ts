@@ -14,6 +14,7 @@ import type { WindowManager } from '../windows';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
 import { keystoreFeature } from './keystore';
+import { osIntegration } from './os';
 
 export interface FeatureContext {
   mode: Mode;
@@ -25,6 +26,8 @@ export interface FeatureContext {
   /** Standalone only. */
   servers?: ServerRegistry;
   localAdmin?: LocalAdmin;
+  /** The main window, made if it's gone. */
+  showMain: () => void;
   /** A request-reply channel, callable only from the app's own main frames. */
   handle: (channel: string, handler: (event: IpcMainInvokeEvent, window: BrowserWindow | null, ...args: unknown[]) => unknown) => void;
   /** A one-way channel, same check. */
@@ -37,7 +40,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [keystoreFeature];
+export const FEATURES: Feature[] = [keystoreFeature, osIntegration];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

@@ -41,10 +41,73 @@ win:
   # signtoolOptions: {}
   # azureSignOptions: {}
   target: dir
+# Windows registers its URL schemes and file types at run time (os-default-app.ts) and
+# not through these: electron-builder's NSIS writes them as HKCU's default for the type,
+# which takes mailto: and .eml from whoever had them. Which app is the default stays the
+# user's choice there.
+nsis:
+  include: build/installer.nsh
 mac:
   # Hardened runtime and notarization are driven by env in CI, unused here.
   hardenedRuntime: true
   target: dir
+  protocols:
+    - name: Mail
+      schemes: [mailto]
+      role: Editor
+    - name: Calendar
+      schemes: [webcal, webcals]
+      role: Viewer
+    - name: Bulwark
+      schemes: [bulwark]
+      role: Viewer
+  fileAssociations:
+    - ext: eml
+      name: E-mail message
+      role: Viewer
+    - ext: ics
+      name: Calendar file
+      role: Viewer
+    - ext: vcf
+      name: Contact card
+      role: Viewer
 linux:
   target: dir
   category: Network;Email
+  # electron-builder adds %U to Exec and fills MimeType from these.
+  mimeTypes:
+    - x-scheme-handler/mailto
+    - x-scheme-handler/webcal
+    - x-scheme-handler/webcals
+    - x-scheme-handler/bulwark
+    - message/rfc822
+    - text/calendar
+    - text/vcard
+    - text/x-vcard
+  fileAssociations:
+    - ext: eml
+      mimeType: message/rfc822
+    - ext: ics
+      mimeType: text/calendar
+    - ext: vcf
+      mimeType: text/vcard
+  desktop:
+    entry:
+      Actions: NewMessage;Inbox;Calendar;Contacts;
+    desktopActions:
+      NewMessage:
+        Name: New message
+        Name[de]: Neue Nachricht
+        Exec: bulwark bulwark://new
+      Inbox:
+        Name: Inbox
+        Name[de]: Posteingang
+        Exec: bulwark bulwark://inbox
+      Calendar:
+        Name: Calendar
+        Name[de]: Kalender
+        Exec: bulwark bulwark://calendar
+      Contacts:
+        Name: Contacts
+        Name[de]: Kontakte
+        Exec: bulwark bulwark://contacts

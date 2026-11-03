@@ -29,6 +29,12 @@ npm start
 - `src/main/features/` is where tray, jump lists, toasts, context menus and policies plug in. See `features/index.ts`.
 - `native/` is the native helper: Windows Hello, the OS keystore for S/MIME, and the macOS check for forced preferences. `npm run build:native` needs Rust, and the app runs without it, with those features unavailable. Its exports are in `native/README.md`.
 
+## OS integration
+
+`src/main/features/os*.ts`: tray, badge, jump list, thumbnail toolbar, toasts, default mail app, files, start at login, sleep and wake. The page's side is `lib/desktop/` in the webmail; settings are on its General page. `os-rules.ts` holds the decisions with no Electron in them, and `assets/os` the tray and toolbar icons, made by `scripts/make-os-icons.cjs`.
+
+Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu shortcut and a COM key. `test/os.spec.ts` takes them away again; on a hand run, look for `Bulwark Dev` under `Run`, `{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}` under `Software\Classes\CLSID` and `Electron.lnk` under Start Menu Programs.
+
 ## Test
 
 ```sh

@@ -21,6 +21,15 @@ import {
   type KeystoreResult,
   type KeystoreSignScheme,
   type MenuState,
+  type OsCommand,
+  type OsDefaultAppStatus,
+  type OsFile,
+  type OsNotification,
+  type OsNotifyResult,
+  type OsPowerEvent,
+  type OsSettings,
+  type OsStatus,
+  type OsSummary,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -76,6 +85,32 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
+    },
+    os: {
+      /**
+       * What the OS asks for: tray, jump list, toast buttons, opened files. Main holds
+       * these until the main window's page subscribes, so a cold start loses nothing.
+       */
+      onCommand: (listener: (command: OsCommand) => void) => {
+        const stop = subscribe(CHANNEL.osCommand, listener);
+        ipcRenderer.send(CHANNEL.osSubscribe);
+        return stop;
+      },
+      getStatus: (): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osGetStatus),
+      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch),
+      setPaused: (until: number | null) => ipcRenderer.send(CHANNEL.osSetPaused, until),
+      onStatusChange: (listener: (status: OsStatus) => void) => subscribe(CHANNEL.osStatusChanged, listener),
+      setBadge: (count: number) => ipcRenderer.send(CHANNEL.osSetBadge, count),
+      setSummary: (summary: OsSummary) => ipcRenderer.send(CHANNEL.osSetSummary, summary),
+      setProgress: (progress: number | null, mode?: 'normal' | 'indeterminate' | 'paused' | 'error') =>
+        ipcRenderer.send(CHANNEL.osSetProgress, progress, mode),
+      setLocked: (locked: boolean) => ipcRenderer.send(CHANNEL.osSetLocked, locked),
+      notify: (notification: OsNotification): Promise<OsNotifyResult> => ipcRenderer.invoke(CHANNEL.osNotify, notification),
+      onPower: (listener: (event: OsPowerEvent) => void) => subscribe(CHANNEL.osPower, listener),
+      startDrag: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osStartDrag, files),
+      copyFiles: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osCopyFiles, files),
+      defaultAppStatus: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppStatus),
+      openDefaultAppSettings: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppOpen),
     },
     lifecycle: {
       /**
