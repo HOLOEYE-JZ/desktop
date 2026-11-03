@@ -67,12 +67,12 @@ test.describe('window.bulwarkDesktop.keystore', () => {
       { method, args },
     );
 
-  test('the member is this narrow, with no Hello or policy beside it', async () => {
+  test('the member is this narrow, with no Hello beside it and no forced check on the policy member', async () => {
     const shape = await launched.page.evaluate(() => {
       const bridge = (window as never as { bulwarkDesktop: Record<string, unknown> }).bulwarkDesktop;
-      return { keystore: Object.keys(bridge.keystore as object).sort(), hello: 'hello' in bridge, policy: 'policy' in bridge };
+      return { keystore: Object.keys(bridge.keystore as object).sort(), hello: 'hello' in bridge, policy: Object.keys(bridge.policy as object).sort() };
     });
-    expect(shape).toEqual({ keystore: ['accessState', 'agree', 'clearGrants', 'decrypt', 'list', 'revokeAccess', 'sign'], hello: false, policy: false });
+    expect(shape).toEqual({ keystore: ['accessState', 'agree', 'clearGrants', 'decrypt', 'list', 'revokeAccess', 'sign'], hello: false, policy: ['get', 'onChange'] });
   });
 
   test('it signs in Electron through the bridge, and Node verifies it', async () => {
