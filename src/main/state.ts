@@ -29,6 +29,18 @@ export interface SessionWindow {
   maximized?: boolean;
 }
 
+/** Telemetry and crash report consent. Absent means nobody said yes: off. See features/privacy.ts. */
+export interface PrivacyChoices {
+  /** The first run asked, or the user answered in settings. */
+  asked?: boolean;
+  telemetry?: boolean;
+  crashReports?: boolean;
+  crashUploadUrl?: string;
+  /** The shell's own id for its heartbeat. Instance mode only. */
+  id?: string;
+  lastPingAt?: number;
+}
+
 export interface ShellState {
   mode?: Mode;
   instanceUrl?: string;
@@ -49,6 +61,15 @@ export interface ShellState {
   lastPopoutAt?: number;
   /** Chromium's zoom level: 0 is 100%. */
   zoomLevel?: number;
+  privacy?: PrivacyChoices;
+  /** "Change Connection" was chosen: ask once, also over a recommended server. */
+  askConnection?: boolean;
+  /** WipeOfflineData values already acted on, so each deletes once, across restarts. */
+  policyWipes?: string[];
+  /** Every partition this profile has used: a wipe covers them all. */
+  partitions?: string[];
+  /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
+  offlineClearedForPolicy?: boolean;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
 }

@@ -23,7 +23,8 @@ export function senderAllowed(frame: WebFrameMain | null | undefined, origin: st
   if (!frame || frame.parent) return false;
   try {
     const url = new URL(frame.url);
-    return url.protocol === 'https:' && url.origin === origin;
+    // Plain http only when the origin is: an instance a policy allows that way.
+    return (url.protocol === 'https:' || url.protocol === 'http:') && url.origin === origin;
   } catch {
     return false;
   }
@@ -52,12 +53,12 @@ export function createChannels(origin: string): Pick<FeatureContext, 'handle' | 
   };
 }
 
-/** A same-origin https URL, resolved against the app. Null for anything else. */
+/** A same-origin URL, resolved against the app. Null for anything else. */
 function resolveAppUrl(url: unknown, origin: string): URL | null {
   if (typeof url !== 'string' || !url) return null;
   try {
     const parsed = new URL(url, origin);
-    if (parsed.origin !== origin || parsed.protocol !== 'https:' || isJmapProxyPath(parsed.pathname)) return null;
+    if (parsed.origin !== origin || isJmapProxyPath(parsed.pathname)) return null;
     return parsed;
   } catch {
     return null;

@@ -20,6 +20,8 @@ test.describe('the first run', () => {
     await expect(page.locator('#error')).not.toBeEmpty();
 
     await page.click('#standalone');
+    // The second question: both boxes stay empty.
+    await page.click('#continue');
     await expect.poll(async () => {
       const urls = await Promise.all(app.windows().filter((p) => !p.isClosed()).map((p) => p.url()));
       return urls.some((url) => url.startsWith('https://app.bulwark.localhost'));

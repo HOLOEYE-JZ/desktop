@@ -8,6 +8,7 @@ import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, clipboard, dialog, powerMonitor } from 'electron';
+import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
 import { safeFileName } from '../menu-text';
 import type { Feature } from './index';
@@ -67,6 +68,8 @@ export const dialogsFeature: Feature = {
   name: 'dialogs',
   modes: ['standalone', 'instance'],
   setup(ctx) {
+    // A wipe of what's local covers the copies waiting to be pasted.
+    addWipeStep(async () => emptyClipboardFolder());
     emptyClipboardFolder();
     app.on('will-quit', emptyClipboardFolder);
     powerMonitor.on('lock-screen', emptyClipboardFolder);

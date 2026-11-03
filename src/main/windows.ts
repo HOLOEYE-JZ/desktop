@@ -788,6 +788,15 @@ export class WindowManager extends EventEmitter<{
     return entries;
   }
 
+  /** Local data was wiped: what was to come back names drafts and messages that no longer are. */
+  forgetSession(): void {
+    const { state } = this.options;
+    this.savedSession = [];
+    delete state.data.session;
+    delete state.data.restoreAttempts;
+    state.save();
+  }
+
   private storeSession(): void {
     // Quitting closes the windows one by one, which would forget them.
     if (this.quitting) return;

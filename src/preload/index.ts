@@ -27,11 +27,13 @@ import {
   type KeystoreSignScheme,
   type MenuState,
   type NativeMenuItem,
+  type PrivacyState,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
   type WindowInfo,
 } from '../shared/bridge';
+import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
 
 function argument(prefix: string): string | null {
   const found = process.argv.find((arg) => arg.startsWith(prefix));
@@ -54,7 +56,8 @@ async function keystoreAnswer<T>(call: Promise<KeystoreResult<T>>): Promise<T> {
 const allowedOrigin = argument(PRELOAD_ARG.allowedOrigin);
 const mode = argument(PRELOAD_ARG.mode);
 
-if (allowedOrigin && window.location.protocol === 'https:' && window.location.origin === allowedOrigin) {
+// Plain http only when the allowed origin is: an instance a policy allows that way.
+if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.location.origin === allowedOrigin) {
   const platform = process.platform as 'win32' | 'darwin' | 'linux';
   const flushHandlers = new Set<() => Promise<unknown>>();
   ipcRenderer.on(CHANNEL.lifecycleFlush, (_event, id: number) => {
@@ -66,6 +69,10 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       });
       ipcRenderer.send(CHANNEL.lifecycleFlushed, id, answers);
     });
+  });
+  let policySnapshot: PolicySnapshot = (ipcRenderer.sendSync(CHANNEL.policyGet) as PolicySnapshot | null) ?? DEFAULT_POLICY_SNAPSHOT;
+  ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
+    policySnapshot = snapshot;
   });
   const common = {
     version: BRIDGE_VERSION,
@@ -126,6 +133,20 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       /** Signed out: nothing copied from that account stays on disk. */
       clearFiles: () => ipcRenderer.send(CHANNEL.clipboardClearFiles),
     },
+    policy: {
+      get: () => policySnapshot,
+      onChange: (listener: (snapshot: PolicySnapshot) => void) => subscribe(CHANNEL.policyChanged, listener),
+    },
+    privacy: {
+      get: () => ipcRenderer.invoke(CHANNEL.privacyGet),
+      setTelemetry: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetTelemetry, on),
+      setCrashReports: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetCrashReports, on),
+      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url),
+      listCrashes: () => ipcRenderer.invoke(CHANNEL.privacyListCrashes),
+      sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
+      deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
+      onChange: (listener: (state: PrivacyState) => void) => subscribe(CHANNEL.privacyChanged, listener),
+    },
     lifecycle: {
       /**
        * Before a window closes or the app quits, main asks the page to save what it
@@ -175,6 +196,7 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
             keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
           accessState: (): Promise<KeystoreAccessState> => ipcRenderer.invoke(CHANNEL.keystoreAccess),
           revokeAccess: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreRevoke),
+          clearGrants: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreClearGrants),
         },
       }
     : {};

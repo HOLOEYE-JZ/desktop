@@ -22,7 +22,8 @@ import { strings } from './strings';
 import type { WindowManager } from './windows';
 
 export interface MenuHooks {
-  switchMode: () => void;
+  /** Left out while a policy forces the connection. */
+  switchMode?: () => void;
   devTools: boolean;
   newWindow: () => void;
   openSettings: () => void;
@@ -63,6 +64,12 @@ export class MenuController {
   private timer: NodeJS.Timeout | null = null;
 
   constructor(private readonly hooks: MenuHooks) {}
+
+  /** What the start decided, once it has: nothing is offered before that. */
+  allowSwitchingMode(switchMode: (() => void) | undefined): void {
+    this.hooks.switchMode = switchMode;
+    this.rebuild();
+  }
 
   /** Once a mode has started: the first-run page has a menu without any windows behind it. */
   attach(windows: WindowManager): void {
@@ -249,7 +256,8 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
-        { id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode },
+        // Left out while a policy forces the connection.
+        ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },
