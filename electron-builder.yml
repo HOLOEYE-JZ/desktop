@@ -21,15 +21,15 @@ files:
     to: native
     filter:
       - bulwark-native.node
-# The webmail server stays unpacked: it needs a real cwd, and Next reads its own files.
+# The webmail server, trimmed, guarded and packed for this target by before-pack.cjs.
+# As an extra resource so electron-builder lists it for ASAR integrity. Its unpacked files
+# go in by after-pack.cjs.
 extraResources:
-  - from: webmail
-    to: server
+  - from: .server-build/${os}-${arch}
+    to: .
     filter:
-      - '**/*'
-      - '**/.next/**'
-      - '!node_modules/**'
-# node_modules, the trim and the guard: see scripts/after-pack.cjs.
+      - server.asar
+beforePack: scripts/before-pack.cjs
 afterPack: scripts/after-pack.cjs
 # Chromium's own strings: the webmail's languages and their regional forms. The rest
 # falls back to en-US. Chromium has no Mongolian pack, so that's en-US as well.
@@ -84,6 +84,7 @@ nsis:
   createStartMenuShortcut: true
   runAfterFinish: true
   deleteAppDataOnUninstall: false
+  include: build/installer.nsh
 msi:
   # Per-machine, for IT. electron-updater can't replace it: see "Updates" in the README.
   # The upgrade code stays the same forever, it's how a new MSI replaces the old one.
@@ -128,20 +129,20 @@ linux:
   vendor: Bulwark Mail
   synopsis: Bulwark Mail for the desktop
   executableName: bulwark
-  desktop:
-    entry:
-      Name: Bulwark
-      Comment: Bulwark Mail for the desktop
-      StartupWMClass: bulwark
+  # The binary and the .desktop file named alike: the window's app_id follows desktopName
+  # in package.json. os-integration needs the same two for Unity's count.
+  syncDesktopName: true
+  # No architectures here: a target that names them builds them whatever the command line
+  # says, and each release job runs on the machine it builds for.
   target:
-    - target: AppImage
-      arch: [x64, arm64]
-    - target: deb
-      arch: [x64, arm64]
-    - target: rpm
-      arch: [x64, arm64]
+    - AppImage
+    - deb
+    - rpm
 appImage:
   artifactName: Bulwark-${version}-${arch}.${ext}
+  # Never add --no-sandbox. AppRun still adds it by itself where user namespaces are
+  # blocked, and then the app refuses to run: see src/main/sandbox-check.ts.
+  executableArgs: []
 deb:
   packageName: bulwark
   artifactName: bulwark_${version}_${arch}.${ext}

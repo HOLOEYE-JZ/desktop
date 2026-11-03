@@ -33,6 +33,8 @@ export interface ShellState {
   overlayByOrigin: Record<string, boolean>;
   /** The user's own channel. A policy goes first (update-rules.ts). */
   updateChannel?: UpdateChannel;
+  /** The channel this copy started on, until someone chooses (updater.ts). */
+  updateChannelInitial?: UpdateChannel;
   /** The last version a notification was shown for. */
   updateNotified?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */

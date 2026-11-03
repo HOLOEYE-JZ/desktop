@@ -10,7 +10,9 @@ name: Release
 # release: `gh attestation verify <file> --repo bulwarkmail/desktop`.
 #
 # Signing: Windows is unsigned for now, see the hook in electron-builder.yml. macOS signs
-# and notarizes when the repository has its secrets, and is unsigned otherwise.
+# and notarizes when the repository has its secrets, and is unsigned otherwise. Publishing
+# waits for a reviewer in the `release` environment: whoever can publish here can put code
+# on every install. See "First release" in the README. Actions are pinned by commit.
 
 on:
   push:
@@ -38,7 +40,7 @@ jobs:
       webmail_tag: ${{ steps.versions.outputs.webmail_tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -57,7 +59,12 @@ jobs:
             echo "::error title=Version mismatch::Tag $REF_NAME but package.json says $version"
             exit 1
           fi
-          echo "webmail_tag=${INPUT_WEBMAIL_TAG:-$webmail_tag}" >> "$GITHUB_OUTPUT"
+          webmail_tag="${INPUT_WEBMAIL_TAG:-$webmail_tag}"
+          if ! git ls-remote --exit-code --tags https://github.com/bulwarkmail/webmail.git "refs/tags/$webmail_tag" > /dev/null; then
+            echo "::error title=No such webmail tag::The webmail has no tag $webmail_tag. Set config.webmailTag in package.json to the first tag that has build:desktop."
+            exit 1
+          fi
+          echo "webmail_tag=$webmail_tag" >> "$GITHUB_OUTPUT"
 
   windows:
     name: Windows (x64, arm64)
@@ -66,12 +73,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -97,18 +104,27 @@ jobs:
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
 
+      # One binary per architecture: before-pack.cjs puts the right one in node_modules.
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs --arch x64,arm64
+
+      # Fuses and a real start. On a test pack, since a production build refuses the
+      # switches a test needs and restarts itself without them. It's thrown away.
+      - name: Test a package
+        shell: bash
+        run: |
+          node scripts/pack-test.mjs
+          npx playwright test test/fuses.spec.ts
+          rm -rf release
+
       - name: Build the shell
         run: npm run build
 
       - name: Build installers
         run: npx electron-builder --win --x64 --arm64 --publish never
 
-      # Fuses, the guard's output and a real start, on the x64 package.
-      - name: Test the package
-        run: npx playwright test test/fuses.spec.ts
-
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-windows
           path: |
@@ -128,12 +144,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -156,6 +172,10 @@ jobs:
         run: |
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
+
+      # Built per architecture, and the universal merge makes one binary of the two.
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs --arch x64,arm64
 
       - name: Build the shell
         run: npm run build
@@ -186,7 +206,7 @@ jobs:
           npx electron-builder --mac --universal --publish never "${signing[@]}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-macos
           path: |
@@ -214,12 +234,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
           cache: npm
@@ -252,6 +272,19 @@ jobs:
       - name: Build the native helper
         run: node scripts/build-native.mjs
 
+      - name: Build the policy watcher
+        run: node scripts/build-policy-watcher.mjs
+
+      # On a test pack: production refuses --user-data-dir and --no-sandbox and an unpacked
+      # folder has no SUID helper. The sandbox is not what this tests. It's thrown away.
+      - name: Smoke test
+        env:
+          SMOKE_NO_SANDBOX: "1"
+        run: |
+          node scripts/pack-test.mjs
+          bash scripts/linux-smoke.sh release/linux*-unpacked/bulwark
+          rm -rf release
+
       - name: Build the shell
         run: npm run build
 
@@ -260,15 +293,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: npx electron-builder --linux "--$ARCH" --publish never
 
-      # Ubuntu 24.04 blocks the user namespaces Chromium's sandbox wants, and an extracted
-      # AppImage has no SUID helper. The sandbox is not what this tests.
-      - name: Smoke test
-        env:
-          SMOKE_NO_SANDBOX: "1"
-        run: bash scripts/linux-smoke.sh release/Bulwark-*.AppImage --appimage-extract-and-run
-
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-linux-${{ matrix.arch }}
           path: |
@@ -285,23 +311,26 @@ jobs:
   release:
     name: Publish the release
     needs: [windows, macos, linux]
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Needs required reviewers set up when the repo exists: see the README's checklist.
+    environment: release
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
       - name: Download installers
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-*
           path: release
           merge-multiple: true
 
-      # The installers, with the update metadata next to them. A blockmap or latest.yml
-      # only says what an installer holds, so they don't get a checksum of their own.
+      # The installers. A blockmap or latest.yml only says what an installer holds, so they
+      # don't get a checksum of their own, but they are attested: latest.yml says which file
+      # to trust.
       - name: Checksum installers
         working-directory: release
         run: |
@@ -310,7 +339,7 @@ jobs:
           done
 
       - name: Attest build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: |
             release/*.exe
@@ -320,6 +349,7 @@ jobs:
             release/*.AppImage
             release/*.deb
             release/*.rpm
+            release/*.yml
 
       - name: Publish
         env:

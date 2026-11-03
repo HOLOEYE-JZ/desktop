@@ -10,3 +10,5 @@ native/dist/
 test-results/
 playwright-report/
 *.log
+.server-build/
+.native-modules/

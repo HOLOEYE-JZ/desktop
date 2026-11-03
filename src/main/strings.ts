@@ -45,23 +45,25 @@ const en = {
   menuWindow: 'Window',
   menuSwitchMode: 'Change Connection…',
   ok: 'OK',
-  menuRestartToUpdate: 'Restart to Update',
-  menuCheckForUpdates: 'Check for Updates…',
-  menuUpdateAvailable: (version: string) => `Bulwark ${version} is available`,
+  menuRestartToUpdate: 'Restart to update',
+  menuCheckForUpdates: 'Check for updates…',
+  menuUpdateAvailable: 'Bulwark {version} is available',
   updateReadyTitle: 'Bulwark is ready to update',
-  updateReadyBody: (version: string) => `Version ${version} installs the next time you quit. Click to restart now. Your drafts are saved first.`,
+  updateReadyBody: 'Version {version} installs the next time you quit. Click to restart now. Your drafts are saved first.',
   updateAvailableTitle: 'A new version of Bulwark is available',
   updateNoneTitle: 'Bulwark is up to date',
-  updateNoneDetail: (version: string) => `You have version ${version}.`,
+  updateNoneDetail: 'You have version {version}.',
   updateFailedTitle: "Bulwark couldn't check for updates",
   updateFailedDetail: 'Check your connection and try again later. Nothing has changed.',
   updateBetaTitle: 'Switch to beta versions?',
   updateBetaDetail: 'You get new versions earlier, and they can have more problems. To go back later, you install an older stable version or wait until stable catches up.',
-  updateBetaConfirm: 'Switch to Beta',
-  updateOlderTitle: (version: string) => `Go back to Bulwark ${version}?`,
-  updateOlderDetail: (current: string, target: string) =>
-    `You have the beta ${current}. Stable ${target} is older, and it may not be able to read what the beta saved on this computer. Your mail stays on your server, but mail kept for offline use may download again and changes not yet sent can be lost. If you wait, stable catches up and you move to it without this step.`,
-  updateOlderConfirm: 'Install Older Version',
+  updateBetaConfirm: 'Switch to beta',
+  updateOlderTitle: 'Go back to Bulwark {version}?',
+  updateOlderDetail:
+    'You have the beta {current}. Stable {target} is older, and it may not be able to read what the beta saved on this computer. Your mail stays on your server, but mail kept for offline use may download again and changes not yet sent can be lost. If you wait, stable catches up and you move to it without this step.',
+  updateOlderConfirm: 'Install older version',
+  sandboxTitle: "Bulwark can't run safely as an AppImage here",
+  sandboxDetail: 'This Linux blocks the security sandbox that keeps your mail apart from the rest of your computer, and an AppImage has no way round that. Bulwark does not run without it. Install the deb or rpm package from https://bulwarkmail.org/download instead: they bring what the sandbox needs.',
   keystoreAllowSession: 'Allow for this session',
   keystoreAllowOnce: 'Allow once',
   keystoreDeny: 'Deny',
@@ -135,22 +137,29 @@ const de: typeof en = {
   ok: 'OK',
   menuRestartToUpdate: 'Neu starten und aktualisieren',
   menuCheckForUpdates: 'Nach Updates suchen…',
-  menuUpdateAvailable: (version) => `Bulwark ${version} ist verfügbar`,
+  menuUpdateAvailable: 'Bulwark {version} ist verfügbar',
   updateReadyTitle: 'Bulwark kann aktualisiert werden',
-  updateReadyBody: (version) => `Version ${version} wird beim nächsten Beenden installiert. Klicken Sie, um jetzt neu zu starten. Ihre Entwürfe werden vorher gespeichert.`,
+  updateReadyBody: 'Version {version} wird beim nächsten Beenden installiert. Klicken Sie, um jetzt neu zu starten. Ihre Entwürfe werden vorher gespeichert.',
   updateAvailableTitle: 'Eine neue Version von Bulwark ist verfügbar',
   updateNoneTitle: 'Bulwark ist auf dem neuesten Stand',
-  updateNoneDetail: (version) => `Sie haben Version ${version}.`,
+  updateNoneDetail: 'Sie haben Version {version}.',
   updateFailedTitle: 'Bulwark konnte nicht nach Updates suchen',
   updateFailedDetail: 'Prüfen Sie Ihre Verbindung und versuchen Sie es später noch einmal. Es wurde nichts geändert.',
   updateBetaTitle: 'Zu Beta-Versionen wechseln?',
   updateBetaDetail: 'Sie erhalten neue Versionen früher, und sie können mehr Probleme haben. Um später zurückzuwechseln, installieren Sie eine ältere stabile Version oder warten, bis die stabile Version aufgeholt hat.',
   updateBetaConfirm: 'Zu Beta wechseln',
-  updateOlderTitle: (version) => `Zurück zu Bulwark ${version}?`,
-  updateOlderDetail: (current, target) =>
-    `Sie haben die Beta ${current}. Die stabile Version ${target} ist älter und kann möglicherweise nicht lesen, was die Beta auf diesem Computer gespeichert hat. Ihre E-Mails bleiben auf Ihrem Server, aber offline gespeicherte E-Mails werden eventuell neu geladen, und noch nicht gesendete Änderungen können verloren gehen. Wenn Sie warten, holt die stabile Version auf, und Sie wechseln ohne diesen Schritt.`,
+  updateOlderTitle: 'Zurück zu Bulwark {version}?',
+  updateOlderDetail:
+    'Sie haben die Beta {current}. Die stabile Version {target} ist älter und kann möglicherweise nicht lesen, was die Beta auf diesem Computer gespeichert hat. Ihre E-Mails bleiben auf Ihrem Server, aber offline gespeicherte E-Mails werden eventuell neu geladen, und noch nicht gesendete Änderungen können verloren gehen. Wenn Sie warten, holt die stabile Version auf, und Sie wechseln ohne diesen Schritt.',
   updateOlderConfirm: 'Ältere Version installieren',
+  sandboxTitle: 'Bulwark kann hier als AppImage nicht sicher laufen',
+  sandboxDetail: 'Dieses Linux blockiert die Sicherheits-Sandbox, die Ihre E-Mails vom Rest Ihres Computers trennt, und ein AppImage kann das nicht umgehen. Ohne sie läuft Bulwark nicht. Installieren Sie stattdessen das deb- oder rpm-Paket von https://bulwarkmail.org/download: Es bringt mit, was die Sandbox braucht.',
 };
+
+/** Plain text with {name} placeholders, so the webmail can translate it (labels). */
+export function fill(text: string, values: Record<string, string>): string {
+  return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
+}
 
 export function strings(): typeof en {
   return app.getLocale().toLowerCase().startsWith('de') ? de : en;

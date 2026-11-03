@@ -106,6 +106,7 @@ export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platfo
     NODE_ENV: 'production',
     NEXT_TELEMETRY_DISABLED: '1',
     COOKIE_SECURE: 'true',
+    APP_NAME: 'Bulwark',
     BULWARK_UPDATE_CHECK: 'off',
     BULWARK_TELEMETRY: 'off',
     LOG_LEVEL: 'warn',

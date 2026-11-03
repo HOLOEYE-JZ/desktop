@@ -40,7 +40,7 @@ for _ in $(seq 1 90); do
   sleep 2
   kill -0 "$app_pid" 2>/dev/null || break
   [ -f "$profile/webmail/admin/admin.json" ] || continue
-  for id in $(xwininfo -root -tree 2>/dev/null | grep -E '"(Bulwark|Webmail)' | awk '{print $1}'); do
+  for id in $(xwininfo -root -tree 2>/dev/null | grep -E '"Bulwark' | awk '{print $1}'); do
     if xwininfo -id "$id" 2>/dev/null | grep -q IsViewable; then
       window="$id"
       ok=0

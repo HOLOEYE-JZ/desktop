@@ -19,7 +19,8 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 export const VERSIONS = ['0.9.0', '0.9.1', '1.0.0-beta.1'];
 
 function run(command, args, env = {}) {
-  const result = spawnSync(command, args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...env }, shell: process.platform === 'win32' });
+  // BULWARK_TEST_PACK: after-pack.cjs refuses a build with test switches without it.
+  const result = spawnSync(command, args, { cwd: ROOT, stdio: 'inherit', env: { ...process.env, BULWARK_TEST_PACK: '1', ...env }, shell: process.platform === 'win32' });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed`);
 }
 

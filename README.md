@@ -40,15 +40,16 @@ npm run dist:linux   # AppImage, deb, rpm. Run on Linux.
 
 `electron-builder.yml` is the config, `.github/workflows/release.yml` the release: a tag `v<version>` builds everything from a clean checkout, with the webmail built from the tag in `config.webmailTag` in `package.json`. Provenance is a `.sha256` next to each installer and a signed attestation: `gh attestation verify <file> --repo bulwarkmail/desktop`. A hyphen in the tag makes it a prerelease, the beta channel.
 
-- **The server tree is per target.** A webmail build holds sharp for its own machine only. For another architecture, `node scripts/fetch-webmail.mjs --native win32-arm64` adds that one's binaries (macOS universal takes `darwin-x64,darwin-arm64`). `scripts/server-natives.mjs` keeps only what the target runs and fails the build if that's missing. esbuild goes altogether: the embedded server has no use for it.
-- **The guard** (`scripts/package-guard.mjs`, run from `scripts/after-pack.cjs`) fails the build on `data/`, `local-data/`, `.env*`, `repos/`, `plugin-signing.key`, links, anything unknown next to the server in `resources/`, or anything but the shell in `app.asar`. It's tested in the real flow by `test/package-guard.spec.ts`.
-- **Native modules** in the asar are unpacked next to it (`asarUnpack`). ASAR integrity stays on. The webmail server in `resources/server` isn't covered by it, since it has to be a real folder: that's what signing is for.
+- **The server is one file.** `scripts/before-pack.cjs` trims, guards and packs it into `server.asar`, about 3,100 files down to about 420 in the whole install, which is what a virus scanner reads at each update. Binaries the OS loads, `.next/static` and `public` stay loose in `server.asar.unpacked`. The server runs from inside the asar: `src/server/host.ts` answers `process.cwd()` with it, as an asar can't be a working directory.
+- **The server is per target.** A webmail build holds sharp for its own machine only. For another architecture, `node scripts/fetch-webmail.mjs --native win32-arm64` adds that one's binaries. macOS always takes `darwin-x64,darwin-arm64`, also on an x64 or arm64 pack, since a universal build merges those two. `scripts/server-natives.mjs` keeps only what the target runs and fails the build if that's missing. esbuild and caniuse-lite go altogether: the embedded server has no use for them.
+- **The guard** (`scripts/package-guard.mjs`, run on the way in and out of the pack) fails the build on `data/`, `local-data/`, `.env*`, `repos/`, `plugin-signing.key`, in any case, links, anything unknown next to the server in `resources/`, or anything but the shell in `app.asar`. A build with test switches in it doesn't package either. It's tested in the real flow by `test/package-guard.spec.ts`.
+- **Native modules** in the asar are unpacked next to it (`asarUnpack`). ASAR integrity stays on, and covers `server.asar` too. Unpacked files aren't covered by it: that's what signing is for.
 - **macOS** is configured but has only been read, not run. Hardened runtime and notarization are driven by env, see the comments in `electron-builder.yml` and `build/entitlements.mac.plist`.
 - **Icons** are in `build/`, made from the branding repo by `scripts/make-icons.mjs` and committed.
 
 ## Updates
 
-electron-updater reads GitHub Releases of `bulwarkmail/desktop`. It looks 30 seconds after a start, then every 4 hours and after waking up, and downloads by itself. When an update is ready there's "Restart to Update" in the File menu, one notification and a row under Settings > General. It never asks during work. It installs at the next quit or on that item, through the normal quit, so open drafts are saved first and a page that asks to stay calls it off.
+electron-updater reads GitHub Releases of `bulwarkmail/desktop`. It looks 30 seconds after a start, then every 4 hours and after waking up, and downloads by itself. When an update is ready there's "Restart to Update" in the File menu, one notification and a row under Settings > General. It never asks during work. It installs at the next quit, silently, or on that item, through the normal quit, so open drafts are saved first and a page that asks to stay calls it off. "Restart to Update" shows the installer's progress, since someone is waiting. All update traffic goes to `github.com` and `*.githubusercontent.com` over https, redirects included.
 
 What a copy does depends on how it got there:
 
@@ -61,7 +62,7 @@ What a copy does depends on how it got there:
 | macOS, unsigned | Says a version exists, with a link. Squirrel.Mac refuses unsigned apps. |
 | macOS, signed | Replaces itself |
 
-**Channels.** Stable, or beta for prereleases. Going to beta asks first. Going back to stable with a beta running does nothing by itself: the app stays on the beta until stable catches up. The settings page offers "Install older version…", which asks first and says what it can cost. `allowDowngrade` is only ever on for that.
+**Channels.** Stable, or beta for prereleases. Going to beta asks first. Going back to stable with a beta running does nothing by itself: the app stays on the beta until stable catches up. The settings page offers "Install older version…", which asks first and says what it can cost, and nothing older downloads without that yes. A download under way when the channel or a policy changes is given up. Stable never takes a prerelease. A copy stays on the channel it started on until someone chooses, also after it reaches a stable version. Beta reads the releases feed itself and takes the highest version, so a stable hotfix can't hide a newer beta.
 
 **Tests.** `node scripts/build-update-fixtures.mjs` builds three real installers with the test switches compiled in. `npx playwright test test/updater.spec.ts` installs them on this machine and runs electron-updater's real GitHub provider against a local stand-in. A normal build has no way to set another feed: `test/updater-rules.spec.ts` checks the string isn't there.
 
@@ -69,9 +70,24 @@ What a copy does depends on how it got there:
 
 Windows builds are unsigned for now.
 
-- **The updater works.** electron-updater checks the publisher only if `app-update.yml` names one, and that comes from a certificate. With none, it skips that check and relies on the sha512 in `latest.yml`, over TLS to GitHub. So what protects an update today is GitHub and TLS. With a certificate configured (the hook in `electron-builder.yml`), new builds refuse an installer from anyone else, and the first signed version installs fine over an unsigned one.
+- **The updater works, and here's what that means.** electron-updater checks the publisher only if `app-update.yml` names one, and that comes from a certificate. With none, it skips that check and relies on the sha512 in `latest.yml`, which comes from the same release as the installer. So **anyone who can publish a release on `bulwarkmail/desktop` can run code on every install that updates itself**, with nothing on the user's side to stop it. That's why publishing waits for a reviewer. With a certificate configured (the hook in `electron-builder.yml`), new builds refuse an installer from anyone else, and the first signed version installs fine over an unsigned one.
 - **SmartScreen.** A browser marks a downloaded file with its origin, and Windows then shows "Windows protected your PC" for an unsigned installer until the file has built up reputation. The user picks "More info", then "Run anyway". The download page and docs have to say so. Updates aren't affected: the file the updater downloads has no such mark (checked by the test), and it needs no elevation.
 - **macOS and Linux.** An unsigned DMG gets an ad-hoc signature, and Gatekeeper warns. AppImage, deb and rpm have no such check.
+
+### Linux: use the deb or rpm
+
+The deb and rpm are the recommended installs: they bring the SUID helper Chromium's sandbox needs.
+
+An AppImage has no such helper, so it only runs where user namespaces work. Bulwark doesn't run unsandboxed: where they're blocked, it says so in a dialog pointing to the deb and exits. That includes Ubuntu 24.04 and later by default, which restrict them through AppArmor. An AppImage also needs FUSE 2, which Ubuntu 22.04 and later don't install by default (`libfuse2`, or `libfuse2t64` on 24.04).
+
+### First release
+
+What has to be set up when `bulwarkmail/desktop` exists:
+
+1. A `release` environment with required reviewers (Settings > Environments). The publish job waits for it. Without reviewers, a pushed tag publishes straight to every install.
+2. Protect `v*` tags, so that only maintainers can push one.
+3. `config.webmailTag` in `package.json`: the first webmail tag holding `build:desktop`. The workflow fails at once if that tag doesn't exist.
+4. The macOS secrets, if signing: `MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`.
 
 ## For administrators
 

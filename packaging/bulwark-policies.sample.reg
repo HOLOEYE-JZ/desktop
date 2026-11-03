@@ -1,7 +1,8 @@
 Windows Registry Editor Version 5.00
 
 ; Sample Bulwark policies. Remove the leading ";" of the lines you want, then import with
-; reg import on each machine, or set the same values through ADMX, Intune or MSI properties.
+; reg import on each machine, or set the same values through ADMX or Intune. MSI properties
+; only cover INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL, so not AutoUpdate.
 ; Only this path is ever read. A value under Software\Policies is forced: the user can't
 ; change it. Under ...\Desktop\Recommended it's only the default, and the user's own
 ; choice goes first. HKEY_LOCAL_MACHINE goes before HKEY_CURRENT_USER.

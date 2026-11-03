@@ -22,12 +22,23 @@ export class FakeGitHub {
   events: { name: string; at: number }[] = [];
   /** Newest first, as GitHub lists them. */
   releases: FakeRelease[] = [];
+  /** Dribbles installers out, so a download stays in progress until this goes false. */
+  throttle = false;
+  /** A release asset answers with a redirect to another host. */
+  redirectDownloads = false;
+  redirectedHits = 0;
   private server: Server | null = null;
 
   async start(): Promise<string> {
     this.server = createServer((req, res) => {
       const url = new URL(req.url ?? '/', 'http://x');
       this.requests.push(url.pathname);
+      if (req.headers.host?.startsWith('localhost')) {
+        this.redirectedHits += 1;
+        res.statusCode = 404;
+        res.end('not here');
+        return;
+      }
       res.setHeader('access-control-allow-origin', '*');
       if (url.pathname.startsWith('/event/')) {
         this.events.push({ name: url.pathname.slice('/event/'.length), at: Date.now() });
@@ -61,8 +72,39 @@ export class FakeGitHub {
           res.end('not found');
           return;
         }
+        if (this.redirectDownloads && file.endsWith('.exe')) {
+          res.statusCode = 302;
+          res.setHeader('location', `http://localhost:${(this.server!.address() as AddressInfo).port}${url.pathname}`);
+          res.end();
+          return;
+        }
         res.setHeader('content-length', statSync(file).size);
-        createReadStream(file).pipe(res);
+        const stream = createReadStream(file);
+        if (this.throttle && file.endsWith('.exe')) {
+          stream.on('data', (chunk) => {
+            res.write(chunk);
+            if (this.throttle) {
+              stream.pause();
+              const again = setInterval(() => {
+                if (!this.throttle || res.destroyed) {
+                  clearInterval(again);
+                  stream.resume();
+                }
+              }, 200);
+              // A little at a time, so progress is seen while it's held back.
+              setTimeout(() => {
+                if (this.throttle && !res.destroyed) {
+                  clearInterval(again);
+                  stream.resume();
+                }
+              }, 1000);
+            }
+          });
+          stream.on('end', () => res.end());
+          res.on('close', () => stream.destroy());
+          return;
+        }
+        stream.pipe(res);
         return;
       }
       res.statusCode = 404;
@@ -178,6 +220,11 @@ export function toastKeys(): string[] {
 /** A test showed a real toast. Nothing of that stays behind on this machine. */
 export function removeToastKeys(): void {
   powershell(`${TOAST_KEYS} | Remove-Item -Recurse -Force`);
+}
+
+export function plantToastKey(): void {
+  const key = 'HKCU\\Software\\Classes\\CLSID\\{00000000-B017-4A2C-9F00-000000000001}\\LocalServer32';
+  spawnSync('reg', ['add', key, '/ve', '/d', installedExe(), '/f'], { stdio: 'ignore' });
 }
 
 export function pendingUpdateFiles(): string[] {

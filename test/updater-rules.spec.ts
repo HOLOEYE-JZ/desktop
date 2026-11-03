@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, updateAbility } from '../src/main/update-rules';
+import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, updateAbility, updateUrlAllowed } from '../src/main/update-rules';
+import { sandboxRefused } from '../src/main/sandbox-check';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -26,6 +27,10 @@ test.describe('which channel applies', () => {
     expect(effectiveChannel({ recommendedChannel: 'beta' }, undefined, '1.0.0')).toBe('beta');
     expect(effectiveChannel({}, undefined, '1.0.0')).toBe('stable');
     expect(effectiveChannel({}, undefined, '1.0.0-beta.1')).toBe('beta');
+    // Installed as a beta and updated to a stable: still on beta until someone chooses.
+    expect(effectiveChannel({}, undefined, '1.0.0', 'beta')).toBe('beta');
+    expect(effectiveChannel({}, 'stable', '1.0.0', 'beta')).toBe('stable');
+    expect(effectiveChannel({ recommendedChannel: 'stable' }, undefined, '1.0.0', 'beta')).toBe('stable');
   });
 });
 
@@ -78,6 +83,84 @@ test.describe('what a version in the feed means', () => {
   test('the same version is nothing', () => {
     expect(judgeFeedVersion('1.0.0', '1.0.0', 'stable')).toBe('same');
   });
+
+  test('stable never takes a prerelease, newer or older', () => {
+    expect(judgeFeedVersion('1.0.0', '1.1.0-beta.1', 'stable')).toBe('ignore');
+    expect(judgeFeedVersion('1.0.0-beta.2', '1.0.0-beta.3', 'stable')).toBe('ignore');
+    expect(judgeFeedVersion('1.0.0-beta.2', '1.0.0-beta.1', 'stable')).toBe('ignore');
+    expect(judgeFeedVersion('1.0.0', '1.1.0-beta.1', 'beta')).toBe('newer');
+  });
+});
+
+test.describe('a finished download', () => {
+  const facts = { allowed: true, wanted: { version: '1.1.0', older: false }, version: '1.1.0', current: '1.0.0', channel: 'stable' as const };
+
+  test('installs when it is still what was asked for', () => {
+    expect(acceptDownload(facts)).toBe(true);
+  });
+
+  test('does not when updates were turned off meanwhile', () => {
+    expect(acceptDownload({ ...facts, allowed: false })).toBe(false);
+  });
+
+  test('does not when it was given up on, or is something else', () => {
+    expect(acceptDownload({ ...facts, wanted: null })).toBe(false);
+    expect(acceptDownload({ ...facts, version: '1.2.0' })).toBe(false);
+  });
+
+  test('does not when the channel moved and it is a beta', () => {
+    expect(acceptDownload({ ...facts, wanted: { version: '1.1.0-beta.1', older: false }, version: '1.1.0-beta.1' })).toBe(false);
+    expect(acceptDownload({ ...facts, wanted: { version: '1.1.0-beta.1', older: false }, version: '1.1.0-beta.1', channel: 'beta' })).toBe(true);
+  });
+
+  test('an older version only with the yes that asked for it', () => {
+    const older = { allowed: true, version: '0.9.0', current: '1.0.0-beta.1', channel: 'stable' as const };
+    expect(acceptDownload({ ...older, wanted: { version: '0.9.0', older: true } })).toBe(true);
+    expect(acceptDownload({ ...older, wanted: { version: '0.9.0', older: false } })).toBe(false);
+  });
+});
+
+test.describe('where update traffic may go', () => {
+  test('https to GitHub and its asset hosts, nowhere else', () => {
+    for (const url of ['https://github.com/bulwarkmail/desktop/releases.atom', 'https://objects.githubusercontent.com/x', 'https://release-assets.githubusercontent.com/y', 'https://GITHUB.com/z']) {
+      expect(updateUrlAllowed(url), url).toBe(true);
+    }
+    for (const url of ['http://github.com/x', 'https://github.com.evil.example/x', 'https://evilgithubusercontent.com/x', 'https://github.com@evil.example/x', 'https://x:y@github.com/', 'https://example.org/x', 'not a url']) {
+      expect(updateUrlAllowed(url), url).toBe(false);
+    }
+  });
+
+  test('a test build adds its own feed, exactly', () => {
+    expect(updateUrlAllowed('http://127.0.0.1:5000/a', 'http://127.0.0.1:5000')).toBe(true);
+    expect(updateUrlAllowed('http://localhost:5000/a', 'http://127.0.0.1:5000')).toBe(false);
+  });
+});
+
+test.describe('the beta feed', () => {
+  const entry = (tag: string) => `<entry><link rel="alternate" type="text/html" href="https://github.com/bulwarkmail/desktop/releases/tag/${tag}"/></entry>`;
+
+  test('a stable hotfix published last does not hide a higher beta', () => {
+    expect(newestReleaseInFeed(entry('v1.0.1') + entry('v1.1.0-beta.2') + entry('v1.0.0'))).toBe('1.1.0-beta.2');
+  });
+
+  test('a stable newer than every beta wins, alpha and odd tags stay out', () => {
+    expect(newestReleaseInFeed(entry('v1.1.0') + entry('v1.1.0-rc.1') + entry('v1.1.0-beta.2'))).toBe('1.1.0');
+    expect(newestReleaseInFeed(entry('v9.0.0-alpha.1') + entry('v1.0.0') + entry('nightly'))).toBe('1.0.0');
+    expect(newestReleaseInFeed('<feed></feed>')).toBeNull();
+  });
+});
+
+test.describe('the sandbox', () => {
+  test('an AppImage started without it is refused', () => {
+    expect(sandboxRefused({ platform: 'linux', appImage: '/x/B.AppImage', noSandboxSwitch: true })).toBe(true);
+    expect(sandboxRefused({ platform: 'linux', appImage: '/x/B.AppImage', noSandboxSwitch: false, disableSandboxEnv: '1' })).toBe(true);
+    expect(sandboxRefused({ platform: 'linux', appImage: '/x/B.AppImage', noSandboxSwitch: false })).toBe(false);
+  });
+
+  test('nothing else is this check\'s business', () => {
+    expect(sandboxRefused({ platform: 'linux', noSandboxSwitch: true })).toBe(false);
+    expect(sandboxRefused({ platform: 'win32', appImage: 'x', noSandboxSwitch: true })).toBe(false);
+  });
 });
 
 test.describe('the policy hook', () => {
@@ -107,6 +190,6 @@ test.describe('the normal build', () => {
     expect(main).toContain('update-downloaded');
     expect(main).not.toContain('bulwark-test-update-feed');
     expect(main).not.toContain('bulwark-test-update-policy');
-    expect(main).not.toContain('setFeedURL');
+    expect(main).not.toContain('__bulwarkUpdaterTest');
   });
 });

@@ -9,16 +9,20 @@
 //     if that's missing, so a package can't ship with sharp silently broken.
 //
 // esbuild goes altogether. The webmail only loads it for PLUGIN_DEV_DIR, which the
-// embedded server's allowlisted env never has (src/main/profile.ts).
+// embedded server's allowlisted env never has (src/main/profile.ts). So does caniuse-lite.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-/** sharp's package suffixes a target needs. Universal macOS holds both. */
+/**
+ * sharp's package suffixes a target needs. macOS holds both, always: a universal build
+ * packs x64 and arm64 separately and then merges, and any file unique to one side stops
+ * the merge.
+ */
 export function sharpTargets(platform, arch) {
-  if (platform === 'darwin' && arch === 'universal') return ['darwin-x64', 'darwin-arm64'];
+  if (platform === 'darwin') return ['darwin-x64', 'darwin-arm64'];
   return [`${platform}-${arch}`];
 }
 
@@ -30,7 +34,7 @@ function sizeOf(target) {
 
 function remove(target, removed) {
   const bytes = sizeOf(target);
-  rmSync(target, { recursive: true, force: true });
+  rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   removed.add(path.basename(target));
   return bytes;
 }
@@ -47,7 +51,8 @@ export function trimServer(server, platform, arch) {
   const removed = new Set();
   let bytes = 0;
 
-  for (const dir of ['esbuild', '@esbuild']) {
+  // caniuse-lite is 600 files that only browserslist and cssnano read at build time.
+  for (const dir of ['esbuild', '@esbuild', 'caniuse-lite']) {
     const full = path.join(modules, dir);
     if (existsSync(full)) bytes += remove(full, removed);
   }

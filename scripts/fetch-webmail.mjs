@@ -22,7 +22,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { addNativePlatforms } from './server-natives.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const WEBMAIL_REPO = 'https://github.com/bulwarkmail/webmail.git';
+const WEBMAIL_REPO = process.env.BULWARK_WEBMAIL_REPO || 'https://github.com/bulwarkmail/webmail.git';
 const TRUST_MARKER = 'bulwark.desktop.trustedJmapOrigins';
 
 function fail(message) {
@@ -77,6 +77,32 @@ export function findLinks(dir, found = []) {
   return found;
 }
 
+function isInside(file, dir) {
+  const relative = path.relative(dir, file);
+  return !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+/**
+ * Next compiles NEXT_PUBLIC_* from a checkout's .env files into the client, where they
+ * ship. On a developer's machine that's their settings. Names only, never the values.
+ */
+export function publicEnvKeys(source) {
+  const found = [];
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^\.env/i.test(entry.name) || /\.(example|sample|template)$/i.test(entry.name)) continue;
+    for (const line of readFileSync(path.join(source, entry.name), 'utf8').split(/\r?\n/)) {
+      const key = /^\s*(?:export\s+)?(NEXT_PUBLIC_[A-Z0-9_]+)\s*=/.exec(line)?.[1];
+      if (key) found.push(`${entry.name}: ${key}`);
+    }
+  }
+  return found;
+}
+
+function warnAboutEnvFiles(source) {
+  const keys = publicEnvKeys(source);
+  if (keys.length > 0) console.warn(`[fetch-webmail] these are compiled into this build, from your own env files. A release builds from a tag, without them:\n  ${keys.join('\n  ')}`);
+}
+
 function copyMissing(from, to) {
   // Package by package, first one wins. `--parents`-style nesting stays intact.
   mkdirSync(to, { recursive: true });
@@ -110,11 +136,20 @@ async function fromPath(source, destination) {
   const serverRoot = findServerRoot(standalone);
   if (!serverRoot) fail(`no server.js under ${standalone}`);
 
-  rmSync(destination, { recursive: true, force: true });
+  // `dereference` below would copy what a link points at, and then the guard sees plain
+  // files. So links are looked at here, before anything's copied.
+  const serverModules = path.join(serverRoot, 'node_modules');
+  const links = [
+    ...findLinks(serverRoot).filter((link) => path.resolve(link) !== path.resolve(serverModules) && !isInside(link, serverModules)),
+    ...findLinks(path.join(source, 'public')),
+  ];
+  if (links.length > 0) fail(`links in the build could carry anything along: ${links.slice(0, 5).join(', ')}`);
+  warnAboutEnvFiles(source);
+
+  rmSync(destination, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
   mkdirSync(destination, { recursive: true });
   // A link at serverRoot/node_modules points at the developer's whole node_modules,
   // on this machine. Only the real folders in the tree are what the trace chose.
-  const serverModules = path.join(serverRoot, 'node_modules');
   cpSync(serverRoot, destination, { recursive: true, dereference: true, filter: (from) => path.resolve(from) !== path.resolve(serverModules) });
   const moduleDirs = findNodeModules(standalone);
   if (moduleDirs.length === 0) fail(`no node_modules under ${standalone}`);
@@ -126,8 +161,8 @@ async function fromPath(source, destination) {
   rmSync(path.join(destination, '.next', 'cache'), { recursive: true, force: true });
 
   if (!existsSync(path.join(destination, 'node_modules', 'next', 'package.json'))) fail('next is missing from the flattened tree');
-  const links = findLinks(destination);
-  if (links.length > 0) fail(`links in the tree would point outside it on another machine: ${links.slice(0, 5).join(', ')}`);
+  const leftLinks = findLinks(destination);
+  if (leftLinks.length > 0) fail(`links in the tree would point outside it on another machine: ${leftLinks.slice(0, 5).join(', ')}`);
   // Turbopack's externals are hashed links that don't survive moving (decision 3).
   if (existsSync(path.join(destination, '.next', 'node_modules'))) fail('this is a Turbopack build. Build it with: npm run build:desktop');
   if (!containsMarker(path.join(destination, '.next', 'server'), TRUST_MARKER)) {
@@ -165,6 +200,9 @@ async function main() {
   if (source && tag) fail('--path or --tag, not both');
   if (source) await fromPath(path.resolve(source), destination);
   if (tag) {
+    // A clear message, not git's, for the likely mistake: a tag that isn't out yet.
+    const exists = spawnSync('git', ['ls-remote', '--exit-code', '--tags', WEBMAIL_REPO, `refs/tags/${tag}`], { stdio: 'ignore' });
+    if (exists.status !== 0) fail(`the webmail has no tag ${tag}. Set config.webmailTag in package.json to the first tag that has build:desktop, or wait for that release.`);
     const work = mkdtempSync(path.join(tmpdir(), 'bulwark-webmail-'));
     run('git', ['clone', '--depth', '1', '--branch', tag, WEBMAIL_REPO, work]);
     // --branch takes a branch too, and a release only ever builds from a tag.
@@ -173,7 +211,7 @@ async function main() {
     run('npm', ['ci'], { cwd: work });
     run('npm', ['run', 'build:desktop'], { cwd: work });
     await fromPath(work, destination);
-    rmSync(work, { recursive: true, force: true });
+    rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
   }
   if (native) {
     for (const added of addNativePlatforms(destination, native.split(','))) console.log(`[fetch-webmail] added ${added}`);

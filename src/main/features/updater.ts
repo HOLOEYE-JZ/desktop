@@ -17,20 +17,34 @@ import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { app, BrowserWindow, dialog, Notification, powerMonitor } from 'electron';
-import type { AppUpdater, UpdateInfo } from 'electron-updater';
+import type { AppUpdater, CancellationToken, UpdateInfo } from 'electron-updater';
 import { CHANNEL, type UpdateChannel, type UpdateState } from '../../shared/bridge';
 import { setUpdateMenu } from '../menu';
 import { openExternally } from '../navigation';
-import { onUpdatePolicyChange, readUpdatePolicy } from '../update-policy';
-import { effectiveChannel, installKind, judgeFeedVersion, updateAbility, type InstallKind } from '../update-rules';
-import { strings } from '../strings';
+import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../update-policy';
+import {
+  acceptDownload,
+  effectiveChannel,
+  installKind,
+  isPrerelease,
+  judgeFeedVersion,
+  newestReleaseInFeed,
+  updateAbility,
+  updateUrlAllowed,
+  type InstallKind,
+  type UpdatePolicy,
+  type WantedDownload,
+} from '../update-rules';
+import { fill, strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 
 declare const __BULWARK_UPDATER_TEST__: boolean;
 
 const FIRST_CHECK_MS = 30_000;
 const CHECK_EVERY_MS = 4 * 3600_000;
-const RELEASES_URL = 'https://github.com/bulwarkmail/desktop/releases';
+const OWNER = 'bulwarkmail';
+const REPO = 'desktop';
+const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases`;
 
 function argValue(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -63,6 +77,13 @@ function detectKind(): InstallKind {
   });
 }
 
+let hold: (() => void) | null = null;
+
+/** The app is restarting for something else (Change Connection): an update waits for the next quit. */
+export function holdUpdateInstall(): void {
+  hold?.();
+}
+
 class Updater {
   private updater: AppUpdater | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -75,16 +96,21 @@ class Updater {
   private target: string | undefined;
   private percent: number | undefined;
 
+  private downloadToken: CancellationToken | null = null;
+  private activeDownload: Promise<void> | null = null;
+  private wanted: WantedDownload | null = null;
+  private lastChannel: UpdateChannel | null = null;
+
   constructor(private readonly ctx: FeatureContext) {}
 
   private get channel(): UpdateChannel {
-    return effectiveChannel(this.policy(), this.ctx.state.data.updateChannel, app.getVersion());
+    return effectiveChannel(this.policy(), this.ctx.state.data.updateChannel, app.getVersion(), this.ctx.state.data.updateChannelInitial);
   }
 
-  private policy() {
+  private policy(): UpdatePolicy {
     if (__BULWARK_UPDATER_TEST__) {
       const forced = argValue('bulwark-test-update-policy');
-      if (forced) return JSON.parse(forced) as ReturnType<typeof readUpdatePolicy>;
+      if (forced) return JSON.parse(forced) as UpdatePolicy;
     }
     return readUpdatePolicy();
   }
@@ -136,7 +162,10 @@ class Updater {
     if (this.status === 'ready' && this.target) {
       items.push({ id: 'update-restart', label: text.menuRestartToUpdate, click: () => this.restart() });
     } else if (this.status === 'available' && this.target) {
-      items.push({ id: 'update-download', label: text.menuUpdateAvailable(this.target), click: () => this.openDownload() });
+      // On a per-machine install the person using it can't do anything about it.
+      if (this.kind !== 'windows-other') {
+        items.push({ id: 'update-download', label: fill(text.menuUpdateAvailable, { version: this.target }), click: () => this.openDownload() });
+      }
     } else {
       items.push({
         id: 'update-check',
@@ -158,17 +187,51 @@ class Updater {
     // Only true once a right version is on disk: see `onDownloaded`.
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
-    if (__BULWARK_UPDATER_TEST__ && this.testFeed) {
-      const feed = new URL(this.testFeed);
-      autoUpdater.setFeedURL({ provider: 'github', owner: 'bulwarkmail', repo: 'desktop', host: feed.host, protocol: feed.protocol.replace(':', '') as 'http' });
-    }
+    // Every hop of every request, redirects included: only GitHub. TLS doesn't help against a
+    // release asset that points somewhere else.
+    const testOrigin = __BULWARK_UPDATER_TEST__ && this.testFeed ? new URL(this.testFeed).origin : undefined;
+    autoUpdater.netSession.webRequest.onBeforeRequest({ urls: ['<all_urls>'] }, (details, callback) => {
+      callback({ cancel: !updateUrlAllowed(details.url, testOrigin) });
+    });
     autoUpdater.on('download-progress', (progress: { percent: number }) => {
-      this.setStatus('downloading', this.target, Math.round(progress.percent));
+      if (this.wanted) this.setStatus('downloading', this.wanted.version, Math.round(progress.percent));
     });
     autoUpdater.on('update-downloaded', (info: UpdateInfo) => this.onDownloaded(info));
     autoUpdater.on('error', (error: Error) => this.onError(error));
     this.updater = autoUpdater;
     return autoUpdater;
+  }
+
+  private get feedBase(): { host?: string; protocol?: 'http'; base: string } {
+    if (__BULWARK_UPDATER_TEST__ && this.testFeed) {
+      const feed = new URL(this.testFeed);
+      return { host: feed.host, protocol: 'http', base: feed.origin };
+    }
+    return { base: 'https://github.com' };
+  }
+
+  /**
+   * Stable asks GitHub's "latest release". Beta reads the feed itself and takes the highest
+   * version: electron-updater takes the newest entry, so a stable hotfix published after a
+   * beta would hide that beta until the next one.
+   */
+  private async pointFeed(updater: AppUpdater, channel: UpdateChannel): Promise<void> {
+    const { host, protocol, base } = this.feedBase;
+    updater.disableDifferentialDownload = false;
+    if (channel === 'beta') {
+      try {
+        const response = await updater.netSession.fetch(`${base}/${OWNER}/${REPO}/releases.atom`, { headers: { accept: 'application/atom+xml' } });
+        const newest = response.ok ? newestReleaseInFeed(await response.text()) : null;
+        if (newest) {
+          updater.setFeedURL({ provider: 'generic', url: `${base}/${OWNER}/${REPO}/releases/download/v${newest}/` });
+          updater.disableDifferentialDownload = true;
+          return;
+        }
+      } catch (error) {
+        console.warn('[updater]', error instanceof Error ? error.message : error);
+      }
+    }
+    updater.setFeedURL({ provider: 'github', owner: OWNER, repo: REPO, ...(host ? { host, protocol } : {}) });
   }
 
   /** Offline, a release still uploading. Quiet: the next check tries again. What's on disk stays ready. */
@@ -179,6 +242,11 @@ class Updater {
 
   private onDownloaded(info: UpdateInfo): void {
     const updater = this.load();
+    // The channel or a policy may have moved while this came down.
+    if (!acceptDownload({ allowed: this.allowed, wanted: this.wanted, version: info.version, current: app.getVersion(), channel: this.channel })) {
+      updater.autoInstallOnAppQuit = false;
+      return;
+    }
     updater.autoInstallOnAppQuit = true;
     this.setStatus('ready', info.version);
     const { state } = this.ctx;
@@ -187,9 +255,35 @@ class Updater {
     state.touch();
     if (!Notification.isSupported()) return;
     const text = strings();
-    const notification = new Notification({ title: text.updateReadyTitle, body: text.updateReadyBody(info.version), silent: true });
+    const notification = new Notification({ title: text.updateReadyTitle, body: fill(text.updateReadyBody, { version: info.version }), silent: true });
     notification.on('click', () => this.restart());
     notification.show();
+  }
+
+  private download(updater: AppUpdater, version: string, older: boolean): Promise<unknown> {
+    const require = createRequire(import.meta.url);
+    const { CancellationToken: Token } = require('./updater-lib.cjs') as { CancellationToken: new () => CancellationToken };
+    const token = new Token();
+    this.downloadToken = token;
+    this.wanted = { version, older };
+    const run = updater.downloadUpdate(token);
+    this.activeDownload = run.then(
+      () => {},
+      () => {},
+    );
+    return run.finally(() => {
+      if (this.downloadToken === token) this.downloadToken = null;
+    });
+  }
+
+  /** Whatever is coming down or sitting on disk no longer counts. Waits until it has stopped. */
+  private async abandonDownload(): Promise<void> {
+    this.wanted = null;
+    this.downloadToken?.cancel();
+    this.downloadToken = null;
+    if (this.updater) this.updater.autoInstallOnAppQuit = false;
+    await this.activeDownload;
+    this.activeDownload = null;
   }
 
   async check(): Promise<UpdateState> {
@@ -201,11 +295,13 @@ class Updater {
     // `update-downloaded` puts this back. A download from another channel doesn't count.
     updater.autoInstallOnAppQuit = false;
     const channel = this.channel;
+    this.lastChannel = channel;
     updater.allowPrerelease = channel === 'beta';
     // Lets an older stable release reach `judgeFeedVersion`. Nothing downloads on its own.
     updater.allowDowngrade = true;
     this.setStatus('checking');
     try {
+      await this.pointFeed(updater, channel);
       const result = await updater.checkForUpdates();
       const version = result?.updateInfo.version;
       if (!version) {
@@ -219,13 +315,14 @@ class Updater {
         this.setStatus('up-to-date');
       } else if (this.ability === 'install') {
         this.setStatus('downloading', version, 0);
-        await updater.downloadUpdate();
+        await this.download(updater, version, false);
       } else {
         this.setStatus('available', version);
         this.notifyAvailable(version);
       }
     } catch (error) {
-      this.onError(error);
+      // A download given up on isn't a failure: whoever gave it up says what happens next.
+      if (this.wanted || (this.status as string) === 'checking') this.onError(error);
     }
     return this.state();
   }
@@ -237,7 +334,7 @@ class Updater {
     state.data.updateNotified = version;
     state.touch();
     const text = strings();
-    const notification = new Notification({ title: text.updateAvailableTitle, body: text.menuUpdateAvailable(version), silent: true });
+    const notification = new Notification({ title: text.updateAvailableTitle, body: fill(text.menuUpdateAvailable, { version }), silent: true });
     notification.on('click', () => this.openDownload());
     notification.show();
   }
@@ -250,7 +347,7 @@ class Updater {
       type: 'info' as const,
       title: 'Bulwark',
       message: after.status === 'up-to-date' ? text.updateNoneTitle : text.updateFailedTitle,
-      detail: after.status === 'up-to-date' ? text.updateNoneDetail(after.version) : text.updateFailedDetail,
+      detail: after.status === 'up-to-date' ? fill(text.updateNoneDetail, { version: after.version }) : text.updateFailedDetail,
       buttons: [text.ok],
       noLink: true,
     };
@@ -261,7 +358,7 @@ class Updater {
 
   /** The normal quit. If a page stays, the windows manager says so and this is called off. */
   restart(): void {
-    if (this.status !== 'ready') return;
+    if (this.status !== 'ready' || !this.allowed) return;
     this.restarting = true;
     app.quit();
   }
@@ -293,22 +390,22 @@ class Updater {
     }
     state.data.updateChannel = channel;
     state.save();
-    // What's on disk came from the other channel. It doesn't install at quit any more.
-    if (this.updater) this.updater.autoInstallOnAppQuit = false;
+    // What's coming down or on disk came from the other channel.
+    await this.abandonDownload();
     this.setStatus('idle');
     return this.check();
   }
 
   /** Beta to stable, by the user's own click and with the consequences spelled out. */
   async installOlder(): Promise<UpdateState> {
-    if (this.status !== 'older-available' || !this.target || this.ability !== 'install') return this.state();
+    if (this.status !== 'older-available' || !this.target || this.ability !== 'install' || !this.allowed) return this.state();
     const text = strings();
     const target = this.target;
     const options = {
       type: 'warning' as const,
       title: 'Bulwark',
-      message: text.updateOlderTitle(target),
-      detail: text.updateOlderDetail(app.getVersion(), target),
+      message: fill(text.updateOlderTitle, { version: target }),
+      detail: fill(text.updateOlderDetail, { current: app.getVersion(), target }),
       buttons: [text.updateOlderConfirm, text.cancel],
       defaultId: 1,
       cancelId: 1,
@@ -316,12 +413,13 @@ class Updater {
     };
     const parent = BrowserWindow.getFocusedWindow();
     const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
-    if (response !== 0) return this.state();
+    // The answer took a while: is this still what's on offer?
+    if (response !== 0 || this.status !== 'older-available' || this.target !== target || !this.allowed) return this.state();
     this.setStatus('downloading', target, 0);
     try {
-      await this.load().downloadUpdate();
+      await this.download(this.load(), target, true);
     } catch (error) {
-      this.onError(error);
+      if (this.wanted) this.onError(error);
     }
     return this.state();
   }
@@ -334,11 +432,16 @@ class Updater {
     this.timer.unref?.();
   }
 
-  private onPolicyChange(): void {
-    if (!this.allowed && this.updater) this.updater.autoInstallOnAppQuit = false;
+  private async onPolicyChange(): Promise<void> {
+    const moved = this.lastChannel !== null && this.lastChannel !== this.channel;
+    if (!this.allowed || moved) {
+      await this.abandonDownload();
+      this.status = 'idle';
+      this.target = undefined;
+    }
     this.schedule();
-    if (this.allowed && this.status === 'off') this.setStatus('idle');
-    else this.publish();
+    this.publish();
+    if (this.allowed && moved) void this.check();
   }
 
   setup(): void {
@@ -350,15 +453,36 @@ class Updater {
     ctx.on(CHANNEL.updatesRestart, () => this.restart());
     ctx.on(CHANNEL.updatesOpenDownload, () => this.openDownload());
 
+    // What this copy was at its first run decides the channel until someone chooses. Asking
+    // the running version each time would drop a beta user off beta at the first stable.
+    if (!ctx.state.data.updateChannelInitial) {
+      ctx.state.data.updateChannelInitial = isPrerelease(app.getVersion()) ? 'beta' : 'stable';
+      ctx.state.touch();
+    }
+
+    hold = () => {
+      this.restarting = false;
+      if (this.updater) this.updater.autoInstallOnAppQuit = false;
+    };
+
     // A page chose to stay: the install waits, and the update stays ready.
     ctx.windows.on('stayed', () => {
       this.restarting = false;
     });
     app.on('will-quit', () => {
-      if (this.restarting) this.load().quitAndInstall(true, true);
+      // Not silent: the app is gone and a person is waiting, so the installer's progress shows.
+      if (this.restarting && this.allowed && this.status === 'ready') this.load().quitAndInstall(false, true);
     });
 
-    onUpdatePolicyChange(() => this.onPolicyChange());
+    onUpdatePolicyChange(() => void this.onPolicyChange());
+    if (__BULWARK_UPDATER_TEST__) {
+      (globalThis as unknown as { __bulwarkUpdaterTest: unknown }).__bulwarkUpdaterTest = {
+        setPolicy: (policy: UpdatePolicy) => {
+          setUpdatePolicySource(() => policy);
+          notifyUpdatePolicyChanged();
+        },
+      };
+    }
     this.schedule();
     powerMonitor.on('resume', () => {
       if (Date.now() - this.lastCheckAt > 3600_000) void this.check();

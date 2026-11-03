@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { asarFiles } from '../scripts/package-guard.mjs';
 import { removeProfile, tempProfile } from './helpers';
 
 /**
@@ -81,8 +82,7 @@ test.describe('the packaged app', () => {
   });
 
   test('nothing private is in the package', () => {
-    const resources = path.join(UNPACKED, 'resources', 'server');
-    const relative = allFiles(resources).map((file) => path.relative(resources, file).split(path.sep).join('/'));
+    const relative = asarFiles(path.join(UNPACKED, 'resources', 'server.asar'));
     expect(relative).toContain('server.js');
     expect(relative).toContain('node_modules/next/package.json');
     expect(relative).toContain('.next/required-server-files.json');
@@ -93,10 +93,17 @@ test.describe('the packaged app', () => {
       expect(file, file).not.toMatch(/plugin-signing\.key$/);
     }
     expect(relative.some((file) => file.startsWith('.next/cache/'))).toBe(false);
-    // The build machine's paths are out of what Next recorded.
-    const recorded = readFileSync(path.join(resources, '.next', 'required-server-files.json'), 'utf8');
-    expect(recorded).not.toContain(path.resolve(ROOT, '..', '..').split(path.sep).slice(0, 3).join('/'));
-    expect(recorded).toContain('/bulwark-build');
+    expect(relative.some((file) => file.startsWith('node_modules/caniuse-lite/'))).toBe(false);
+  });
+
+  test('the server is one file plus what has to stay loose, far fewer than it was', () => {
+    const count = allFiles(UNPACKED).length;
+    expect(count).toBeLessThan(600);
+    const unpacked = allFiles(path.join(UNPACKED, 'resources', 'server.asar.unpacked')).map((file) => file.split(path.sep).join('/'));
+    expect(unpacked.some((file) => file.endsWith('.node') && file.includes('@img'))).toBe(true);
+    expect(unpacked.some((file) => file.includes('/public/'))).toBe(true);
+    expect(unpacked.some((file) => file.includes('/.next/static/'))).toBe(true);
+    expect(unpacked.some((file) => file.includes('/.next/server/'))).toBe(false);
   });
 
   test('the first-run page still works with the file protocol\'s extra privileges off', async () => {

@@ -49,9 +49,9 @@ export function isPrerelease(version: string): boolean {
   return parts(version).pre.length > 0;
 }
 
-/** Forced > the user's choice > recommended > what this build is. */
-export function effectiveChannel(policy: UpdatePolicy, userChoice: UpdateChannel | undefined, currentVersion: string): UpdateChannel {
-  return policy.channel ?? userChoice ?? policy.recommendedChannel ?? (isPrerelease(currentVersion) ? 'beta' : 'stable');
+/** Forced > the user's choice > recommended > what this copy was at its first run > what this build is. */
+export function effectiveChannel(policy: UpdatePolicy, userChoice: UpdateChannel | undefined, currentVersion: string, initial?: UpdateChannel): UpdateChannel {
+  return policy.channel ?? userChoice ?? policy.recommendedChannel ?? initial ?? (isPrerelease(currentVersion) ? 'beta' : 'stable');
 }
 
 export type InstallKind = 'dev' | 'nsis' | 'windows-other' | 'mac-signed' | 'mac-unsigned' | 'appimage' | 'deb' | 'rpm' | 'linux-other';
@@ -97,8 +97,53 @@ export type FeedVerdict = 'newer' | 'same' | 'older-offer' | 'ignore';
  * combination it's a pulled release or a feed that hasn't caught up, and not news.
  */
 export function judgeFeedVersion(current: string, latest: string, channel: UpdateChannel): FeedVerdict {
+  // Stable never takes a prerelease, whatever a feed says. Not even the same one again.
+  if (channel === 'stable' && isPrerelease(latest)) return 'ignore';
   const order = compareVersions(latest, current);
   if (order > 0) return 'newer';
   if (order === 0) return 'same';
   return channel === 'stable' && isPrerelease(current) ? 'older-offer' : 'ignore';
+}
+
+export interface WantedDownload {
+  version: string;
+  /** The user agreed to go back to an older version. */
+  older: boolean;
+}
+
+/**
+ * Whether a finished download may be installed. The channel or a policy can move while it
+ * comes down, and electron-updater reports it done regardless.
+ */
+export function acceptDownload(facts: { allowed: boolean; wanted: WantedDownload | null; version: string; current: string; channel: UpdateChannel }): boolean {
+  const { allowed, wanted, version, current, channel } = facts;
+  if (!allowed || !wanted || wanted.version !== version) return false;
+  const verdict = judgeFeedVersion(current, version, channel);
+  return verdict === 'newer' || (wanted.older && verdict === 'older-offer');
+}
+
+/** The hosts update traffic may reach, on every hop. A test build adds its own feed. */
+export function updateUrlAllowed(url: string, testOrigin?: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (testOrigin && parsed.origin === testOrigin) return true;
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return false;
+  const host = parsed.hostname.toLowerCase();
+  return host === 'github.com' || host.endsWith('.githubusercontent.com');
+}
+
+/** The highest stable, rc or beta version a releases feed names. Alpha and anything else stay out. */
+export function newestReleaseInFeed(atom: string): string | null {
+  let newest: string | null = null;
+  for (const match of atom.matchAll(/\/tag\/v?([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)"/g)) {
+    const version = match[1];
+    const pre = version.includes('-') ? version.slice(version.indexOf('-') + 1).split('.')[0] : null;
+    if (pre !== null && pre !== 'beta' && pre !== 'rc') continue;
+    if (newest === null || compareVersions(version, newest) > 0) newest = version;
+  }
+  return newest;
 }

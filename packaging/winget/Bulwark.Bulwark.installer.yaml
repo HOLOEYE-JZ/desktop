@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 # Winget manifest template, installer part. Replace {{VERSION}} and each {{SHA256_*}} with
 # the values of a published release: the `.sha256` files next to the installers. Then
 # submit all three files to microsoft/winget-pkgs under
@@ -45,12 +46,20 @@ Installers:
     Scope: machine
     InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-{{VERSION}}-x64.msi
     InstallerSha256: {{SHA256_MSI_X64}}
-    UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+        UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
   - Architecture: arm64
     InstallerType: wix
     Scope: machine
     InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-{{VERSION}}-arm64.msi
     InstallerSha256: {{SHA256_MSI_ARM64}}
-    UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+        UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
 ManifestType: installer
 ManifestVersion: 1.10.0

@@ -19,6 +19,7 @@ import { instancePartition, setupAppSession } from './app-session';
 import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { holdUpdateInstall } from './features/updater';
 import { createChannels, registerBridge } from './ipc';
 import { LocalAdmin } from './local-admin';
 import { installMenu } from './menu';
@@ -26,6 +27,7 @@ import { attachWindowGuards, type GuardOptions } from './navigation';
 import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
 import { profilePaths, seedProfile, serverEnv } from './profile';
+import { sandboxRefused } from './sandbox-check';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
@@ -81,7 +83,7 @@ let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
 
 function serverDirectory(): string {
-  if (app.isPackaged) return path.join(process.resourcesPath, 'server');
+  if (app.isPackaged) return path.join(process.resourcesPath, 'server.asar');
   return argValue('bulwark-server-dir') ?? path.join(HERE, '..', 'webmail');
 }
 
@@ -214,6 +216,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
       append,
       init: {
         type: 'init',
+        serverDir: serverDirectory(),
         port: SERVER_PORT,
         parentPid: process.pid,
         launchSecret,
@@ -364,6 +367,8 @@ function switchMode(): void {
 }
 
 function finishSwitch(): void {
+  // Installing now would kill the app relaunched below. It's on disk for the next quit.
+  holdUpdateInstall();
   stateFile.data.mode = undefined;
   stateFile.data.instanceUrl = undefined;
   stateFile.save();
@@ -412,6 +417,12 @@ if (gotLock) {
   });
 
   app.whenReady().then(async () => {
+    if (sandboxRefused({ platform: process.platform, appImage: process.env.APPIMAGE, noSandboxSwitch: app.commandLine.hasSwitch('no-sandbox'), disableSandboxEnv: process.env.ELECTRON_DISABLE_SANDBOX })) {
+      const text = strings();
+      dialog.showMessageBoxSync({ type: 'error', title: 'Bulwark', message: text.sandboxTitle, detail: text.sandboxDetail, buttons: [text.ok], noLink: true });
+      app.exit(1);
+      return;
+    }
     installMenu({ switchMode, devTools });
     const theme = new ThemeController(stateFile);
     await boot(theme);

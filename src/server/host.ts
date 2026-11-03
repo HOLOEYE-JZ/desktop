@@ -76,7 +76,10 @@ function exitWithParent(pid: number): void {
 
 async function start(init: InitMessage): Promise<void> {
   exitWithParent(init.parentPid);
-  const serverDir = process.cwd();
+  const { serverDir } = init;
+  // Next and the webmail read their files relative to the working directory, and an asar
+  // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
+  process.cwd = () => serverDir;
   // The secrets, here rather than in the utilityProcess's env block. Next and
   // the webmail read them from process.env from here on.
   Object.assign(process.env, init.secretEnv);

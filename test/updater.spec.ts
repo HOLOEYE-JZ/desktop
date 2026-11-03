@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -15,6 +15,8 @@ import {
   installFixture,
   killInstalled,
   pendingUpdateFiles,
+  plantToastKey,
+  toastKeys,
   removeToastKeys,
   runningFromInstall,
   uninstall,
@@ -48,7 +50,6 @@ async function launch(exe: string, feed: string, ...extra: string[]): Promise<Ru
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
   delete env.ELECTRON_RUN_AS_NODE;
-  const { writeFileSync, mkdirSync } = await import('node:fs');
   mkdirSync(profile, { recursive: true });
   writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone' }));
   const app = await electron.launch({
@@ -125,7 +126,7 @@ test.describe('updates', () => {
     killInstalled();
     removeToastKeys();
     if (!hadDefaultProfile) rmSync(roaming, { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
-    rmSync(path.join(process.env.LOCALAPPDATA!, 'bulwark-desktop-updater'), { recursive: true, force: true });
+    rmSync(path.join(process.env.LOCALAPPDATA!, 'bulwark-desktop-updater'), { recursive: true, force: true, maxRetries: 10, retryDelay: 1000 });
   });
 
   test.afterAll(() => github.stop());
@@ -145,7 +146,9 @@ test.describe('updates', () => {
     expect(await menuItem(app, 'update-restart')).toBe(true);
     expect(await menuItem(app, 'update-check')).toBe(false);
     expect(await prompts(app)).toEqual([]);
-    expect(JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8') || '{}')).toBeTruthy();
+    await expect
+      .poll(() => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).updateNotified, { timeout: 10_000 })
+      .toBe(B);
 
     // For the docs on SmartScreen: what the updater fetched has no mark of the web.
     const pending = pendingUpdateFiles().filter((file) => file.endsWith('.exe'));
@@ -299,6 +302,111 @@ test.describe('updates', () => {
     removeProfile(profile);
   });
 
+  test('moving to another channel in the middle of a download gives it up, and nothing installs', async () => {
+    installFixture(A);
+    github.releases = [{ version: BETA, prerelease: true }, { version: A }];
+    github.throttle = true;
+    const { app, page, profile } = await launch(installedExe(), feed);
+    await waitForStatus(page, 'up-to-date');
+    await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('beta'));
+    await waitForStatus(page, 'downloading');
+
+    const back = await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('stable'));
+    expect(back.channel).toBe('stable');
+    expect(back.status).toBe('up-to-date');
+    github.throttle = false;
+    await new Promise((resolve) => setTimeout(resolve, 4000));
+    expect((await stateOf(page)).status).toBe('up-to-date');
+    expect(await menuItem(app, 'update-restart')).toBe(false);
+
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    await expect.poll(() => runningFromInstall().length, { timeout: 30_000, intervals: [500] }).toBe(0);
+    for (let i = 0; i < 10; i += 1) {
+      expect(installerRunning(), 'no installer started').toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    expect(installedVersion()).toBe(A);
+    removeProfile(profile);
+  });
+
+  test('a policy turning updates off in the middle of a download stops it and refuses a restart', async () => {
+    installFixture(A);
+    github.releases = [{ version: B }, { version: A }];
+    github.throttle = true;
+    const { app, page, profile } = await launch(installedExe(), feed);
+    await waitForStatus(page, 'downloading');
+    await app.evaluate(() => (globalThis as any).__bulwarkUpdaterTest.setPolicy({ autoUpdate: false }));
+    await waitForStatus(page, 'off');
+    github.throttle = false;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await page.evaluate(() => (window as any).bulwarkDesktop.updates.restart());
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    expect((await stateOf(page)).allowed).toBe(false);
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    await expect.poll(() => runningFromInstall().length, { timeout: 30_000, intervals: [500] }).toBe(0);
+    for (let i = 0; i < 10; i += 1) {
+      expect(installerRunning(), 'no installer started').toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    expect(installedVersion()).toBe(A);
+    removeProfile(profile);
+  });
+
+  test('a release asset that redirects off the allowed hosts does not download', async () => {
+    installFixture(A);
+    github.releases = [{ version: B }, { version: A }];
+    github.redirectDownloads = true;
+    const { page, app, profile } = await launch(installedExe(), feed);
+    await waitForStatus(page, 'error');
+    github.redirectDownloads = false;
+    expect(pendingUpdateFiles().filter((file) => file.endsWith('.exe'))).toEqual([]);
+    expect(github.redirectedHits, 'the other host saw nothing').toBe(0);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
+    removeProfile(profile);
+  });
+
+  test('Change Connection with an update ready restarts the app and leaves the update for later', async () => {
+    installFixture(A);
+    github.releases = [{ version: B }, { version: A }];
+    const { app, page, profile } = await launch(installedExe(), feed);
+    await waitForStatus(page, 'ready');
+    await app.evaluate(({ Menu }) => {
+      const walk = (items: Electron.MenuItem[]): Electron.MenuItem | undefined => {
+        for (const item of items) {
+          if (/Change Connection/i.test(item.label)) return item;
+          const inner = item.submenu ? walk(item.submenu.items) : undefined;
+          if (inner) return inner;
+        }
+        return undefined;
+      };
+      walk(Menu.getApplicationMenu()!.items)!.click();
+    });
+    // The relaunch comes up on the default profile. Nothing kills it, because no installer ran.
+    await expect.poll(() => runningFromInstall().length, { timeout: 60_000, intervals: [500] }).toBeGreaterThan(0);
+    for (let i = 0; i < 10; i += 1) {
+      expect(installerRunning(), 'no installer started').toBe(false);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    expect(installedVersion()).toBe(A);
+    await clearRelaunchedApp();
+    removeProfile(profile);
+  });
+
+  test('on the beta channel a stable hotfix published last does not hide a higher beta', async () => {
+    installFixture(A);
+    github.releases = [{ version: B }, { version: BETA, prerelease: true }, { version: A }];
+    const { app, page, profile } = await launch(installedExe(), feed);
+    await waitForStatus(page, 'ready');
+    await fakeOsIntegration(app, 0);
+    // Stable took the hotfix. Starting over on beta must not stop there.
+    const after = await page.evaluate(() => (window as any).bulwarkDesktop.updates.setChannel('beta'));
+    expect(after.channel).toBe('beta');
+    const ready = await waitForStatus(page, 'ready');
+    expect(ready.target).toBe(BETA);
+    await app.evaluate(({ app: electronApp }) => electronApp.exit(0));
+    removeProfile(profile);
+  });
+
   test('a ready update installs at a plain quit too, and the app does not come back', async () => {
     installFixture(A);
     github.releases = [{ version: B }, { version: A }];
@@ -362,9 +470,17 @@ test.describe('updates', () => {
   test('uninstalling leaves no key and no process, and the mail profile by design', async () => {
     installFixture(A);
     expect(uninstallKeys().length).toBe(1);
+    // What the running app leaves outside its folder: a pending download and a toast's COM key.
+    const cache = path.join(process.env.LOCALAPPDATA!, 'bulwark-desktop-updater', 'pending');
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(path.join(cache, 'left.exe'), 'x');
+    plantToastKey();
+    expect(toastKeys().length).toBe(1);
     uninstall();
     await waitUntilGone();
     await expect.poll(uninstallKeys, { timeout: 60_000, intervals: [1000] }).toEqual([]);
+    await expect.poll(() => existsSync(path.dirname(cache)), { timeout: 60_000, intervals: [1000] }).toBe(false);
+    expect(toastKeys(), 'the uninstaller took the toast key').toEqual([]);
     expect(runningFromInstall()).toEqual([]);
     // The uninstaller removes its own folder last, with nothing left in it.
     await expect.poll(() => existsSync(installDir()), { timeout: 60_000, intervals: [1000] }).toBe(false);
