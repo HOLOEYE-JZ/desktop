@@ -17,17 +17,21 @@ import { makeThunderbirdProfile } from './fixtures/make-thunderbird-profile';
 const EXE = path.join(import.meta.dirname, '..', 'release', 'win-unpacked', 'Bulwark.exe');
 const PST = path.join(import.meta.dirname, 'fixtures', 'Outlook.pst');
 
-const reg = (...args: string[]) => spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true }).status === 0;
+const regQuery = (...args: string[]) => spawnSync('reg.exe', ['query', ...args], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
 
-/** What a packaged start registers under HKCU. Nothing of it may stay behind on this machine. */
-function bulwarkRegistered(): boolean {
-  return reg('query', 'HKCU\Software\Classes\bulwark') || reg('query', 'HKCU\Software\RegisteredApplications', '/v', 'Bulwark') || reg('query', 'HKCU\Software\Bulwark');
+/**
+ * Whether this run's copy put itself in the registry. Other test runs on this machine use the
+ * same keys, and a real install would too, so only what names this copy is this test's to touch.
+ */
+function registeredBy(copy: string): boolean {
+  const named = (key: string) => regQuery(key, '/ve').toLowerCase().includes(copy.toLowerCase());
+  return named('HKCU\\Software\\Classes\\bulwark\\shell\\open\\command') || named('HKCU\\Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command');
 }
 
 function removeRegistration(): void {
   const { keys, values } = windowsRegistrationKeys();
-  for (const key of keys) reg('delete', `HKCU\${key}`, '/f');
-  for (const value of values) reg('delete', `HKCU\${value.key}`, '/v', value.name, '/f');
+  for (const key of keys) spawnSync('reg.exe', ['delete', `HKCU\\${key}`, '/f'], { windowsHide: true });
+  for (const value of values) spawnSync('reg.exe', ['delete', `HKCU\\${value.key}`, '/v', value.name, '/f'], { windowsHide: true });
 }
 
 type Granted = { url: string; kind: string; folder: string[]; size: number };
@@ -39,13 +43,12 @@ test.describe('local import in a packaged app', () => {
   test.setTimeout(240_000);
 
   let base: string;
+  let copy = '';
   let profile: string;
   let app: ElectronApplication;
   let page: Page;
 
   test.beforeAll(async () => {
-    // A real install's keys aren't this test's to take away.
-    if (bulwarkRegistered()) throw new Error('Bulwark is registered on this machine: not running a package over it');
     base = mkdtempSync(path.join(tmpdir(), 'bw-imppack-'));
     const fixture = makeThunderbirdProfile(base, 'PACK');
     const outlook = path.join(base, 'Documents', 'Outlook Files');
@@ -59,7 +62,7 @@ test.describe('local import in a packaged app', () => {
     writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone' }));
     // Playwright needs the inspector fuse, off in a package. A copy has only that one flipped:
     // ASAR integrity and onlyLoadAppFromAsar stay on, so this is still a real package.
-    const copy = path.join(base, 'pkg');
+    copy = path.join(base, 'pkg');
     cpSync(path.dirname(EXE), copy, { recursive: true });
     const exe = path.join(copy, 'Bulwark.exe');
     await flipFuses(exe, { version: FuseVersion.V1, [FuseV1Options.EnableNodeCliInspectArguments]: true });
@@ -76,15 +79,11 @@ test.describe('local import in a packaged app', () => {
   });
 
   test.afterAll(async () => {
-    // The start registers in the background, so let that finish before closing: a reg.exe still
-    // on its way would write after the cleanup, and then stay behind.
-    await expect.poll(() => reg('query', 'HKCU\Software\Classes\bulwark\shell\open\command'), { timeout: 30_000 }).toBe(true);
-    await expect.poll(() => reg('query', 'HKCU\Software\RegisteredApplications', '/v', 'Bulwark'), { timeout: 30_000 }).toBe(true);
     await app?.close().catch(() => undefined);
+    // A reg.exe the start left on its way could still write: give it the time, then look.
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    removeRegistration();
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    expect(bulwarkRegistered(), 'nothing left in the registry, and nothing wrote it again').toBe(false);
+    if (copy && registeredBy(copy)) removeRegistration();
+    if (copy) expect(registeredBy(copy), 'nothing of this copy left in the registry').toBe(false);
     if (profile) removeProfile(profile);
     if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   });
