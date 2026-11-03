@@ -248,6 +248,8 @@ test.describe('closing and quitting', () => {
     const profile = tempProfile('hang');
     const { app, page } = await launchStandalone(profile);
     await waitForLogin(page);
+    // It may hold unsaved text, so the quit asks. Answered: it goes.
+    await fakeOsIntegration(app, 0);
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (f: () => Promise<void>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(() => new Promise(() => {})));
     const started = Date.now();
     await app.close();

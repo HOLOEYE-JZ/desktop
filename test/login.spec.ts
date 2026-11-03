@@ -37,7 +37,7 @@ for (const { label, url } of STALWARTS) {
       expect(await serverPort(app)).not.toBe(portBefore);
       expect(new URL(page.url()).origin).toBe(APP_ORIGIN);
       const accounts = await page.evaluate(() => localStorage.getItem('account-registry'));
-      expect(accounts).toContain('ent-alice');
+      expect(accounts).toContain(ACCOUNT.split('@')[0]);
       await app.close();
     });
   });
