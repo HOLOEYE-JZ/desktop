@@ -13,7 +13,6 @@ import { EventEmitter } from 'node:events';
 import { lstatSync, readFileSync, watch as watchFile, type Stats } from 'node:fs';
 import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
-import path from 'node:path';
 import { app, dialog, ipcMain, systemPreferences, type CommandLine, type Session } from 'electron';
 import { CHANNEL } from '../../shared/bridge';
 import {
@@ -54,6 +53,7 @@ import {
 import { standaloneAllowed, type PolicySourceProblem } from '../policy-start';
 import { requestGate } from '../request-gate';
 import type { StateFile } from '../state';
+import { setKeystoreAllowedOrigins } from './keystore';
 import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
 
@@ -81,23 +81,6 @@ function loadWatcher(): CreateWatcher | null {
     return (require('@vscode/policy-watcher') as { createWatcher: CreateWatcher }).createWatcher;
   } catch (error) {
     console.warn('The policy watcher is not available:', error);
-    return null;
-  }
-}
-
-/**
- * objectIsForcedForKey, from the native helper, on macOS. Loaded on its own here so the
- * policies don't wait for the helper's loader: the file is the same (src/main/native-loader.ts).
- */
-function loadNativeForcedCheck(): ((key: string) => boolean) | null {
-  const root = app.getAppPath();
-  const file = app.isPackaged
-    ? path.join(root, 'native', 'bulwark-native.node')
-    : path.join(root, 'native', 'dist', `${process.platform}-${process.arch}`, 'bulwark-native.node');
-  try {
-    const native = createRequire(import.meta.url)(file) as { policyIsForced?: (key: string) => boolean };
-    return native.policyIsForced ?? null;
-  } catch {
     return null;
   }
 }
@@ -161,11 +144,10 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       if (poll) this.pollMs = Number(poll.split('=')[1]) || POLL_MS;
     }
     if (process.platform !== 'linux') this.watcher = loadWatcher();
-    if (process.platform === 'darwin') this.forcedCheck ??= loadNativeForcedCheck();
     await this.refresh(true);
   }
 
-  /** The native helper's objectIsForcedForKey, on macOS, if something wants to set it first. */
+  /** The native helper's objectIsForcedForKey, on macOS. Set before start(). */
   useForcedCheck(check: (key: string) => boolean): void {
     this.forcedCheck = check;
   }
@@ -397,6 +379,7 @@ export const policiesFeature: Feature = {
   name: 'policies',
   modes: ['standalone', 'instance'],
   setup(ctx) {
+    setKeystoreAllowedOrigins(() => policies.snapshot.KeystoreAllowedOrigins.value);
     policies.attachState(ctx.state);
     // Sent while the preload runs, so the page never sees a moment without values. A
     // sync message always needs an answer, also for a sender that gets nothing.

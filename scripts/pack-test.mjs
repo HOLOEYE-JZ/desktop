@@ -23,6 +23,7 @@ function run(command, args) {
 }
 
 run('node', ['build.mjs', strict ? `--baked-profile=${profile}` : '--test']);
+run('node', ['scripts/build-native.mjs', '--optional']);
 run('npx', ['electron-builder', '--dir', '--publish', 'never', ...(strict ? ['-c.directories.output=release-strict'] : [])]);
 if (strict) {
   mkdirSync('release-strict', { recursive: true });

@@ -556,6 +556,31 @@ test.describe('the wipe nonce', () => {
   });
 });
 
+test.describe('KeystoreAllowedOrigins', () => {
+  const access = (target: Page) =>
+    target.evaluate(() => (window as unknown as { bulwarkDesktop: { keystore: { accessState(): Promise<string> } } }).bulwarkDesktop.keystore.accessState());
+
+  test('a listed instance has the store, for as long as it is listed', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    setString(key(root, 'Machine', 'KeystoreAllowedOrigins'), '1', new URL(instanceA).origin);
+    const started = await start(root);
+    expect(await access(started.page)).toBe('policy');
+    reg('delete', key(root, 'Machine', 'KeystoreAllowedOrigins'), '/f');
+    await expect.poll(() => access(started.page)).toBe('off');
+    await stop(started);
+  });
+
+  test('another origin on the list does nothing for this one', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    setString(key(root, 'Machine', 'KeystoreAllowedOrigins'), '1', new URL(instanceB).origin);
+    const started = await start(root);
+    expect(await access(started.page)).toBe('off');
+    await stop(started);
+  });
+});
+
 test.describe('"Later" on a forced change', () => {
   test('asks again and then restarts by itself, saving first', async () => {
     const root = freshRoot();

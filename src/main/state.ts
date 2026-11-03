@@ -39,6 +39,8 @@ export interface ShellState {
   partitions?: string[];
   /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
   offlineClearedForPolicy?: boolean;
+  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
+  keystoreOrigins?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

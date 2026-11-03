@@ -14,8 +14,9 @@
     "typecheck": "tsc --noEmit",
     "fetch-webmail": "node scripts/fetch-webmail.mjs",
     "start": "node build.mjs --test && node scripts/run-electron.mjs .",
-    "test": "node build.mjs --test && playwright test",
-    "pack:dir": "node build.mjs && electron-builder --dir",
+    "test": "node build.mjs --test && node scripts/build-native.mjs --optional && playwright test",
+    "build:native": "node scripts/build-native.mjs",
+    "pack:dir": "node build.mjs && node scripts/build-native.mjs --optional && electron-builder --dir",
     "pack:test": "node scripts/pack-test.mjs",
     "pack:strict": "node scripts/pack-test.mjs --strict"
   },

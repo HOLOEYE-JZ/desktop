@@ -23,6 +23,7 @@ import { setupFeatures, type FeatureContext } from './features';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { createChannels, registerBridge } from './ipc';
 import { notePartition } from './features/local-wipe';
+import { native } from './native';
 import { LocalAdmin } from './local-admin';
 import { requestGate } from './request-gate';
 import { installMenu } from './menu';
@@ -103,6 +104,7 @@ if (!gotLock) app.exit(0);
 
 // Before `ready`: Chromium takes the auth lists from its command line at start.
 if (gotLock) {
+  if (process.platform === 'darwin') policies.useForcedCheck(native().policy.isForced);
   await policies.start({ argv: process.argv, isPackaged: app.isPackaged });
   policies.applySwitches(app.commandLine);
 }

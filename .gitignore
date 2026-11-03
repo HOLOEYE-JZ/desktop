@@ -6,6 +6,9 @@ release-strict/
 webmail/
 # The policy templates, also from there.
 /policies/
+# The native helper's build. Made by scripts/build-native.mjs, never committed.
+native/target/
+native/dist/
 test-results/
 playwright-report/
 *.log

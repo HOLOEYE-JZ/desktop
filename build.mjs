@@ -35,8 +35,8 @@ await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
 
 // Main loads this as a data: page, so the script goes inside it, allowed by its hash.
-// As LF: an HTML parser normalises line ends before the hash is checked, so a CRLF
-// checkout's script was refused by its own CSP and the first-run page did nothing.
+// LF: an HTML parser turns CRLF into LF before the hash is checked, so a Windows
+// checkout's line endings would get its own script refused.
 const script = readFileSync('src/pages/welcome.js', 'utf8').replace(/\r\n/g, '\n');
 const hash = createHash('sha256').update(script).digest('base64');
 const page = readFileSync('src/pages/welcome.html', 'utf8')
