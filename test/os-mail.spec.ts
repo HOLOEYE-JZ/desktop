@@ -7,7 +7,7 @@ import { expectMailShown, launchStandalone, removeOsTraces, removeProfile, requi
  * The webmail's side on a real server, real mail arriving at a window hidden in the tray.
  * Needs a webmail build with lib/desktop's OS code in ./webmail.
  *
- *   vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test test/os-mail.spec.ts
+ *   IT_ENT_PASSWORD=<test account password> npx playwright test test/os-mail.spec.ts
  */
 
 const RECIPIENT = 'ent-dave@example.org';

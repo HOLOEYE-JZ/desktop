@@ -115,7 +115,7 @@ for (const { label, url } of STALWARTS) {
     test.describe.configure({ mode: 'serial' });
     test.setTimeout(420_000);
     test.beforeAll(() => {
-      if (!PASSWORD) throw new Error('Run under: vw exec --env IT_DSO_PASSWORD="vault://Stalwart test – dso-* throwaway accounts/password" -- npx playwright test');
+      if (!PASSWORD) throw new Error('Run under: IT_DSO_PASSWORD=<test account password> npx playwright test');
     });
 
     const tag = `IMP${Date.now().toString(36)}${label.replace('.', '')}`;
