@@ -21,12 +21,18 @@ import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, type HostMessage, type InitMessag
 import { isAdminLogin, sanitizeRequest } from './sanitize';
 
 const TRUST_KEY = Symbol.for('bulwark.desktop.trustedJmapOrigins');
+const POLICY_KEY = Symbol.for('bulwark.desktop.serverPolicy');
 
 type Holder = Record<symbol, ReadonlySet<string> | undefined>;
 
 /** Read by the webmail (lib/desktop/trusted-servers.ts) and by jmap-proxy.ts. */
 function setTrusted(origins: string[]): void {
   (globalThis as unknown as Holder)[TRUST_KEY] = new Set(origins);
+}
+
+/** Read by the webmail: lib/desktop/server-policy.ts. */
+function setPolicy(policy: InitMessage['policy']): void {
+  (globalThis as unknown as Record<symbol, unknown>)[POLICY_KEY] = policy;
 }
 
 function isTrusted(origin: string): boolean {
@@ -84,6 +90,7 @@ async function start(init: InitMessage): Promise<void> {
 
   const ca = useSystemCertificates();
   setTrusted(init.trustedOrigins);
+  setPolicy(init.policy);
 
   const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
   process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(config);
@@ -131,5 +138,7 @@ process.parentPort.on('message', (event: { data: HostMessage }) => {
     start(message).catch((error) => send({ type: 'fatal', error: String(error?.stack ?? error) }));
   } else if (message.type === 'trusted') {
     setTrusted(message.origins);
+  } else if (message.type === 'policy') {
+    setPolicy(message.policy);
   }
 });

@@ -27,6 +27,7 @@ export interface ServerProcess {
   stopped(): boolean;
   ready: Promise<{ systemCertificates: number; caError?: string }>;
   sendTrusted(origins: string[]): void;
+  sendPolicy(policy: InitMessage['policy']): void;
   stop(): void;
 }
 
@@ -91,6 +92,7 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
     stopped: () => stopped,
     ready,
     sendTrusted: (origins) => child.postMessage({ type: 'trusted', origins }),
+    sendPolicy: (policy) => child.postMessage({ type: 'policy', policy }),
     stop,
   };
 }

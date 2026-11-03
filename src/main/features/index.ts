@@ -18,6 +18,7 @@ import { dialogsFeature } from './dialogs';
 import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
+import { policiesFeature } from './policies';
 import { keystoreFeature } from './keystore';
 import { appLockFeature } from './app-lock';
 
@@ -46,7 +47,7 @@ export interface Feature {
 }
 
 // The lock first: whatever comes after reads it as it starts.
-export const FEATURES: Feature[] = [appLockFeature, keystoreFeature, contextMenuFeature, windowInputFeature, dialogsFeature];
+export const FEATURES: Feature[] = [appLockFeature, policiesFeature, keystoreFeature, contextMenuFeature, windowInputFeature, dialogsFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

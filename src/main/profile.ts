@@ -61,15 +61,26 @@ const SEEDED_CONFIG = {
 
 /**
  * A user's upload is their own decision on their own machine, so it doesn't wait
- * for a local admin nobody can reach (lib/admin/types.ts:91-92). The hook for the
- * PluginsMode policy (step 6) is `applyPluginPolicy` in features/plugins.ts,
- * which overrides these.
+ * for a local admin nobody can reach (lib/admin/types.ts:91-92). `PluginsMode`
+ * off overrides these, through `pluginFeatures`.
  */
 export const SEEDED_FEATURES = {
   pluginsEnabled: true,
   pluginsUploadEnabled: true,
   requirePluginApproval: false,
 };
+
+/**
+ * With plugins off by policy the server's own switches go off too, which also closes
+ * the sandbox routes, the plugin proxy and the settings page. A list closes uploads: a
+ * package can name any id. When it's lifted they come back on: nothing the user set
+ * lives here.
+ */
+export function pluginFeatures(mode: 'allowed' | 'allowlist' | 'off'): Record<string, boolean> {
+  if (mode === 'off') return { ...SEEDED_FEATURES, pluginsEnabled: false, pluginsUploadEnabled: false };
+  if (mode === 'allowlist') return { ...SEEDED_FEATURES, pluginsUploadEnabled: false };
+  return SEEDED_FEATURES;
+}
 
 /**
  * Rewritten at each start since a user can edit these files: the keys above

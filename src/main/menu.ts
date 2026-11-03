@@ -21,7 +21,8 @@ import { strings } from './strings';
 import type { WindowManager } from './windows';
 
 export interface MenuHooks {
-  switchMode: () => void;
+  /** Left out while a policy forces the connection. */
+  switchMode?: () => void;
   devTools: boolean;
   newWindow: () => void;
   openSettings: () => void;
@@ -82,6 +83,12 @@ export class MenuController {
 
   /** The window lines the menu was last built with. */
   private windowSignature = '';
+
+  /** A policy can force the connection: there's nothing to switch to then. */
+  setSwitchMode(switchMode: (() => void) | undefined): void {
+    this.hooks.switchMode = switchMode;
+    this.rebuild();
+  }
 
   extend(section: MenuSection, extension: Extension): void {
     this.extensions.set(section, [...(this.extensions.get(section) ?? []), extension]);
@@ -240,7 +247,9 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
-        { id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode },
+        ...(hooks.switchMode
+          ? ([{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode }] as MenuItemConstructorOptions[])
+          : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },

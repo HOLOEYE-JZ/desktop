@@ -34,6 +34,7 @@ import {
   type ThemeColours,
   type WindowInfo,
 } from '../shared/bridge';
+import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
 
 function argument(prefix: string): string | null {
   const found = process.argv.find((arg) => arg.startsWith(prefix));
@@ -56,7 +57,8 @@ async function keystoreAnswer<T>(call: Promise<KeystoreResult<T>>): Promise<T> {
 const allowedOrigin = argument(PRELOAD_ARG.allowedOrigin);
 const mode = argument(PRELOAD_ARG.mode);
 
-if (allowedOrigin && window.location.protocol === 'https:' && window.location.origin === allowedOrigin) {
+// Plain http only when the allowed origin is: an instance a policy allows that way.
+if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.location.origin === allowedOrigin) {
   const platform = process.platform as 'win32' | 'darwin' | 'linux';
   const flushHandlers = new Set<() => Promise<unknown>>();
   ipcRenderer.on(CHANNEL.lifecycleFlush, (_event, id: number) => {
@@ -68,6 +70,10 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       });
       ipcRenderer.send(CHANNEL.lifecycleFlushed, id, answers);
     });
+  });
+  let policySnapshot: PolicySnapshot = (ipcRenderer.sendSync(CHANNEL.policyGet) as PolicySnapshot | null) ?? DEFAULT_POLICY_SNAPSHOT;
+  ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
+    policySnapshot = snapshot;
   });
   const common = {
     version: BRIDGE_VERSION,
@@ -131,6 +137,10 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */
       copyFile: (name: string, data: ArrayBuffer): Promise<boolean> => ipcRenderer.invoke(CHANNEL.clipboardCopyFile, name, data),
     },
+    policy: {
+      get: () => policySnapshot,
+      onChange: (listener: (snapshot: PolicySnapshot) => void) => subscribe(CHANNEL.policyChanged, listener),
+    },
     lifecycle: {
       /**
        * Before a window closes or the app quits, main asks the page to save what it
@@ -180,6 +190,7 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
             keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
           accessState: (): Promise<KeystoreAccessState> => ipcRenderer.invoke(CHANNEL.keystoreAccess),
           revokeAccess: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreRevoke),
+          clearGrants: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreClearGrants),
         },
       }
     : {};

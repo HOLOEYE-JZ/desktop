@@ -15,17 +15,24 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 'electron';
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
-import { instancePartition, setupAppSession } from './app-session';
+import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
+import { APP_PARTITION, instancePartition, setupAppSession } from './app-session';
 import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { createChannels, registerBridge } from './ipc';
+import { notePartition } from './features/local-wipe';
+import { native } from './native';
 import { LocalAdmin } from './local-admin';
+import { requestGate } from './request-gate';
 import { MenuController } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
 import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
-import { profilePaths, seedProfile, serverEnv } from './profile';
+import { connectionMustChange, decideStart, restartKey, type StartDecision } from './policy-start';
+import { deniedSwitches, withoutDeniedSwitches } from './switch-guard';
+import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
@@ -38,15 +45,34 @@ import { printWindow, saveWindowAsPdf } from './print';
 import { navigateHistory } from './features/window-input';
 import { appPathOfDeepLink, deepLinkFromArgv, parseDeepLink, DEEP_LINK_SCHEME, type DeepLink } from './deep-link';
 
+// Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
+// anyone can rename it.
+declare const __BULWARK_TEST_BUILD__: boolean;
+declare const __BULWARK_TEST_PROFILE__: string;
+
+// Before anything else, with or without a policy: see switch-guard.ts.
+if (!__BULWARK_TEST_BUILD__) {
+  const denied = deniedSwitches(process.argv);
+  if (denied.length > 0) {
+    console.warn(`Ignoring these switches: ${denied.join(', ')}`);
+    for (const name of denied) app.commandLine.removeSwitch(name);
+    app.relaunch({ args: withoutDeniedSwitches(process.argv).slice(1) });
+    app.exit(0);
+    await new Promise(() => {});
+  }
+  // The same as --ssl-key-log-file, for whoever sets the environment.
+  delete process.env.SSLKEYLOGFILE;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(HERE, 'preload.cjs');
 const WELCOME_PRELOAD = path.join(HERE, 'welcome-preload.cjs');
 const WELCOME_PAGE = path.join(HERE, 'pages', 'welcome.html');
 const SERVER_HOST = path.join(HERE, 'server-host.cjs');
 
-const DEV = !app.isPackaged;
+const DEV = __BULWARK_TEST_BUILD__ && !app.isPackaged;
 const MAX_SERVER_RESTARTS = 3;
-const devTools = DEV && process.argv.includes('--dev');
+const devTools = __BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--dev');
 
 function argValue(name: string): string | undefined {
   const prefix = `--${name}=`;
@@ -54,8 +80,9 @@ function argValue(name: string): string | undefined {
 }
 
 // A test or a second development copy points this elsewhere.
-const userDataArg = DEV ? argValue('bulwark-user-data') : undefined;
+const userDataArg = __BULWARK_TEST_BUILD__ && DEV ? argValue('bulwark-user-data') : undefined;
 if (userDataArg) app.setPath('userData', userDataArg);
+if (__BULWARK_TEST_PROFILE__) app.setPath('userData', __BULWARK_TEST_PROFILE__);
 
 app.setName('Bulwark');
 app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: 'AGPL-3.0-only', website: 'https://bulwarkmail.org' });
@@ -80,7 +107,15 @@ app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) app.exit(0);
 
+// Before `ready`: Chromium takes the auth lists from its command line at start.
+if (gotLock) {
+  if (process.platform === 'darwin') policies.useForcedCheck(native().policy.isForced);
+  await policies.start({ argv: process.argv, isPackaged: app.isPackaged });
+  policies.applySwitches(app.commandLine);
+}
+
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
+policies.attachState(stateFile);
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
@@ -93,7 +128,8 @@ let extraMainWindows = 0;
 
 function serverDirectory(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, 'server');
-  return argValue('bulwark-server-dir') ?? path.join(HERE, '..', 'webmail');
+  const chosen = __BULWARK_TEST_BUILD__ && DEV ? argValue('bulwark-server-dir') : undefined;
+  return chosen ?? path.join(HERE, '..', 'webmail');
 }
 
 function escapeHtml(text: string): string {
@@ -134,8 +170,8 @@ function watchForReplacedCertificate(window: BrowserWindow): void {
   });
 }
 
-function createWindowManager(mode: Mode, origin: string, session: Electron.Session, theme: ThemeController): WindowManager {
-  const guard: GuardOptions = { mode, origin, windows: () => windowManager! };
+function createWindowManager(mode: Mode, origin: string, session: Electron.Session, theme: ThemeController, startUrl: string): WindowManager {
+  const guard: GuardOptions = { mode, origin, windows: () => windowManager!, forced: () => policies.snapshot.InstanceUrl.locked };
   windowManager = new WindowManager({
     state: stateFile,
     theme,
@@ -152,7 +188,7 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
   windowManager.on('sessionReady', onSessionReady);
   // A development switch for the test of the tray's hook, until the tray exists.
   if (DEV && process.argv.includes('--bulwark-test-close-to-background')) windowManager.setCloseToBackground(() => true);
-  appStartUrl = mode === 'instance' ? validInstanceUrl(argValue('instance')) ?? validInstanceUrl(stateFile.data.instanceUrl) ?? `${origin}/` : `${origin}/`;
+  appStartUrl = startUrl;
   windowManager.on('stayed', () => {
     switching = false;
     quitFlushed = false;
@@ -211,15 +247,16 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     throw error;
   }
 
-  seedProfile(profile);
+  seedProfile(profile, pluginFeatures(policies.snapshot.PluginsMode.value));
 
   const launchSecret = randomBytes(32).toString('base64url');
   const mainSecret = randomBytes(32).toString('base64url');
   // A development switch for the test of a replaced certificate.
-  const pin = DEV && process.argv.includes('--bulwark-test-wrong-pin') ? 'sha256/wrong' : tlsPair.fingerprint;
+  const pin = __BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-test-wrong-pin') ? 'sha256/wrong' : tlsPair.fingerprint;
   const session = setupAppSession(pin, launchSecret, () => {
     pinFailed = true;
   });
+  notePartition(stateFile, APP_PARTITION);
   applyPermissionPolicy(session, APP_ORIGIN);
 
   const cors = new CorsInjector(session, APP_ORIGIN);
@@ -238,14 +275,22 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         mainSecret,
         tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
         secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
-        trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin),
+        trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
+        policy: policies.serverPolicy(),
       },
     });
   let server = spawnServer(false);
-  const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins) });
+  const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins), isAllowedByPolicy: policies.serverAllowed });
+  requestGate(session).add((url) => servers.refusesRequest(url));
+  // config-manager notices the changed file by itself, within seconds.
+  policies.on('changed', (snapshot) => {
+    server.sendPolicy(policies.serverPolicy());
+    servers.applyPolicy();
+    seedProfile(profile, pluginFeatures(snapshot.PluginsMode.value));
+  });
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
-  const windows = createWindowManager('standalone', APP_ORIGIN, session, theme);
+  const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
   signIn = new LoopbackSignIn(() => windows.focus());
   const ctx: FeatureContext = {
     mode: 'standalone',
@@ -260,7 +305,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     localAdmin,
     ...createChannels(APP_ORIGIN),
   };
-  registerBridge(ctx, { origin: APP_ORIGIN, signIn });
+  registerBridge(ctx, { origin: APP_ORIGIN, signIn, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
   try {
@@ -299,28 +344,19 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
 
 async function bootInstance(instanceUrl: string, theme: ThemeController): Promise<void> {
   const origin = new URL(instanceUrl).origin;
-  const session = electronSession.fromPartition(instancePartition(origin));
+  const partition = instancePartition(origin);
+  const session = electronSession.fromPartition(partition);
+  notePartition(stateFile, partition);
   applyPermissionPolicy(session, origin);
-  const windows = createWindowManager('instance', origin, session, theme);
+  const windows = createWindowManager('instance', origin, session, theme, instanceUrl);
   const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, menu: menu!, zoom, ...createChannels(origin) };
   registerBridge(ctx, { origin });
   setupFeatures(ctx);
   windows.open({ type: 'main', url: instanceUrl });
 }
 
-function validInstanceUrl(url: unknown): string | null {
-  if (typeof url !== 'string') return null;
-  try {
-    const parsed = new URL(url.trim());
-    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null;
-    return parsed.origin + parsed.pathname.replace(/\/+$/, '') + '/';
-  } catch {
-    return null;
-  }
-}
-
-/** The first run asks which of the two the user wants. Step 6's forced InstanceUrl policy skips this. */
-function showWelcome(theme: ThemeController): void {
+/** The first run asks which of the two the user wants. A forced InstanceUrl skips this. */
+function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { kind: 'welcome' }>): void {
   const colours = theme.colours();
   const window = new BrowserWindow({
     width: 620,
@@ -330,7 +366,15 @@ function showWelcome(theme: ThemeController): void {
     autoHideMenuBar: true,
     backgroundColor: colours.background,
     title: 'Bulwark',
-    webPreferences: { preload: WELCOME_PRELOAD, sandbox: true, contextIsolation: true, nodeIntegration: false, devTools },
+    webPreferences: {
+      preload: WELCOME_PRELOAD,
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools,
+      // Encoded: quotes don't survive Chromium's command line on Windows.
+      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked }))}`],
+    },
   });
   window.once('ready-to-show', () => window.show());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -339,15 +383,19 @@ function showWelcome(theme: ThemeController): void {
   ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
     if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
     if (choice?.mode === 'standalone') {
+      if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
       stateFile.data.mode = 'standalone';
     } else if (choice?.mode === 'instance') {
-      const instanceUrl = validInstanceUrl(choice.url);
-      if (!instanceUrl) return { ok: false, error: 'invalid_url' };
+      const parsed = parseInstanceUrl(decision.urlLocked ? decision.instanceUrl : choice.url, policies.snapshot.AllowInsecureInstance.value);
+      if (!parsed.ok) return { ok: false, error: 'invalid_url' };
+      // A forced one needs no listing, and only a forced one is locked here.
+      if (!decision.urlLocked && !jmapServerAllowed(policies.snapshot.AllowedJmapServers.value, parsed.value)) return { ok: false, error: 'policy' };
       stateFile.data.mode = 'instance';
-      stateFile.data.instanceUrl = instanceUrl;
+      stateFile.data.instanceUrl = parsed.value;
     } else {
       return { ok: false, error: 'invalid_choice' };
     }
+    stateFile.data.askConnection = undefined;
     stateFile.save();
     ipcMain.removeHandler(CHANNEL.welcomeChoose);
     await boot(theme);
@@ -358,20 +406,88 @@ function showWelcome(theme: ThemeController): void {
   void window.loadURL(`data:text/html;charset=utf-8;base64,${readFileSync(WELCOME_PAGE).toString('base64')}`);
 }
 
+function startDecision(): StartDecision {
+  return decideStart(policies.snapshot, policies.problem, {
+    mode: stateFile.data.mode,
+    instanceUrl: stateFile.data.instanceUrl,
+    askConnection: stateFile.data.askConnection,
+    devInstance: __BULWARK_TEST_BUILD__ && DEV ? argValue('instance') : null,
+    devStandalone: __BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--standalone'),
+  });
+}
+
+/** The policy fails closed: this is all the user gets, with no way around it. */
+async function showPolicyError(decision: Extract<StartDecision, { kind: 'policy-error' }>): Promise<void> {
+  const text = strings();
+  const reason = text.policyReasons[decision.reason] ?? text.policyReasons.other;
+  await showErrorPage(text.policyErrorTitle, text.policyErrorBody(decision.policy, reason, decision.raw));
+}
+
+let bootedKey = '';
+let bootedDecision: StartDecision | null = null;
+let askedKey = '';
+
 async function boot(theme: ThemeController): Promise<void> {
-  const forcedInstance = DEV ? validInstanceUrl(argValue('instance')) : null;
-  const mode: Mode | undefined = forcedInstance ? 'instance' : DEV && process.argv.includes('--standalone') ? 'standalone' : stateFile.data.mode;
-  if (mode === 'instance') {
-    const url = forcedInstance ?? validInstanceUrl(stateFile.data.instanceUrl);
-    if (url) {
-      await bootInstance(url, theme);
+  // First, before any window has a database open, and whatever comes next.
+  await policies.settleLocalData();
+  const decision = startDecision();
+  bootedKey = restartKey(decision, policies.snapshot);
+  bootedDecision = decision;
+  menu!.setSwitchMode(decision.canSwitch ? switchMode : undefined);
+  if (decision.kind === 'policy-error') await showPolicyError(decision);
+  else if (decision.kind === 'instance') await bootInstance(decision.url, theme);
+  else if (decision.kind === 'standalone') await bootStandalone(theme);
+  else showWelcome(theme, decision);
+}
+
+function restartNow(): void {
+  app.relaunch();
+  // Quitting asks each page to save first (before-quit).
+  app.quit();
+}
+
+/**
+ * A change that needs a restart asks for one, once for each outcome. Where a forced
+ * connection is what changed, "Later" isn't for good: it asks again, and after the
+ * deadline it restarts by itself.
+ */
+function watchPolicyForRestart(booted: StartDecision): void {
+  // A wipe left the windows blank: they had nothing to come back to anyway.
+  policies.on('wiped', () => {
+    const main = windowManager?.mainWindow();
+    for (const window of BrowserWindow.getAllWindows()) if (window !== main) window.destroy();
+    if (main) void main.loadURL(appStartUrl).catch(() => {});
+  });
+  let cancelTimers = () => {};
+  let asking = false;
+  const ask = (key: string) => {
+    // One question at a time, or they'd pile up on an unattended machine.
+    if (asking) return;
+    asking = true;
+    const text = strings();
+    void askToRestart(text.policyChangedTitle, text.policyChangedDetail, text.policyRestart, text.policyLater).then((restart) => {
+      asking = false;
+      if (restart && askedKey === key) restartNow();
+    });
+  };
+  policies.on('changed', () => {
+    const decision = startDecision();
+    const key = restartKey(decision, policies.snapshot);
+    if (key === askedKey) return;
+    cancelTimers();
+    cancelTimers = () => {};
+    if (key === bootedKey) {
+      askedKey = '';
       return;
     }
-  } else if (mode === 'standalone') {
-    await bootStandalone(theme);
-    return;
-  }
-  showWelcome(theme);
+    askedKey = key;
+    ask(key);
+    if (connectionMustChange(booted, decision)) {
+      cancelTimers = addRestartTimers(() => ask(key), () => {
+        if (askedKey === key) restartNow();
+      });
+    }
+  });
 }
 
 // Quitting closes the windows, and each may ask first. Nothing is forgotten until all
@@ -386,6 +502,7 @@ function switchMode(): void {
 function finishSwitch(): void {
   stateFile.data.mode = undefined;
   stateFile.data.instanceUrl = undefined;
+  stateFile.data.askConnection = true;
   stateFile.save();
   app.relaunch();
 }
@@ -430,7 +547,6 @@ function flushDeepLink(): void {
 
 function buildMenu(): MenuController {
   return new MenuController({
-    switchMode,
     devTools,
     newWindow: () => {
       extraMainWindows += 1;
@@ -532,6 +648,8 @@ if (gotLock) {
     menu.rebuild();
     const theme = new ThemeController(stateFile);
     await boot(theme);
+    policies.watch();
+    watchPolicyForRestart(bootedDecision!);
   }).catch((error) => {
     console.error(error);
     dialog.showErrorBox('Bulwark', String(error instanceof Error ? error.message : error));
