@@ -1,0 +1,127 @@
+/**
+ * Whether the app is locked, decided here and nowhere else. The tray, the jump list,
+ * the toasts and window titles all go by this.
+ *
+ * A page can always ask to lock. It can never just say "unlocked", because a pop-out or
+ * a same-origin plugin frame could say the same: to lift the lock it shows a proof that
+ * only the lock key's bytes give, and those exist only right after a real unlock. This
+ * keeps the proof's hash, so nothing here can unlock anything. Windows Hello and Touch ID
+ * run in main, and lift it themselves.
+ *
+ * Starts locked until it's known otherwise, so nothing shows mail in the first moments of
+ * a start. An unreadable file counts as locked. No Electron in this file.
+ */
+
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
+function digest(proof: Uint8Array): string {
+  return createHash('sha256').update(proof).digest('hex');
+}
+
+function isProof(proof: unknown): proof is Uint8Array {
+  return proof instanceof Uint8Array && proof.length === 32;
+}
+
+export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [boolean]; requested: [] }> {
+  private file: string | null = null;
+  private proofHash: string | null = null;
+  private lockedNow = true;
+
+  /** Features start in some order, and whichever asks first reads the profile. */
+  initForProfile(userData: string, origin: string): void {
+    const site = createHash('sha256').update(origin).digest('hex').slice(0, 16);
+    const file = path.join(userData, 'app-lock', `${site}.json`);
+    if (this.file !== file) this.init(file);
+  }
+
+  /** Reads what's known about this profile. */
+  init(file: string): void {
+    this.file = file;
+    let locked = false;
+    try {
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { proofHash?: unknown };
+      if (typeof parsed.proofHash === 'string') this.proofHash = parsed.proofHash;
+      locked = true;
+    } catch (error) {
+      // No file: no lock here. Anything else: it can't be told, so locked.
+      locked = (error as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+    this.set(locked);
+  }
+
+  get locked(): boolean {
+    return this.lockedNow;
+  }
+
+  get enrolled(): boolean {
+    return this.proofHash !== null;
+  }
+
+  private set(locked: boolean): void {
+    if (locked === this.lockedNow) return;
+    this.lockedNow = locked;
+    this.emit('locked', locked);
+  }
+
+  /** Only ever more locked, so anyone may ask. */
+  lock(): void {
+    this.set(true);
+  }
+
+  /** The screen locked, or "Lock now" in the menu or tray: the pages save and go to the lock screen. */
+  requestLock(): void {
+    if (!this.enrolled) return;
+    this.set(true);
+    this.emit('requested');
+  }
+
+  matches(proof: unknown): boolean {
+    if (!isProof(proof) || !this.proofHash) return false;
+    const given = Buffer.from(digest(proof), 'hex');
+    const stored = Buffer.from(this.proofHash, 'hex');
+    return given.length === stored.length && timingSafeEqual(given, stored);
+  }
+
+  /** Sets the lock up. Refused when there is one, or a page could replace it and then prove it. */
+  enroll(proof: unknown): boolean {
+    if (!isProof(proof) || this.enrolled || !this.file) return false;
+    mkdirSync(path.dirname(this.file), { recursive: true });
+    writeFileSync(this.file, JSON.stringify({ proofHash: digest(proof) }), { mode: 0o600 });
+    this.proofHash = digest(proof);
+    this.set(false);
+    this.emit('enrolled', true);
+    return true;
+  }
+
+  /** Someone really unlocked, with the PIN or a passkey. */
+  prove(proof: unknown): boolean {
+    if (!this.matches(proof)) return false;
+    this.set(false);
+    return true;
+  }
+
+  /** For main's own checks: Windows Hello or Touch ID said yes. */
+  liftAfterOsCheck(): void {
+    this.set(false);
+  }
+
+  disable(proof: unknown): boolean {
+    if (!this.matches(proof)) return false;
+    this.forget();
+    return true;
+  }
+
+  /** The caller has made sure: see the feature's `forget`. */
+  forget(): void {
+    if (this.file) rmSync(this.file, { force: true });
+    this.proofHash = null;
+    this.set(false);
+    this.emit('enrolled', false);
+  }
+}
+
+/** One per run: a run is one mode and one origin. Locked until `init`. */
+export const appLockGate = new AppLockGate();
