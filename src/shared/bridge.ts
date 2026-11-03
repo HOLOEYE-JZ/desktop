@@ -110,6 +110,8 @@ export interface AppLockStatus {
   enrolled: boolean;
   os: OsUnlockKind | null;
   osEnrolled: boolean;
+  /** The OS has a real key store, so `wrap` and `unwrap` work. */
+  wrap: boolean;
 }
 
 export type OsUnlockAnswer =
@@ -224,6 +226,8 @@ export const CHANNEL = {
   appLockOsEnroll: 'bulwark:appLock.osEnroll',
   appLockOsRemove: 'bulwark:appLock.osRemove',
   appLockOsUnlock: 'bulwark:appLock.osUnlock',
+  appLockWrap: 'bulwark:appLock.wrap',
+  appLockUnwrap: 'bulwark:appLock.unwrap',
   appLockRequest: 'bulwark:appLock.request',
   policyGet: 'bulwark:policy.get',
   policyChanged: 'bulwark:policy.changed',

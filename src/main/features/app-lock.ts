@@ -8,21 +8,41 @@
  * running as this user, which can ask DPAPI itself without any prompt. The settings page
  * says so. The PIN stays either way, since Hello being available doesn't mean the user
  * knows its PIN. Linux has neither prompt, so it's PIN only there.
+ *
+ * `wrap` and `unwrap` put safeStorage around the page's PIN record and the store's keys, so
+ * a copy of the disk can't be guessed at without this user's OS login. A frame can call
+ * them too, and gets what's still under the PIN or the page's own key, for this origin only.
  */
 
 import { createHash } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, powerMonitor, systemPreferences } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, safeStorage, systemPreferences } from 'electron';
 import { CHANNEL, type AppLockStatus, type OsUnlockAnswer, type OsUnlockKind } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { native } from '../native';
 import { SecretStore } from '../secrets';
 import { strings } from '../strings';
+import { addWipeStep, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
 
 const OS_KEY_NAME = 'app-lock-key';
 const OS_PROMPT_MS = 60_000;
+/** A PIN record or a database key. Nothing here wraps anything big. */
+const MAX_WRAP_BYTES = 4096;
+
+/** The backend that only obfuscates would make this look safer than it is. */
+async function wrapAvailable(): Promise<boolean> {
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) return false;
+  return process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text';
+}
+
+// Whatever the mode: a wipe can run before or without the feature's setup. The folder holds the
+// gate's record and the DPAPI-wrapped lock key of every origin, and the wipe takes all origins.
+addWipeStep(async () => {
+  rmSync(path.join(app.getPath('userData'), 'app-lock'), { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  appLockGate.forget();
+});
 
 type Verifier = (window: BrowserWindow | null, reason: string) => Promise<'yes' | 'no' | 'unavailable'>;
 
@@ -73,14 +93,6 @@ function setup(ctx: FeatureContext): void {
     }
   };
 
-  const osEnrolled = async (): Promise<boolean> => {
-    try {
-      return (await secrets.get(osKeyName)) !== null;
-    } catch {
-      return false;
-    }
-  };
-
   // Everything that can show on screen without a page.
   const blankTitles = () => {
     for (const window of BrowserWindow.getAllWindows()) {
@@ -123,7 +135,9 @@ function setup(ctx: FeatureContext): void {
     locked: appLockGate.locked,
     enrolled: appLockGate.enrolled,
     os: await osKindNow(),
-    osEnrolled: await osEnrolled(),
+    // Whether it's there, not whether it opens: nothing here decrypts before someone said yes.
+    osEnrolled: secrets.has(osKeyName),
+    wrap: await wrapAvailable(),
   }));
   ctx.on(CHANNEL.appLockLock, () => appLockGate.lock());
   ctx.handle(CHANNEL.appLockEnroll, (_event, _window, proof) => appLockGate.enroll(proof));
@@ -134,10 +148,11 @@ function setup(ctx: FeatureContext): void {
     return true;
   });
 
-  ctx.handle(CHANNEL.appLockForget, async (_event, window) => {
+  ctx.handle(CHANNEL.appLockForget, async (_event, window, proof) => {
     if (!appLockGate.enrolled) return true;
-    // Lifting a lock on a page's word alone would be no lock. While unlocked there's nothing to lift.
-    if (appLockGate.locked) {
+    // Lifting a lock on a page's word alone would be no lock, and while unlocked a word followed
+    // by `enroll` would replace it. So with no proof of the current lock it's the user's to say.
+    if (appLockGate.locked || !appLockGate.matches(proof)) {
       const text = strings();
       const options = {
         type: 'warning' as const,
@@ -170,10 +185,25 @@ function setup(ctx: FeatureContext): void {
     rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
   });
 
+  ctx.handle(CHANNEL.appLockWrap, async (_event, _window, data) => {
+    if (!(data instanceof Uint8Array) || data.length > MAX_WRAP_BYTES || !(await wrapAvailable())) return null;
+    const sealed = await safeStorage.encryptStringAsync(`${site}:${Buffer.from(data).toString('base64')}`);
+    return new Uint8Array(sealed);
+  });
+  ctx.handle(CHANNEL.appLockUnwrap, async (_event, _window, data) => {
+    if (!(data instanceof Uint8Array) || data.length > MAX_WRAP_BYTES * 2 || !(await wrapAvailable())) return null;
+    try {
+      const { result } = await safeStorage.decryptStringAsync(Buffer.from(data));
+      return result.startsWith(`${site}:`) ? new Uint8Array(Buffer.from(result.slice(site.length + 1), 'base64')) : null;
+    } catch {
+      return null;
+    }
+  });
+
   ctx.handle(CHANNEL.appLockOsUnlock, (_event, window) => oneAtATime<OsUnlockAnswer>({ ok: false, reason: 'failed' }, async () => {
-    // Asking while unlocked would let any same-origin frame pop prompts and collect the key.
+    // Asking while unlocked would pop prompts and collect the key.
     if (!appLockGate.locked) return { ok: false, reason: 'not-locked' };
-    if (!(await osEnrolled())) return { ok: false, reason: 'unavailable' };
+    if (!secrets.has(osKeyName)) return { ok: false, reason: 'unavailable' };
     const answer = await verifyWithOs(window, strings().appLockOsUnlockReason);
     if (answer === 'unavailable') return { ok: false, reason: 'unavailable' };
     if (answer !== 'yes') return { ok: false, reason: 'denied' };
@@ -189,7 +219,11 @@ function setup(ctx: FeatureContext): void {
 
   // The checks in test/ read and fire these. An installed app has none of it.
   if (!app.isPackaged) {
-    (globalThis as unknown as { __bulwarkAppLock: unknown }).__bulwarkAppLock = { gate: appLockGate, lockScreen: () => powerMonitor.emit('lock-screen') };
+    (globalThis as unknown as { __bulwarkAppLock: unknown }).__bulwarkAppLock = {
+      gate: appLockGate,
+      lockScreen: () => powerMonitor.emit('lock-screen'),
+      wipe: () => runLocalWipe('remote', app.getPath('userData'), ctx.state),
+    };
   }
 }
 

@@ -78,15 +78,20 @@ type LockBridge = {
   enroll(p: Uint8Array): Promise<boolean>;
   prove(p: Uint8Array): Promise<boolean>;
   disable(p: Uint8Array): Promise<boolean>;
-  forget(): Promise<boolean>;
+  forget(p?: Uint8Array): Promise<boolean>;
   osEnroll(p: Uint8Array, key: Uint8Array): Promise<boolean>;
   osUnlock(): Promise<{ ok: boolean; reason?: string; key?: number[] }>;
 };
 
 function call<T>(page: Page, method: keyof LockBridge, ...seeds: number[]): Promise<T> {
   return page.evaluate(async ({ method: name, seeds: list }) => {
-    const bridge = (window as unknown as { bulwarkDesktop: { appLock: Record<string, (...args: unknown[]) => Promise<unknown>> } }).bulwarkDesktop.appLock;
-    const out = await bridge[name](...list.map((seed) => new Uint8Array(32).fill(seed)));
+    type Member = Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const bridge = (window as unknown as { bulwarkDesktop: { appLock: Member } }).bulwarkDesktop.appLock;
+    // As the page does at its first render: these two are handed out once.
+    const held = window as unknown as { __controls?: Member };
+    held.__controls ??= (bridge as unknown as { claim(): Member }).claim();
+    const target = name === 'lock' || name === 'osUnlock' ? held.__controls : bridge;
+    const out = await target[name](...list.map((seed) => new Uint8Array(32).fill(seed)));
     return out && typeof out === 'object' && 'key' in out
       ? { ...out, key: Array.from((out as { key: Uint8Array }).key) }
       : out;
@@ -242,12 +247,99 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('forgetting while unlocked, as a sign-out does, asks nothing', async () => {
+  test('forgetting with the proof, as a sign-out in the tab with the key does, asks nothing', async () => {
     await run('yes', async (app, page) => {
       await call(page, 'enroll', 1);
       await fakeOsIntegration(app, 1);
-      expect(await call(page, 'forget')).toBe(true);
+      expect(await call(page, 'forget', 1)).toBe(true);
       expect((await prompts(app)).length).toBe(0);
+      expect((await call<{ enrolled: boolean }>(page, 'status')).enrolled).toBe(false);
+    });
+  });
+
+  test('no silent forget and enroll while unlocked: without the proof it asks, and a no keeps the lock', async () => {
+    await run('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      await fakeOsIntegration(app, 1);
+      expect(await call(page, 'forget')).toBe(false);
+      expect((await prompts(app)).length).toBe(1);
+      expect(await call(page, 'forget', 2), 'the wrong proof is no proof').toBe(false);
+      expect(await call(page, 'enroll', 2)).toBe(false);
+      expect(await call(page, 'prove', 1)).toBe(true);
+    });
+  });
+
+  test('a same-origin frame gets neither lock() nor osUnlock(): the page took them, once', async () => {
+    await run('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      await call(page, 'osEnroll', 1, 7);
+      const seen = await page.evaluate(async () => {
+        type Parent = { bulwarkDesktop: { appLock: { lock?: unknown; osUnlock?: unknown; claim(): unknown } } };
+        const frame = document.createElement('iframe');
+        frame.srcdoc = '<p>frame</p>';
+        document.body.appendChild(frame);
+        await new Promise((resolve) => (frame.onload = resolve));
+        const reached = (frame.contentWindow as unknown as { parent: Parent }).parent.bulwarkDesktop.appLock;
+        const out = { lock: typeof reached.lock, osUnlock: typeof reached.osUnlock, claim: reached.claim() };
+        frame.remove();
+        return out;
+      });
+      expect(seen).toEqual({ lock: 'undefined', osUnlock: 'undefined', claim: null });
+      expect(await gateLocked(app)).toBe(false);
+    });
+  });
+
+  test('status doesn\'t decrypt to say whether Hello is set up', async () => {
+    await run('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      await call(page, 'osEnroll', 1, 7);
+      await app.evaluate(({ app: electronApp }) => {
+        const { readdirSync, writeFileSync } = process.getBuiltinModule('node:fs');
+        const { join } = process.getBuiltinModule('node:path');
+        const folder = join(electronApp.getPath('userData'), 'app-lock');
+        for (const name of readdirSync(folder).filter((entry: string) => entry.endsWith('.bin'))) writeFileSync(join(folder, name), 'not something it can decrypt');
+      });
+      expect((await call<{ osEnrolled: boolean }>(page, 'status')).osEnrolled).toBe(true);
+    });
+  });
+
+  test('wrap and unwrap go through safeStorage, and only for this origin\'s own bytes', async () => {
+    await run('yes', async (_app, page) => {
+      const answer = await page.evaluate(async () => {
+        const bridge = (window as unknown as { bulwarkDesktop: { appLock: {
+          status(): Promise<{ wrap?: boolean }>;
+          wrap(data: Uint8Array): Promise<Uint8Array | null>;
+          unwrap(data: Uint8Array): Promise<Uint8Array | null>;
+        } } }).bulwarkDesktop.appLock;
+        const data = new Uint8Array(40).fill(9);
+        const wrapped = await bridge.wrap(data);
+        const back = wrapped ? await bridge.unwrap(wrapped) : null;
+        const foreign = await bridge.unwrap(new Uint8Array(32).fill(3));
+        return {
+          available: (await bridge.status()).wrap,
+          changed: wrapped ? Array.from(wrapped).join() !== Array.from(data).join() : false,
+          back: back ? Array.from(back) : null,
+          foreign,
+        };
+      });
+      expect(answer).toEqual({ available: true, changed: true, back: Array(40).fill(9), foreign: null });
+    });
+  });
+
+  test('a local wipe takes the lock\'s folder and the DPAPI key along, and main lets go', async () => {
+    await run('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      await call(page, 'osEnroll', 1, 7);
+      await call(page, 'lock');
+      await expect.poll(() => gateLocked(app)).toBe(true);
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe());
+      const after = await app.evaluate(({ app: electronApp }) => {
+        const { existsSync } = process.getBuiltinModule('node:fs');
+        const { join } = process.getBuiltinModule('node:path');
+        const gate = (globalThis as unknown as { __bulwarkAppLock: { gate: { locked: boolean; enrolled: boolean } } }).__bulwarkAppLock.gate;
+        return { folder: existsSync(join(electronApp.getPath('userData'), 'app-lock')), locked: gate.locked, enrolled: gate.enrolled };
+      });
+      expect(after).toEqual({ folder: false, locked: false, enrolled: false });
     });
   });
 
