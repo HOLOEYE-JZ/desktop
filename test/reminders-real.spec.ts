@@ -8,7 +8,7 @@ import { launchStandalone, removeOsTraces, removeProfile, requireAccount, SCREEN
  * a window hidden in the tray, a quit and a restart. Real time passes, so this is long.
  * Needs a webmail build with the reminders in ./webmail.
  *
- *   vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test test/reminders-real.spec.ts
+ *   IT_ENT_PASSWORD=<test account password> npx playwright test test/reminders-real.spec.ts
  */
 
 const USER = 'ent-dave@example.org';
