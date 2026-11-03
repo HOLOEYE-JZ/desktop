@@ -24,6 +24,8 @@ export const DEV_TOAST_CLSID = '{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}';
 const REPEAT_MS = 10 * 60 * 1000;
 const FOCUS_ASSIST_TTL_MS = 60 * 1000;
 const FOCUS_ASSIST_TIMEOUT_MS = 3000;
+/** Windows shows five at most. A typed reply takes one of them: buildToastXml. */
+const MAX_ACTIONS = 5;
 
 export function setToastActivator(): void {
   app.setToastActivatorCLSID(app.isPackaged ? TOAST_CLSID : DEV_TOAST_CLSID);
@@ -75,11 +77,11 @@ function cleanRequest(request: unknown): OsNotification | null {
   const title = text(input.title, 200);
   if (!id || !title) return null;
   const actions = Array.isArray(input.actions)
-    ? input.actions.slice(0, 4).flatMap((action) => {
+    ? input.actions.slice(0, MAX_ACTIONS).flatMap((action) => {
         const a = (action ?? {}) as Record<string, unknown>;
         const actionId = text(a.id, 32);
         const label = text(a.label, 40);
-        return actionId && label && actionId !== 'open' && actionId !== 'reply' ? [{ id: actionId, label }] : [];
+        return actionId && label && actionId !== 'reply' ? [{ id: actionId, label }] : [];
       })
     : [];
   const reply = input.reply as Record<string, unknown> | undefined;
@@ -93,6 +95,7 @@ function cleanRequest(request: unknown): OsNotification | null {
     reply: reply && text(reply.label, 40) ? { label: text(reply.label, 40), placeholder: text(reply.placeholder, 100) } : undefined,
     sound: input.sound === true,
     attention: input.attention === true,
+    kind: input.kind === 'reminder' ? 'reminder' : undefined,
   };
 }
 
@@ -143,7 +146,13 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
 
   const present = (request: OsNotification) => {
     const toast = hub.locked
-      ? { title: strings().toastLockedTitle, body: strings().toastLockedBody, context: '', actions: [], reply: undefined }
+      ? {
+          title: strings().toastLockedTitle,
+          body: request.kind === 'reminder' ? strings().toastLockedReminderBody : strings().toastLockedBody,
+          context: '',
+          actions: [],
+          reply: undefined,
+        }
       : { title: request.title, body: request.body, context: request.context, actions: request.actions ?? [], reply: request.reply };
     const id = shortId(request.id);
     const groupId = request.group ? shortId(request.group) : undefined;

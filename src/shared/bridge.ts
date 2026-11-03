@@ -154,6 +154,8 @@ export interface OsNotification {
   sound?: boolean;
   /** New mail: flash the taskbar or bounce the dock if that's on. */
   attention?: boolean;
+  /** What a locked app says instead: new mail unless this says otherwise. */
+  kind?: 'mail' | 'reminder';
 }
 
 export interface OsNotifyResult {
