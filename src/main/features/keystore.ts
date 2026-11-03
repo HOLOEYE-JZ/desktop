@@ -120,5 +120,8 @@ export const keystoreFeature: Feature = {
     ctx.handle(CHANNEL.keystoreAgree, (event, window, id, peer) => answer(() => gate.agree(originOf(event), id, peer, window, handleOf(window))));
     ctx.handle(CHANNEL.keystoreAccess, (event) => consent.accessState(originOf(event)));
     ctx.handle(CHANNEL.keystoreRevoke, (event) => consent.revoke(originOf(event)));
+    // At sign-out and account switch, so the next account gets asked. Only narrows: refusals
+    // and an instance's stored yes stay, so any page may call it and none gains by it.
+    ctx.handle(CHANNEL.keystoreClearGrants, () => consent.clearGrants());
   },
 };

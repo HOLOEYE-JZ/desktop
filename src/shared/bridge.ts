@@ -130,6 +130,7 @@ export const CHANNEL = {
   keystoreAgree: 'bulwark:keystore.agree',
   keystoreAccess: 'bulwark:keystore.access',
   keystoreRevoke: 'bulwark:keystore.revoke',
+  keystoreClearGrants: 'bulwark:keystore.clearGrants',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */
