@@ -224,6 +224,48 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => page.url(), { timeout: 30_000 }).not.toMatch(/sent/i);
   });
 
+  test('Settings opens in a window of its own, and its switch reaches the shell and the other windows', async () => {
+    await app.evaluate(({ Menu }) => {
+      Menu.getApplicationMenu()!.getMenuItemById('help.settings')!.click();
+    });
+    const settings = await pageWith(app, '/settings');
+    const list = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<{ type: string }[]> } } }).bulwarkDesktop.windows.list());
+    expect(list.map((w) => w.type).sort()).toEqual(['main', 'settings']);
+    await settings.goto(new URL('/settings/general', settings.url()).toString());
+    await settings.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
+    const flip = () => settings.evaluate(() => {
+      const label = [...document.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent === 'Reopen windows at start');
+      let box: Element | null = label ?? null;
+      const control = '[role="switch"], button[aria-checked], input[type="checkbox"]';
+      while (box && !box.querySelector(control)) box = box.parentElement;
+      (box!.querySelector(control) as HTMLElement).click();
+    });
+    const shellHas = () => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).restoreWindows;
+    await flip();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('bulwark-desktop-window-prefs') ?? '{}').restoreWindows)).toBe(false);
+    await expect.poll(shellHas, { timeout: 10_000 }).toBe(false);
+    await flip();
+    await expect.poll(shellHas, { timeout: 10_000 }).toBe(true);
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/settings'))!.close();
+    });
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+  });
+
+  test('a link to a folder goes there, without reloading the window', async () => {
+    await page.evaluate(() => {
+      (window as unknown as { __noReload: number }).__noReload = 2;
+    });
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://folder/drafts'], '');
+    });
+    await expect.poll(() => page.url(), { timeout: 30_000 }).toContain('/mail/folder/drafts');
+    await expect(page.getByRole('navigation').getByText(/^Drafts/).first()).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __noReload?: number }).__noReload)).toBe(2);
+    await sendCommand(app, '/', 'go.inbox');
+    await expect.poll(() => page.url(), { timeout: 30_000 }).not.toContain('drafts');
+  });
+
   test('Alt shows the menu strip in the title bar, and a name opens that menu natively', async () => {
     test.skip(process.platform !== 'win32', 'the strip is for Windows; macOS has its bar, Linux a native frame');
     const alt = (type: 'keyDown' | 'keyUp') => app.evaluate(({ BrowserWindow }, t) => {
@@ -468,6 +510,7 @@ test.describe('the warm spare', () => {
     const composer = await pageWith(app, '/popout/compose');
     await composer.getByPlaceholder(/subject/i).or(composer.getByLabel(/subject/i)).first().waitFor({ timeout: 60_000 });
     // Everything closes with a spare still loaded: the app still quits.
+    await expect.poll(spareId, { timeout: 30_000 }).not.toBeNull();
     const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
     await app.evaluate(({ BrowserWindow }) => {
       for (const window of BrowserWindow.getAllWindows()) if (!window.webContents.getURL().includes('/popout/spare')) window.close();

@@ -210,10 +210,11 @@ export class WindowManager extends EventEmitter<{
 
   /** Remembered, cascaded, on the current monitor. */
   placeFor(type: WindowType, size?: { width: number; height: number }): Rect {
-    const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed() && w.window.isVisible());
+    // Not a main window hidden behind its pop-outs. One still painting does count: a second window opened right after it must not land on top.
+    const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed() && (w.type !== 'main' || w.window.isVisible()));
     const sameType = others.filter((w) => w.type === type).at(-1)?.window.getNormalBounds();
     const focused = this.focusedManaged()?.window;
-    const anchor = (focused && focused.isVisible() ? focused.getNormalBounds() : undefined) ?? others.at(-1)?.window.getNormalBounds();
+    const anchor = (focused && others.some((w) => w.window === focused) ? focused.getNormalBounds() : undefined) ?? others.at(-1)?.window.getNormalBounds();
     const current = anchor ? screen.getDisplayMatching(anchor) : screen.getPrimaryDisplay();
     return placeWindow({
       size: size ?? DEFAULT_SIZE[type],
@@ -364,7 +365,12 @@ export class WindowManager extends EventEmitter<{
 
   private isLastOnScreen(managed: ManagedWindow): boolean {
     if (this.staysInBackground()) return false;
-    return ![...this.windows.values()].some((w) => w !== managed && !w.window.isDestroyed() && w.window.isVisible());
+    return ![...this.windows.values()].some((w) => w !== managed && !w.window.isDestroyed() && this.onScreen(w));
+  }
+
+  /** A pop-out still painting counts: only a main window can be hidden on purpose. */
+  private onScreen(managed: ManagedWindow): boolean {
+    return managed.type !== 'main' || managed.window.isVisible();
   }
 
   /** A pop-out closed. If only a hidden main is left and nothing keeps the app running, it goes too. */
@@ -375,7 +381,7 @@ export class WindowManager extends EventEmitter<{
     }
     if (this.quitting || this.staysInBackground()) return;
     const left = [...this.windows.values()].filter((w) => !w.window.isDestroyed());
-    if (left.some((w) => w.window.isVisible())) return;
+    if (left.some((w) => this.onScreen(w))) return;
     for (const { window } of left) window.close();
   }
 

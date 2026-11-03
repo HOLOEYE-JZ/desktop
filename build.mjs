@@ -17,7 +17,8 @@ await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
 
 // Main loads this as a data: page, so the script goes inside it, allowed by its hash.
-const script = readFileSync('src/pages/welcome.js', 'utf8');
+// In LF: the browser hashes the script after turning CRLF into LF, and a Windows checkout has CRLF.
+const script = readFileSync('src/pages/welcome.js', 'utf8').replaceAll(String.fromCharCode(13, 10), String.fromCharCode(10));
 const hash = createHash('sha256').update(script).digest('base64');
 const page = readFileSync('src/pages/welcome.html', 'utf8')
   .replace("script-src 'self'", `script-src 'sha256-${hash}'`)

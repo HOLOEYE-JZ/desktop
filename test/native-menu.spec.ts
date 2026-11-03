@@ -712,6 +712,12 @@ test('a deep link at start and from a second launch opens the right window', asy
     // Nobody signed in: a pop-out would have no session to borrow, so the link waits.
     await page.waitForTimeout(500);
     expect(app.windows().some((w) => w.url().includes('abc1'))).toBe(false);
+    // One from a second launch waits too.
+    await app.evaluate(({ app: electronApp }) => {
+      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://message/abc1?account=a1'], '');
+    });
+    await page.waitForTimeout(500);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { sessionReady: () => void } } }).bulwarkDesktop.windows.sessionReady());
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(2);
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()).some((u) => u.includes('abc1') || u.includes('popout') || u.includes('login')))).toBe(true);
