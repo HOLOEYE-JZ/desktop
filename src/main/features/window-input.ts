@@ -65,8 +65,8 @@ export const windowInputFeature: Feature = {
         if (direction === 'right') navigateHistory(window, 1);
       });
 
-      // Windows with a native frame have a native bar, which does this by itself.
-      if (process.platform !== 'win32' || !windows.wantsOverlay()) return;
+      // A native frame has a native bar, which does this by itself. macOS has its own.
+      if (process.platform === 'darwin' || !windows.wantsOverlay()) return;
       const alt = new AltTracker();
       webContents.on('before-input-event', (event, input) => {
         const action = alt.feed(input, menu.barEntries());

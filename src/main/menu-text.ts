@@ -10,6 +10,26 @@ const MAX_ITEMS = 2000;
 const MAX_DEPTH = 5;
 const MAX_LABEL = 300;
 
+/**
+ * A letter for Alt on each of the menu bar's names. Each takes the first letter in it
+ * no earlier one has. A name that already marks one keeps it.
+ */
+export function assignMnemonics(labels: string[]): string[] {
+  const used = new Set<string>();
+  for (const label of labels) {
+    const at = label.indexOf('&');
+    if (at >= 0 && label[at + 1]) used.add(label[at + 1].toLowerCase());
+  }
+  return labels.map((label) => {
+    if (label.includes('&')) return label;
+    const chars = [...label];
+    const at = chars.findIndex((c) => /\p{L}|\p{N}/u.test(c) && !used.has(c.toLowerCase()));
+    if (at < 0) return label;
+    used.add(chars[at].toLowerCase());
+    return `${chars.slice(0, at).join('')}&${chars.slice(at).join('')}`;
+  });
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');
@@ -65,6 +85,7 @@ export function pickSpellLanguages(wanted: string[], available: string[]): strin
 export function safeFileName(name: unknown): string {
   // eslint-disable-next-line no-control-regex
   const base = String(name ?? '').replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '_').replace(/^[ .]+|[ .]+$/g, '').slice(0, 180);
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(base)) return `_${base}`;
   return base || 'attachment';
 }
 
@@ -75,3 +96,40 @@ export function pdfFileName(title: string): string {
   return `${clean || 'Bulwark'}.pdf`;
 }
 
+
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif',
+  'image/svg+xml': 'svg',
+  'image/x-icon': 'ico',
+  'image/vnd.microsoft.icon': 'ico',
+  'image/tiff': 'tiff',
+};
+
+/**
+ * The name to save an image under, or null if it isn't one. The type decides the
+ * extension: a sender calling their file `invoice.exe` gets `invoice.png`.
+ */
+export function safeImageName(name: unknown, mimeType: unknown): string | null {
+  const type = typeof mimeType === 'string' ? mimeType.split(';')[0].trim().toLowerCase() : '';
+  const extension = IMAGE_EXTENSIONS[type];
+  if (!extension) return null;
+  const base = safeFileName(name).replace(/\.[^.]*$/, '').replace(/[. ]+$/, '');
+  return `${base || 'image'}.${extension}`;
+}
+
+const OPENABLE_PROTOCOLS = new Set(['http:', 'https:', 'mailto:', 'tel:', 'sms:', 'xmpp:', 'webcal:']);
+
+/** Whether a link gets Open and Copy: something the OS can open, outside the app. */
+export function linkOffersOpen(url: string, origin: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return OPENABLE_PROTOCOLS.has(parsed.protocol) && parsed.origin !== origin && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}

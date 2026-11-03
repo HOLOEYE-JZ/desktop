@@ -23,6 +23,21 @@ function setHeader(req: IncomingMessage, name: string, value: string): void {
   req.rawHeaders.push(name, value);
 }
 
+/**
+ * Next's image optimizer caches under .next/cache, in the install folder, which a
+ * per-machine install can't write to. Nothing in the webmail uses it (no next/image).
+ */
+export function isImageOptimizer(url: string | undefined): boolean {
+  if (!url) return false;
+  let pathname = url.split(/[?#]/)[0];
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch {
+    // Not decodable, compared as it is.
+  }
+  return pathname.replace(/\/{2,}/g, '/').replace(/\/$/, '').toLowerCase() === '/_next/image';
+}
+
 /** POST /api/admin/auth, however it's spelled. Reading its status stays open. */
 export function isAdminLogin(method: string | undefined, url: string | undefined): boolean {
   if (!url || method === 'GET' || method === 'HEAD') return false;

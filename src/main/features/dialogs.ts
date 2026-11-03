@@ -7,9 +7,11 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { app, clipboard, dialog } from 'electron';
+import { app, clipboard, dialog, powerMonitor } from 'electron';
+import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
 import { safeFileName } from '../menu-text';
+import { systemExe } from '../system-exe';
 import type { Feature } from './index';
 
 /** In Electron, but left out of its types as experimental. */
@@ -19,6 +21,8 @@ function writeClipboardBuffer(format: string, data: Buffer): void {
 
 const MAX_TEXT = 2000;
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
+/** Long enough to go and paste it. An attachment shouldn't sit around in the clear. */
+const CLIPBOARD_FILE_MS = 10 * 60_000;
 
 /** Files handed to the clipboard live here until the next start: a paste can come any time. */
 function clipboardFolder(): string {
@@ -51,7 +55,7 @@ function putFileOnClipboard(file: string): Promise<boolean> {
     return Promise.resolve(true);
   }
   return new Promise((resolve) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Sta', '-Command', 'Set-Clipboard -LiteralPath $env:BULWARK_CLIPBOARD_FILE'], {
+    const child = spawn(systemExe('powershell.exe'), ['-NoProfile', '-NonInteractive', '-Sta', '-Command', 'Set-Clipboard -LiteralPath $env:BULWARK_CLIPBOARD_FILE'], {
       windowsHide: true,
       stdio: 'ignore',
       env: { ...process.env, BULWARK_CLIPBOARD_FILE: file },
@@ -65,7 +69,12 @@ export const dialogsFeature: Feature = {
   name: 'dialogs',
   modes: ['standalone', 'instance'],
   setup(ctx) {
+    // A wipe of what's local covers the copies waiting to be pasted.
+    addWipeStep(async () => emptyClipboardFolder());
     emptyClipboardFolder();
+    app.on('will-quit', emptyClipboardFolder);
+    powerMonitor.on('lock-screen', emptyClipboardFolder);
+    ctx.on(CHANNEL.clipboardClearFiles, () => emptyClipboardFolder());
 
     ctx.handle(CHANNEL.dialogsConfirm, async (_event, window, options) => {
       const { message, detail, buttons, defaultId, type } = (options ?? {}) as Partial<ConfirmOptions>;
@@ -95,6 +104,7 @@ export const dialogsFeature: Feature = {
       mkdirSync(folder, { recursive: true });
       const file = path.join(folder, safeFileName(name));
       writeFileSync(file, bytes);
+      setTimeout(() => rmSync(folder, { recursive: true, force: true }), CLIPBOARD_FILE_MS).unref?.();
       return putFileOnClipboard(file);
     });
   },

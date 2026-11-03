@@ -8,6 +8,7 @@
 
 import type { BrowserWindow, IpcMainEvent, IpcMainInvokeEvent, Session } from 'electron';
 import type { Mode } from '../../shared/bridge';
+import type { WindowLink } from '../deep-link';
 import type { StateFile } from '../state';
 import type { ThemeController } from '../theme';
 import type { WindowManager } from '../windows';
@@ -18,9 +19,12 @@ import { dialogsFeature } from './dialogs';
 import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
+import { updaterFeature } from './updater';
 import { policiesFeature } from './policies';
+import { osIntegration } from './os';
 import { keystoreFeature } from './keystore';
 import { appLockFeature } from './app-lock';
+import { privacyFeature } from './privacy';
 
 export interface FeatureContext {
   mode: Mode;
@@ -34,6 +38,10 @@ export interface FeatureContext {
   /** Standalone only. */
   servers?: ServerRegistry;
   localAdmin?: LocalAdmin;
+  /** The main window, made if it's gone. */
+  showMain: () => void;
+  /** Opens a bulwark:// link in its window, once someone is signed in. */
+  openLink: (link: WindowLink) => void;
   /** A request-reply channel, callable only from the app's own main frames. */
   handle: (channel: string, handler: (event: IpcMainInvokeEvent, window: BrowserWindow | null, ...args: unknown[]) => unknown) => void;
   /** A one-way channel, same check. */
@@ -47,7 +55,7 @@ export interface Feature {
 }
 
 // The lock first: whatever comes after reads it as it starts.
-export const FEATURES: Feature[] = [appLockFeature, policiesFeature, keystoreFeature, contextMenuFeature, windowInputFeature, dialogsFeature];
+export const FEATURES: Feature[] = [appLockFeature, policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

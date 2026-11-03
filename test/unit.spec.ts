@@ -16,7 +16,7 @@ import { serverEnv, profilePaths } from '../src/main/profile';
 import { findHomePaths, findProblems, guardPackage, scrubPaths } from '../scripts/package-guard.mjs';
 import { cascadeFrom, centreIn, CASCADE_PX, isOnSomeDisplay, placeWindow } from '../src/main/window-placement';
 import { forwardJmap, isJmapRoute, parseJmapRoute, safeContentType } from '../src/server/jmap-proxy';
-import { isAdminLogin, sanitizeRequest } from '../src/server/sanitize';
+import { isAdminLogin, isImageOptimizer, sanitizeRequest } from '../src/server/sanitize';
 
 const HOST = 'app.bulwark.localhost';
 const display = (x: number, y: number, width = 1920, height = 1040) => ({ workArea: { x, y, width, height } });
@@ -325,6 +325,17 @@ test.describe('request sanitising', () => {
     expect(req.rawHeaders).not.toContain('secret');
     expect(req.rawHeaders).not.toContain('main-secret');
     expect(req.rawHeaders).not.toContain('6.6.6.6');
+  });
+});
+
+test.describe('the image optimizer', () => {
+  test('is recognised however it is spelled, and nothing else is', () => {
+    for (const url of ['/_next/image', '/_next/image?url=%2Fa.png&w=64&q=75', '//_next//image', '/_next/%69mage', '/_NEXT/image/']) {
+      expect(isImageOptimizer(url), url).toBe(true);
+    }
+    for (const url of ['/_next/static/chunks/image.js', '/_next/images', '/api/og-image', undefined]) {
+      expect(isImageOptimizer(url), String(url)).toBe(false);
+    }
   });
 });
 

@@ -46,6 +46,32 @@ export interface SystemTheme {
   accent?: string;
 }
 
+export type UpdateChannel = 'stable' | 'beta';
+
+/** `install`: replaces itself. `notify`: an MSI, deb, rpm or unsigned macOS, says a version exists. `none`: a development run. */
+export type UpdateAbility = 'install' | 'notify' | 'none';
+
+export interface UpdateState {
+  /** The running version. */
+  version: string;
+  channel: UpdateChannel;
+  /** Set by the `UpdateChannel` policy. */
+  channelLocked: boolean;
+  /** False when the `AutoUpdate` policy turned updates off. */
+  allowed: boolean;
+  ability: UpdateAbility;
+  /** Windows, and not the per-user installer: an MSI, whose updates come the way it did. */
+  perMachine: boolean;
+  /**
+   * `available`: a newer version, for `notify` installs. `older-available`: on stable, with
+   * a beta running, and the newest stable is older than it. `off`: the policy.
+   */
+  status: 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'available' | 'older-available' | 'error' | 'off';
+  /** The version the status is about. */
+  target?: string;
+  percent?: number;
+}
+
 export interface PolicyBridge {
   /** What's in force now. Synchronous: a page can read it in its first render. */
   get: () => PolicySnapshot;
@@ -53,55 +79,6 @@ export interface PolicyBridge {
 }
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
-
-export type KeystoreHash = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
-
-export interface KeystoreCertificate {
-  /** Opaque: the only ids sign, decrypt and agree accept. */
-  id: string;
-  /** The leaf, DER. */
-  certificate: Uint8Array;
-  /** Intermediates, DER, without leaf and root. May be empty. */
-  chain: Uint8Array[];
-  subject: string;
-  issuer: string;
-  /** Hex. */
-  serial: string;
-  /** Milliseconds since 1970. */
-  notBefore: number;
-  notAfter: number;
-  /** keyUsage names. Empty without the extension. */
-  usages: string[];
-  /** extendedKeyUsage OIDs. Empty without the extension. */
-  extendedUsages: string[];
-  /** The key's algorithm OID. */
-  algorithm: string;
-  keyType: 'rsa' | 'ec';
-  curve?: 'P-256' | 'P-384' | 'P-521';
-  keyBits: number;
-  /** A hint for the UI. */
-  source: 'software' | 'smartcard' | 'keychain' | 'unknown';
-  signSchemes: string[];
-  decryptSchemes: string[];
-  canAgree: boolean;
-  /** The key can also sign the user in somewhere: the user is asked per use. */
-  askEachUse: boolean;
-}
-
-/** Whether this origin may use the keystore at all. `app` is standalone. */
-export type KeystoreAccessState = 'app' | 'policy' | 'stored' | 'off';
-
-export type KeystoreSignScheme =
-  | { scheme: 'rsa-pkcs1'; hash: KeystoreHash }
-  /** MGF1 on the same hash, salt as long as the hash. */
-  | { scheme: 'rsa-pss'; hash: KeystoreHash }
-  /** `hash` names the digest's length. */
-  | { scheme: 'ecdsa'; hash: KeystoreHash };
-
-export type KeystoreDecryptScheme =
-  | { scheme: 'rsa-pkcs1' }
-  /** MGF1 on the same hash. */
-  | { scheme: 'rsa-oaep'; hash: KeystoreHash; label?: Uint8Array };
 
 export type OsUnlockKind = 'hello' | 'touchid';
 
@@ -118,8 +95,6 @@ export type OsUnlockAnswer =
   | { ok: true; key: Uint8Array }
   | { ok: false; reason: 'unavailable' | 'denied' | 'failed' | 'not-locked' };
 
-/** How main answers a keystore call. The preload turns a failure into `new Error(code)`. */
-export type KeystoreResult<T> = { ok: true; value: T } | { ok: false; code: string };
 /** A native menu built by the page: an HTML menu read back, so the two can't drift. */
 export interface NativeMenuItem {
   /** Handed back when this item is chosen. Left out of separators and submenus. */
@@ -169,7 +144,60 @@ export interface LanguagesUpdate {
   ui: string;
   /** What the composer's text is in, if it says. */
   composer?: string[];
+  /** The shell's menu and dialog text in that language, by the keys of `src/main/strings.ts`. */
+  labels?: Record<string, string>;
 }
+export type KeystoreHash = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
+
+export interface KeystoreCertificate {
+  /** Opaque: the only ids sign, decrypt and agree accept. */
+  id: string;
+  /** The leaf, DER. */
+  certificate: Uint8Array;
+  /** Intermediates, DER, without leaf and root. May be empty. */
+  chain: Uint8Array[];
+  subject: string;
+  issuer: string;
+  /** Hex. */
+  serial: string;
+  /** Milliseconds since 1970. */
+  notBefore: number;
+  notAfter: number;
+  /** keyUsage names. Empty without the extension. */
+  usages: string[];
+  /** extendedKeyUsage OIDs. Empty without the extension. */
+  extendedUsages: string[];
+  /** The key's algorithm OID. */
+  algorithm: string;
+  keyType: 'rsa' | 'ec';
+  curve?: 'P-256' | 'P-384' | 'P-521';
+  keyBits: number;
+  /** A hint for the UI. */
+  source: 'software' | 'smartcard' | 'keychain' | 'unknown';
+  signSchemes: string[];
+  decryptSchemes: string[];
+  canAgree: boolean;
+  /** The key can also sign the user in somewhere: the user is asked per use. */
+  askEachUse: boolean;
+}
+
+/** Whether this origin may use the keystore at all. `app` is standalone. */
+export type KeystoreAccessState = 'app' | 'policy' | 'stored' | 'off';
+
+export type KeystoreSignScheme =
+  | { scheme: 'rsa-pkcs1'; hash: KeystoreHash }
+  /** MGF1 on the same hash, salt as long as the hash. */
+  | { scheme: 'rsa-pss'; hash: KeystoreHash }
+  /** `hash` names the digest's length. */
+  | { scheme: 'ecdsa'; hash: KeystoreHash };
+
+export type KeystoreDecryptScheme =
+  | { scheme: 'rsa-pkcs1' }
+  /** MGF1 on the same hash. */
+  | { scheme: 'rsa-oaep'; hash: KeystoreHash; label?: Uint8Array };
+
+/** How main answers a keystore call. The preload turns a failure into `new Error(code)`. */
+export type KeystoreResult<T> = { ok: true; value: T } | { ok: false; code: string };
 
 export interface SessionUrls {
   apiUrl?: string;
@@ -177,6 +205,107 @@ export interface SessionUrls {
   uploadUrl?: string;
   eventSourceUrl?: string;
 }
+
+export interface OsSettings {
+  /** Closing the main window leaves the app running in the tray. */
+  closeToTray: boolean;
+  startAtLogin: boolean;
+  /** At login: no window, only the tray. */
+  startMinimized: boolean;
+  /** Taskbar flash or dock bounce on new mail. */
+  attentionOnNewMail: boolean;
+  quietHoursEnabled: boolean;
+  /** HH:MM, local time. */
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  /** "Show Bulwark", an Electron accelerator. Null: off. */
+  showShortcut: string | null;
+}
+
+export interface OsStatus {
+  settings: OsSettings;
+  pausedUntil: number | null;
+  /** The shortcut in settings is really held. Another app can have it. */
+  shortcutActive: boolean;
+}
+
+export interface OsFile {
+  name: string;
+  data: Uint8Array;
+}
+
+/** What the OS asks the app to do: a tray item, a jump list entry, a toast, a double-clicked file. */
+export type OsCommand =
+  | { type: 'new-message' }
+  | { type: 'navigate'; target: 'inbox' | 'calendar' | 'contacts' }
+  | { type: 'open-message'; emailId: string; accountId?: string; context?: string }
+  | { type: 'open-mailbox'; mailboxId: string }
+  | { type: 'mailto'; url: string }
+  | { type: 'webcal'; url: string }
+  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[] }
+  | { type: 'notification'; action: string; context: string; reply?: string };
+
+export interface OsNotification {
+  /** Tag of the toast. Showing an id again within a few minutes does nothing. */
+  id: string;
+  group?: string;
+  title: string;
+  body: string;
+  /** Handed back with the action. Keep it short: Windows keeps it in the toast. */
+  context: string;
+  actions?: { id: string; label: string }[];
+  reply?: { label: string; placeholder: string };
+  /** The user wants a sound with this. */
+  sound?: boolean;
+  /** New mail: flash the taskbar or bounce the dock if that's on. */
+  attention?: boolean;
+}
+
+export interface OsNotifyResult {
+  shown: boolean;
+  reason?: 'duplicate' | 'paused' | 'quiet-hours' | 'focused' | 'unsupported' | 'invalid' | 'failed';
+  /** The page should play the sound the user picked. */
+  playSound: boolean;
+}
+
+export interface OsTrayMessage {
+  emailId: string;
+  accountId: string;
+  sender: string;
+  subject: string;
+  context?: string;
+}
+
+export interface OsSummary {
+  unread: OsTrayMessage[];
+  /** Newest conversations, whether read or not, for the jump list. */
+  recent: OsTrayMessage[];
+  nextEvent: { title: string; when: string } | null;
+}
+
+export type OsPowerEvent = 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
+
+export interface OsDefaultAppStatus {
+  /** Offered to the OS as a mail app. */
+  registered: boolean;
+  mailto: boolean;
+  webcal: boolean;
+}
+
+export interface PrivacyState {
+  telemetry: { on: boolean; forcedOff: boolean };
+  crashReports: { on: boolean; forcedOff: boolean; uploadUrl: string };
+}
+
+export interface CrashFileInfo {
+  id: string;
+  createdAt: number;
+  bytes: number;
+}
+
+export type CrashSendResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
 
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
@@ -206,6 +335,10 @@ export const CHANNEL = {
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',
   clipboardCopyFile: 'bulwark:clipboard.copyFile',
+  clipboardClearFiles: 'bulwark:clipboard.clearFiles',
+  spellMissing: 'bulwark:spell.missing',
+  spellListMissing: 'bulwark:spell.listMissing',
+  spellAllowDownload: 'bulwark:spell.allowDownload',
   serversPrepare: 'bulwark:servers.prepare',
   serversNoteSession: 'bulwark:servers.noteSession',
   serversForget: 'bulwark:servers.forget',
@@ -216,6 +349,23 @@ export const CHANNEL = {
   authComplete: 'bulwark:auth.complete',
   authCancel: 'bulwark:auth.cancel',
   pluginsInstall: 'bulwark:plugins.install',
+  osSubscribe: 'bulwark:os.subscribe',
+  osCommand: 'bulwark:os.command',
+  osGetStatus: 'bulwark:os.getStatus',
+  osSetSettings: 'bulwark:os.setSettings',
+  osSetPaused: 'bulwark:os.setPaused',
+  osStatusChanged: 'bulwark:os.statusChanged',
+  osSetBadge: 'bulwark:os.setBadge',
+  osSetSummary: 'bulwark:os.setSummary',
+  osSetProgress: 'bulwark:os.setProgress',
+  osSetLocked: 'bulwark:os.setLocked',
+  osClearSurfaces: 'bulwark:os.clearSurfaces',
+  osNotify: 'bulwark:os.notify',
+  osPower: 'bulwark:os.power',
+  osStartDrag: 'bulwark:os.startDrag',
+  osCopyFiles: 'bulwark:os.copyFiles',
+  osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
+  osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
   welcomeChoose: 'bulwark:welcome.choose',
   appLockStatus: 'bulwark:appLock.status',
   appLockLock: 'bulwark:appLock.lock',
@@ -229,8 +379,24 @@ export const CHANNEL = {
   appLockWrap: 'bulwark:appLock.wrap',
   appLockUnwrap: 'bulwark:appLock.unwrap',
   appLockRequest: 'bulwark:appLock.request',
+  updatesState: 'bulwark:updates.state',
+  updatesCheck: 'bulwark:updates.check',
+  updatesSetChannel: 'bulwark:updates.setChannel',
+  updatesRestart: 'bulwark:updates.restart',
+  updatesOpenDownload: 'bulwark:updates.openDownload',
+  updatesInstallOlder: 'bulwark:updates.installOlder',
+  updatesChanged: 'bulwark:updates.changed',
   policyGet: 'bulwark:policy.get',
   policyChanged: 'bulwark:policy.changed',
+  privacyGet: 'bulwark:privacy.get',
+  privacySetTelemetry: 'bulwark:privacy.setTelemetry',
+  privacySetCrashReports: 'bulwark:privacy.setCrashReports',
+  privacySetCrashUploadUrl: 'bulwark:privacy.setCrashUploadUrl',
+  privacyListCrashes: 'bulwark:privacy.listCrashes',
+  privacySendCrash: 'bulwark:privacy.sendCrash',
+  privacyDeleteCrashes: 'bulwark:privacy.deleteCrashes',
+  privacyChanged: 'bulwark:privacy.changed',
+  welcomePrivacy: 'bulwark:welcome.privacy',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

@@ -6,6 +6,7 @@
 
 import { session as electronSession, type Session } from 'electron';
 import { APP_HOST, LAUNCH_HEADER } from '../server/protocol';
+import { closeDictionaryDownloads } from './spellcheck';
 
 export const APP_PARTITION = 'persist:bulwark';
 
@@ -16,6 +17,7 @@ const VERIFY_DEFAULT = -3;
 
 export function setupAppSession(fingerprint: string, launchSecret: string, onPinFailure: () => void): Session {
   const session = electronSession.fromPartition(APP_PARTITION);
+  closeDictionaryDownloads(session);
   session.setCertificateVerifyProc((request, callback) => {
     if (request.hostname !== APP_HOST) {
       callback(VERIFY_DEFAULT);
@@ -32,6 +34,21 @@ export function setupAppSession(fingerprint: string, launchSecret: string, onPin
     callback({ requestHeaders: { ...details.requestHeaders, [LAUNCH_HEADER]: launchSecret } });
   });
   return session;
+}
+
+/**
+ * Chromium writes cookies every 30 seconds and local storage every few, so a crash in that time
+ * loses a sign-in that looked done. A sign-in is a cookie change, and those are few.
+ */
+export function keepSignInsOnDisk(session: Session): void {
+  let timer: NodeJS.Timeout | null = null;
+  session.cookies.on('changed', () => {
+    timer ??= setTimeout(() => {
+      timer = null;
+      session.flushStorageData();
+      session.cookies.flushStore().catch(() => {});
+    }, 200);
+  });
 }
 
 export function instancePartition(origin: string): string {

@@ -1,0 +1,65 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+# Winget manifest template, installer part. Replace {{VERSION}} and each {{SHA256_*}} with
+# the values of a published release: the `.sha256` files next to the installers. Then
+# submit all three files to microsoft/winget-pkgs under
+# manifests/b/Bulwark/Bulwark/<version>/, by hand or with `wingetcreate submit`.
+#
+# Unsigned installers pass winget's checks, but its validation runs them through
+# SmartScreen and Defender, and a new unsigned publisher can be held for manual review.
+# The per-user NSIS is the default, as it updates itself: UpgradeBehavior install still
+# lets winget upgrade it, since the installer replaces the old copy in place.
+PackageIdentifier: Bulwark.Bulwark
+PackageVersion: {{VERSION}}
+MinimumOSVersion: 10.0.17763.0
+InstallModes:
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: {{YYYY-MM-DD}}
+Installers:
+  - Architecture: x64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-Setup-{{VERSION}}-x64.exe
+    InstallerSha256: {{SHA256_NSIS_X64}}
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+  - Architecture: arm64
+    InstallerType: nullsoft
+    Scope: user
+    InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-Setup-{{VERSION}}-arm64.exe
+    InstallerSha256: {{SHA256_NSIS_ARM64}}
+    InstallerSwitches:
+      Silent: /S
+      SilentWithProgress: /S
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+  - Architecture: x64
+    InstallerType: wix
+    Scope: machine
+    InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-{{VERSION}}-x64.msi
+    InstallerSha256: {{SHA256_MSI_X64}}
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+        UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
+  - Architecture: arm64
+    InstallerType: wix
+    Scope: machine
+    InstallerUrl: https://github.com/bulwarkmail/desktop/releases/download/v{{VERSION}}/Bulwark-{{VERSION}}-arm64.msi
+    InstallerSha256: {{SHA256_MSI_ARM64}}
+    AppsAndFeaturesEntries:
+      - DisplayName: Bulwark
+        Publisher: Bulwark Mail
+        DisplayVersion: {{VERSION}}
+        UpgradeCode: '{7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47}'
+ManifestType: installer
+ManifestVersion: 1.10.0

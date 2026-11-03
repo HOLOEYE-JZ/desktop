@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 
@@ -52,8 +53,8 @@ export async function launch(profile: string, ...args: string[]): Promise<Electr
 }
 
 /**
- * The window the user sees. Not firstWindow(): a window whose page has no title bar
- * row is rebuilt once with a native frame before it's shown.
+ * The window the user sees. Not firstWindow(): a window whose page can't sit under the
+ * window's controls is rebuilt once with a native frame before it's shown.
  */
 export async function shownPage(app: ElectronApplication): Promise<Page> {
   const settled = () =>
@@ -165,5 +166,29 @@ export async function expectMailShown(page: Page): Promise<void> {
 }
 
 export function requireAccount(): void {
-  if (!ENT_PASSWORD) throw new Error('Run under: vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test');
+  if (!ENT_PASSWORD) throw new Error("Set IT_ENT_PASSWORD to the test account's password");
+}
+
+function reg(...args: string[]): void {
+  spawnSync('reg.exe', args, { windowsHide: true });
+}
+
+/** What a run may leave without this: the keys and the shortcut Electron makes on a toast. */
+export function removeOsTraces(): void {
+  if (process.platform !== 'win32') return;
+  reg('delete', 'HKCU\\Software\\Classes\\CLSID\\{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}', '/f');
+  for (const key of ['Software\\Bulwark', 'Software\\Classes\\bulwark', 'Software\\Classes\\Bulwark.Url.mailto', 'Software\\Classes\\Bulwark.Url.webcal', 'Software\\Classes\\Bulwark.File.eml', 'Software\\Classes\\Bulwark.File.ics', 'Software\\Classes\\Bulwark.File.vcf']) {
+    reg('delete', `HKCU\\${key}`, '/f');
+  }
+  reg('delete', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark', '/f');
+  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'Bulwark Dev', '/f');
+  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', '/v', 'Bulwark Dev', '/f');
+  for (const name of ['Electron.lnk', 'Bulwark.lnk']) {
+    const lnk = path.join(homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', name);
+    if (existsSync(lnk)) {
+      // Only ours: it points at this development Electron.
+      const target = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}').TargetPath`], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
+      if (/electron\\dist\\electron\.exe/i.test(target)) spawnSync('powershell.exe', ['-NoProfile', '-Command', `Remove-Item -LiteralPath '${lnk}'`], { windowsHide: true });
+    }
+  }
 }

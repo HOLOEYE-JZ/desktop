@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Mode, ThemeColours, WindowType } from '../shared/bridge';
+import type { Mode, OsSettings, ThemeColours, UpdateChannel, WindowType } from '../shared/bridge';
 
 export interface StoredBounds {
   x: number;
@@ -26,6 +26,19 @@ export interface SessionWindow {
   url: string;
   key?: string;
   bounds?: { x: number; y: number; width: number; height: number };
+  maximized?: boolean;
+}
+
+/** Telemetry and crash report consent. Absent means nobody said yes: off. See features/privacy.ts. */
+export interface PrivacyChoices {
+  /** The first run asked, or the user answered in settings. */
+  asked?: boolean;
+  telemetry?: boolean;
+  crashReports?: boolean;
+  crashUploadUrl?: string;
+  /** The shell's own id for its heartbeat. Instance mode only. */
+  id?: string;
+  lastPingAt?: number;
 }
 
 export interface ShellState {
@@ -39,6 +52,30 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** What the user changed of the OS settings; the rest are defaults (features/os-rules.ts). */
+  os?: Partial<OsSettings>;
+  /** Pause notifications, from the tray. */
+  osPausedUntil?: number | null;
+  /** The first close to the tray said so. */
+  osCloseNoticeShown?: boolean;
+  /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
+  osToastSecret?: string;
+  /** The user's own channel. A policy goes first (update-rules.ts). */
+  updateChannel?: UpdateChannel;
+  /** The channel this copy started on, until someone chooses (updater.ts). */
+  updateChannelInitial?: UpdateChannel;
+  /** The last version a notification was shown for. */
+  updateNotified?: string;
+  /** What was open at quit. Off by the setting in the webmail. */
+  session?: SessionWindow[];
+  restoreWindows?: boolean;
+  /** Starts in a row that began restoring and didn't get far. */
+  restoreAttempts?: number;
+  /** When a pop-out last opened: whether a warm spare is worth its memory. */
+  lastPopoutAt?: number;
+  /** Chromium's zoom level: 0 is 100%. */
+  zoomLevel?: number;
+  privacy?: PrivacyChoices;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;
   /** WipeOfflineData values already acted on, so each deletes once, across restarts. */
@@ -47,13 +84,10 @@ export interface ShellState {
   partitions?: string[];
   /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
   offlineClearedForPolicy?: boolean;
+  /** A hash of the key DPAPI stopped opening, once the user was told their sign-ins went with it. */
+  keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
-  /** What was open at quit. Off by the setting in the webmail. */
-  session?: SessionWindow[];
-  restoreWindows?: boolean;
-  /** Chromium's zoom level: 0 is 100%. */
-  zoomLevel?: number;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

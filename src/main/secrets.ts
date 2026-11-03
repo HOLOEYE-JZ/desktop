@@ -9,9 +9,10 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { safeStorage } from 'electron';
+import { durableWrite } from './key-on-disk';
 
 export class SecretStoreError extends Error {
   constructor(
@@ -25,13 +26,6 @@ export class SecretStoreError extends Error {
 
 export function randomSecret(bytes = 32): string {
   return randomBytes(bytes).toString('base64url');
-}
-
-function atomicWrite(file: string, data: Buffer): void {
-  mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, data, { mode: 0o600 });
-  renameSync(temp, file);
 }
 
 export class SecretStore {
@@ -66,7 +60,7 @@ export class SecretStore {
 
   async set(name: string, value: string): Promise<void> {
     await this.assertAvailable();
-    atomicWrite(this.file(name), await safeStorage.encryptStringAsync(value));
+    durableWrite(this.file(name), await safeStorage.encryptStringAsync(value));
   }
 
   /**
@@ -82,8 +76,25 @@ export class SecretStore {
     return value;
   }
 
-  /** The value, or a new one if there's none or it can't be read. For secrets whose loss costs nothing. */
-  async getOrReplace(name: string, make: () => string): Promise<{ value: string; created: boolean }> {
+  /** Whether all that's stored can be read. True with nothing stored. */
+  async allReadable(): Promise<boolean> {
+    const names = existsSync(this.dir) ? readdirSync(this.dir).filter((file) => file.endsWith('.bin')) : [];
+    for (const file of names) {
+      try {
+        if ((await this.get(file.slice(0, -'.bin'.length))) === null) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The value, or a new one if there's none or it can't be read. For secrets whose loss costs
+   * nothing. `beforeNew` undoes what went with the old one, first, so a crash can't leave the new
+   * one with the old one's leftovers.
+   */
+  async getOrReplace(name: string, make: () => string, beforeNew?: () => void): Promise<{ value: string; created: boolean }> {
     try {
       const existing = await this.get(name);
       if (existing !== null) return { value: existing, created: false };
@@ -91,6 +102,7 @@ export class SecretStore {
       if (error instanceof SecretStoreError && error.code === 'unavailable') throw error;
       rmSync(this.file(name), { force: true });
     }
+    beforeNew?.();
     const value = make();
     await this.set(name, value);
     return { value, created: true };

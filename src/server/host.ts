@@ -17,8 +17,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
-import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, type HostMessage, type InitMessage } from './protocol';
-import { isAdminLogin, sanitizeRequest } from './sanitize';
+import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, normalizeStack, type HostMessage, type InitMessage, type MainErrorMessage, type PrivacyMessage } from './protocol';
+import { isAdminLogin, isImageOptimizer, sanitizeRequest } from './sanitize';
 
 const TRUST_KEY = Symbol.for('bulwark.desktop.trustedJmapOrigins');
 const POLICY_KEY = Symbol.for('bulwark.desktop.serverPolicy');
@@ -37,6 +37,27 @@ function setPolicy(policy: InitMessage['policy']): void {
 
 function isTrusted(origin: string): boolean {
   return (globalThis as unknown as Holder)[TRUST_KEY]?.has(origin) === true;
+}
+
+/** Read by the webmail (lib/desktop/server-privacy.ts). Its own links tell it of a change. */
+function setPrivacy(privacy: PrivacyMessage['privacy']): void {
+  const holder = globalThis as unknown as Record<symbol, unknown>;
+  holder[Symbol.for('bulwark.desktop.privacy')] = privacy;
+  (holder[Symbol.for('bulwark.desktop.privacyChanged')] as (() => void) | undefined)?.();
+}
+
+/** Waits on globalThis until the webmail's links (lib/desktop/server-links.ts) take it. */
+function queueMainError(error: Pick<MainErrorMessage, 'name' | 'message' | 'stack' | 'mechanism'>): void {
+  const holder = globalThis as unknown as Record<symbol, unknown>;
+  const key = Symbol.for('bulwark.desktop.mainErrors');
+  const queue = (holder[key] ??= []) as unknown[];
+  if (queue.length < 50) queue.push(error);
+  (holder[Symbol.for('bulwark.desktop.mainErrorsReady')] as (() => void) | undefined)?.();
+}
+
+function hostError(error: unknown, mechanism: MainErrorMessage['mechanism']): void {
+  const e = (error && typeof error === 'object' ? error : { message: String(error) }) as { name?: unknown; message?: unknown; stack?: unknown };
+  queueMainError({ name: e.name, message: e.message, stack: typeof e.stack === 'string' ? normalizeStack(e.stack, __dirname) : undefined, mechanism });
 }
 
 function send(message: unknown): void {
@@ -82,7 +103,10 @@ function exitWithParent(pid: number): void {
 
 async function start(init: InitMessage): Promise<void> {
   exitWithParent(init.parentPid);
-  const serverDir = process.cwd();
+  const { serverDir } = init;
+  // Next and the webmail read their files relative to the working directory, and an asar
+  // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
+  process.cwd = () => serverDir;
   // The secrets, here rather than in the utilityProcess's env block. Next and
   // the webmail read them from process.env from here on.
   Object.assign(process.env, init.secretEnv);
@@ -90,6 +114,7 @@ async function start(init: InitMessage): Promise<void> {
 
   const ca = useSystemCertificates();
   setTrusted(init.trustedOrigins);
+  setPrivacy(init.privacy);
   setPolicy(init.policy);
 
   const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
@@ -116,6 +141,11 @@ async function start(init: InitMessage): Promise<void> {
       return;
     }
     sanitizeRequest(req);
+    if (isImageOptimizer(req.url)) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
     if (isJmapRoute(req.url)) {
       void forwardJmap(req, res, isTrusted);
       return;
@@ -129,8 +159,14 @@ async function start(init: InitMessage): Promise<void> {
   server.listen(init.port, '127.0.0.1', () => send({ type: 'ready', systemCertificates: ca.added, caError: ca.error }));
 }
 
-process.on('uncaughtException', (error) => send({ type: 'log', level: 'error', message: String(error?.stack ?? error) }));
-process.on('unhandledRejection', (error) => send({ type: 'log', level: 'error', message: String(error instanceof Error ? error.stack : error) }));
+process.on('uncaughtException', (error) => {
+  send({ type: 'log', level: 'error', message: String(error?.stack ?? error) });
+  hostError(error, 'uncaughtexception');
+});
+process.on('unhandledRejection', (error) => {
+  send({ type: 'log', level: 'error', message: String(error instanceof Error ? error.stack : error) });
+  hostError(error, 'unhandledrejection');
+});
 
 process.parentPort.on('message', (event: { data: HostMessage }) => {
   const message = event.data;
@@ -138,6 +174,10 @@ process.parentPort.on('message', (event: { data: HostMessage }) => {
     start(message).catch((error) => send({ type: 'fatal', error: String(error?.stack ?? error) }));
   } else if (message.type === 'trusted') {
     setTrusted(message.origins);
+  } else if (message.type === 'privacy') {
+    setPrivacy(message.privacy);
+  } else if (message.type === 'main-error') {
+    queueMainError(message);
   } else if (message.type === 'policy') {
     setPolicy(message.policy);
   }

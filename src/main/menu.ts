@@ -15,8 +15,9 @@
  * draws a strip when Alt is pressed, and the strip opens these same menus natively.
  */
 
-import { app, Menu, shell, type BrowserWindow, type MenuItem, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
 import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuState, type WindowInfo } from '../shared/bridge';
+import { assignMnemonics } from './menu-text';
 import { strings } from './strings';
 import type { WindowManager } from './windows';
 
@@ -64,9 +65,20 @@ export class MenuController {
 
   constructor(private readonly hooks: MenuHooks) {}
 
+  /** What the start decided, once it has: nothing is offered before that. */
+  allowSwitchingMode(switchMode: (() => void) | undefined): void {
+    this.hooks.switchMode = switchMode;
+    this.rebuild();
+  }
+
   /** Once a mode has started: the first-run page has a menu without any windows behind it. */
   attach(windows: WindowManager): void {
     this.windows = windows;
+    // A page's report is for that page: the next one starts over.
+    windows.on('navigated', (window) => {
+      this.stateByWindow.delete(window);
+      this.applyState();
+    });
     windows.on('changed', (list) => {
       // Windows came or went, or a title changed: the Window menu has other lines now.
       // Only the focus moving is a matter of ticks and greyed items.
@@ -83,12 +95,6 @@ export class MenuController {
 
   /** The window lines the menu was last built with. */
   private windowSignature = '';
-
-  /** A policy can force the connection: there's nothing to switch to then. */
-  setSwitchMode(switchMode: (() => void) | undefined): void {
-    this.hooks.switchMode = switchMode;
-    this.rebuild();
-  }
 
   extend(section: MenuSection, extension: Extension): void {
     this.extensions.set(section, [...(this.extensions.get(section) ?? []), extension]);
@@ -145,8 +151,10 @@ export class MenuController {
   private target(id: string): BrowserWindow | undefined {
     const windows = this.windows;
     if (!windows) return undefined;
-    if (runsInMain(id)) return windows.mainWindow();
-    return windows.focusedManaged()?.window ?? windows.mainWindow();
+    const focused = windows.focusedManaged();
+    // A second main window's Go menu goes in that window.
+    if (runsInMain(id)) return focused?.type === 'main' ? focused.window : windows.mainWindow();
+    return focused?.window ?? windows.mainWindow();
   }
 
   /** Sends a command to the page that can run it. */
@@ -219,7 +227,8 @@ export class MenuController {
     const text = strings();
     const { hooks, windows } = this;
     const mac = process.platform === 'darwin';
-    const focused = () => windows?.focusedManaged()?.window;
+    // A bare window counts: a preview's Ctrl+P prints the preview, not what's behind it.
+    const focused = () => BrowserWindow.getFocusedWindow() ?? windows?.focusedManaged()?.window;
     const onFocused = (run: (window: BrowserWindow) => void) => () => {
       const window = focused();
       if (window) run(window);
@@ -247,9 +256,8 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
-        ...(hooks.switchMode
-          ? ([{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode }] as MenuItemConstructorOptions[])
-          : []),
+        // Left out while a policy forces the connection.
+        ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },
@@ -409,15 +417,13 @@ export class MenuController {
       ],
     };
 
+    const bar = [fileMenu, editMenu, viewMenu, messageMenu, goMenu, windowMenu, helpMenu];
+    assignMnemonics(bar.map((item) => item.label as string)).forEach((label, index) => {
+      bar[index].label = label;
+    });
     return [
       ...(mac ? [appMenu] : []),
-      fileMenu,
-      editMenu,
-      viewMenu,
-      messageMenu,
-      goMenu,
-      windowMenu,
-      helpMenu,
+      ...bar,
       ...(hooks.devTools ? [{ label: 'Develop', submenu: [{ role: 'reload' }, { role: 'toggleDevTools' }] } as MenuItemConstructorOptions] : []),
     ];
   }
@@ -438,8 +444,12 @@ export class MenuController {
     else this.applyState();
   }
 
+  /** A bare preview reports nothing, so what the organisation allows comes from the main window. */
   commandState(window: BrowserWindow): MenuState | undefined {
-    return this.stateByWindow.get(window);
+    return this.stateByWindow.get(window) ?? (this.windows?.managedFor(window) ? undefined : (() => {
+      const main = this.windows?.mainWindow();
+      return main ? this.stateByWindow.get(main) : undefined;
+    })());
   }
 
   // ─── The strip for a window with no native bar ──────────────

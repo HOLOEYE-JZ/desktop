@@ -128,7 +128,7 @@ test.describe('window prefs', () => {
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
     // `keystore` is only there where the native helper loaded: keystore-bridge.spec.ts.
-    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['appLock', 'auth', 'clipboard', 'dialogs', 'lifecycle', 'menu', 'mode', 'platform', 'plugins', 'policy', 'servers', 'shell', 'theme', 'version', 'windows']);
+    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['appLock', 'auth', 'clipboard', 'dialogs', 'lifecycle', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
   });
 
   test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {
@@ -255,6 +255,9 @@ test.describe('window-open guard', () => {
     await child.waitForLoadState();
     expect(await child.textContent('#b')).toBe('preview');
     expect(await child.evaluate(() => typeof (window as unknown as { bulwarkDesktop?: unknown }).bulwarkDesktop)).toBe('undefined');
+    // Past when the frame check runs: it stays this window.
+    await child.waitForTimeout(2000).catch(() => undefined);
+    expect(child.isClosed()).toBe(false);
     await child.close();
   });
 

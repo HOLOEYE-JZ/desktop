@@ -189,3 +189,51 @@ bulwarkPoliciesDone:
 !macro customInstall
   !insertmacro bulwarkWritePolicies
 !macroend
+
+; What the app writes at runtime outside its folder goes at a real uninstall (see also
+; src/main/features/os-default-app.ts, os-toasts.ts). An update runs this too, with
+; ${isUpdated} set, and those stay: the app keeps its pending download, the app writes the
+; rest again at its next start, and only a real uninstall should drop the login item.
+!macro customUnInstall
+  ${ifNot} ${isUpdated}
+    DeleteRegValue HKCU "Software\RegisteredApplications" "Bulwark"
+    DeleteRegKey HKCU "Software\Bulwark"
+    DeleteRegKey HKCU "Software\Classes\Bulwark.Url.mailto"
+    DeleteRegKey HKCU "Software\Classes\Bulwark.Url.webcal"
+    DeleteRegKey HKCU "Software\Classes\Bulwark.File.eml"
+    DeleteRegKey HKCU "Software\Classes\Bulwark.File.ics"
+    DeleteRegKey HKCU "Software\Classes\Bulwark.File.vcf"
+    DeleteRegKey HKCU "Software\Classes\bulwark"
+    DeleteRegValue HKCU "Software\Classes\.eml\OpenWithProgids" "Bulwark.File.eml"
+    DeleteRegValue HKCU "Software\Classes\.ics\OpenWithProgids" "Bulwark.File.ics"
+    DeleteRegValue HKCU "Software\Classes\.vcf\OpenWithProgids" "Bulwark.File.vcf"
+    DeleteRegKey HKCU "Software\Classes\CLSID\{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Bulwark"
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Bulwark"
+    RMDir /r "$LOCALAPPDATA\Bulwark\os-files"
+    RMDir "$LOCALAPPDATA\Bulwark"
+    RMDir /r "$LOCALAPPDATA\bulwark-desktop-updater"
+    ; Electron registers a COM server for toasts under a CLSID it may make up itself. Any
+    ; that names this install goes.
+    Push $R6
+    Push $R7
+    Push $R8
+    StrCpy $R6 0
+    ${Do}
+      EnumRegKey $R7 HKCU "Software\Classes\CLSID" $R6
+      ${If} $R7 == ""
+        ${ExitDo}
+      ${EndIf}
+      ReadRegStr $R8 HKCU "Software\Classes\CLSID\$R7\LocalServer32" ""
+      ${If} $R8 == "$INSTDIR\${APP_EXECUTABLE_FILENAME}"
+      ${OrIf} $R8 == '"$INSTDIR\${APP_EXECUTABLE_FILENAME}"'
+        DeleteRegKey HKCU "Software\Classes\CLSID\$R7"
+      ${Else}
+        IntOp $R6 $R6 + 1
+      ${EndIf}
+    ${Loop}
+    Pop $R8
+    Pop $R7
+    Pop $R6
+  ${endIf}
+!macroend
