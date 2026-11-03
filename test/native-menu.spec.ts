@@ -601,12 +601,15 @@ test.describe('closing', () => {
   });
 
   test('when the last pop-out goes too, so does the hidden main window, and the app quits', async () => {
-    const other = await openPopout('m3');
+    await openPopout('m3');
     await closeFirst();
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length)).toBe(1);
     const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
-    // The window can be gone before the answer comes back.
-    await other.evaluate(() => window.close()).catch(() => undefined);
+    // From main: with nobody signed in here the pop-out's page moves on to the login page,
+    // and after that Chromium ignores a script's window.close().
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.isVisible())!.close();
+    }).catch(() => undefined);
     await gone;
   });
 
