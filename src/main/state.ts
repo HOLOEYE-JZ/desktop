@@ -31,18 +31,16 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
-  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
-  keystoreOrigins?: string[];
   /** What the user changed of the OS settings; the rest are defaults (features/os-rules.ts). */
   os?: Partial<OsSettings>;
   /** Pause notifications, from the tray. */
   osPausedUntil?: number | null;
   /** The first close to the tray said so. */
   osCloseNoticeShown?: boolean;
-  /** The path the mail app's registry keys point at. */
-  osRegisteredExe?: string;
   /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
   osToastSecret?: string;
+  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
+  keystoreOrigins?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

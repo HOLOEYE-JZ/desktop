@@ -160,7 +160,7 @@ export interface OsNotification {
 
 export interface OsNotifyResult {
   shown: boolean;
-  reason?: 'duplicate' | 'paused' | 'quiet-hours' | 'focused' | 'unsupported' | 'invalid';
+  reason?: 'duplicate' | 'paused' | 'quiet-hours' | 'focused' | 'unsupported' | 'invalid' | 'failed';
   /** The page should play the sound the user picked. */
   playSound: boolean;
 }
@@ -221,6 +221,7 @@ export const CHANNEL = {
   osSetSummary: 'bulwark:os.setSummary',
   osSetProgress: 'bulwark:os.setProgress',
   osSetLocked: 'bulwark:os.setLocked',
+  osClearSurfaces: 'bulwark:os.clearSurfaces',
   osNotify: 'bulwark:os.notify',
   osPower: 'bulwark:os.power',
   osStartDrag: 'bulwark:os.startDrag',

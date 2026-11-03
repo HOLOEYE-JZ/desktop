@@ -44,21 +44,6 @@ const en = {
   menuEdit: 'Edit',
   menuWindow: 'Window',
   menuSwitchMode: 'Change Connection…',
-  keystoreAllowSession: 'Allow for this session',
-  keystoreAllowOnce: 'Allow once',
-  keystoreDeny: 'Deny',
-  keystoreFirstUseTitle: (host: string) => `Let ${host} use certificates on this computer?`,
-  keystoreFirstUseDetail: (host: string) =>
-    `The server ${host} and the plugins it provides could then ask to sign and decrypt mail with your certificates and smart cards. You are asked again before a certificate is used. You can take this back in the settings.`,
-  keystoreListTitle: (host: string) => `Let ${host} see your certificates?`,
-  keystoreListDetail: 'It gets the names and details of the certificates on this computer that can be used for mail, not the private keys. A plugin may be asking.',
-  keystoreSignTitle: (host: string) => `Let ${host} sign with your certificate?`,
-  keystoreSignDetail: 'It could sign anything in your name with this certificate. A plugin may be asking. Only allow this if you just sent signed mail or expect it.',
-  keystoreUnwrapTitle: (host: string) => `Let ${host} decrypt with your certificate?`,
-  keystoreUnwrapDetail: 'It could read mail encrypted to this certificate. A plugin may be asking. Only allow this if you are opening encrypted mail.',
-  keystoreCertificate: (subject: string) => `Certificate: ${subject}`,
-  keystoreOverRate: 'It has used this very often in the last minute.',
-  keystorePerOperation: 'This certificate can also sign you in elsewhere, so you are asked each time.',
   trayNewMessage: 'New message',
   trayUnread: 'Unread',
   trayNextEvent: (title: string, when: string) => `Next: ${title}, ${when}`,
@@ -81,6 +66,25 @@ const en = {
   jumpContacts: 'Contacts',
   thumbNewMessage: 'New message',
   thumbInbox: 'Inbox',
+  replyLostTitle: 'Bulwark was not running',
+  replyLostBody: 'If you typed a reply on a notification, it could not be kept. Open the message and reply there.',
+  pageCrashedTitle: 'Bulwark stopped working',
+  pageCrashedBody: 'It stopped several times in a row, so new mail is not coming in. Quit Bulwark from the tray icon and start it again.',
+  keystoreAllowSession: 'Allow for this session',
+  keystoreAllowOnce: 'Allow once',
+  keystoreDeny: 'Deny',
+  keystoreFirstUseTitle: (host: string) => `Let ${host} use certificates on this computer?`,
+  keystoreFirstUseDetail: (host: string) =>
+    `The server ${host} and the plugins it provides could then ask to sign and decrypt mail with your certificates and smart cards. You are asked again before a certificate is used. You can take this back in the settings.`,
+  keystoreListTitle: (host: string) => `Let ${host} see your certificates?`,
+  keystoreListDetail: 'It gets the names and details of the certificates on this computer that can be used for mail, not the private keys. A plugin may be asking.',
+  keystoreSignTitle: (host: string) => `Let ${host} sign with your certificate?`,
+  keystoreSignDetail: 'It could sign anything in your name with this certificate. A plugin may be asking. Only allow this if you just sent signed mail or expect it.',
+  keystoreUnwrapTitle: (host: string) => `Let ${host} decrypt with your certificate?`,
+  keystoreUnwrapDetail: 'It could read mail encrypted to this certificate. A plugin may be asking. Only allow this if you are opening encrypted mail.',
+  keystoreCertificate: (subject: string) => `Certificate: ${subject}`,
+  keystoreOverRate: 'It has used this very often in the last minute.',
+  keystorePerOperation: 'This certificate can also sign you in elsewhere, so you are asked each time.',
 };
 
 const de: typeof en = {
@@ -158,6 +162,10 @@ const de: typeof en = {
   jumpContacts: 'Kontakte',
   thumbNewMessage: 'Neue Nachricht',
   thumbInbox: 'Posteingang',
+  replyLostTitle: 'Bulwark lief nicht',
+  replyLostBody: 'Falls Sie in einer Benachrichtigung eine Antwort eingegeben haben, konnte sie nicht übernommen werden. Öffnen Sie die Nachricht und antworten Sie dort.',
+  pageCrashedTitle: 'Bulwark funktioniert nicht mehr',
+  pageCrashedBody: 'Es wurde mehrmals hintereinander beendet, daher kommen keine neuen E-Mails an. Beenden Sie Bulwark über das Symbol im Infobereich und starten Sie es neu.',
 };
 
 export function strings(): typeof en {

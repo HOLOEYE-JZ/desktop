@@ -1,8 +1,8 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { _electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, type Launched } from './helpers';
 
 /**
@@ -154,6 +154,7 @@ test.describe('OS integration', () => {
     const before = (await trayItems(app)).map((i) => i.label);
     expect(before).toEqual(expect.arrayContaining(['New message', 'Pause notifications', 'Open Bulwark', 'Quit Bulwark']));
 
+    await os(page, 'setLocked(false)');
     await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice & Co', subject: 'Lunch?' }], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], nextEvent: { title: 'Standup', when: '09:30' } })`);
     await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Alice && Co: Lunch?');
     expect((await trayItems(app)).map((i) => i.label)).toContain('Next: Standup, 09:30');
@@ -163,8 +164,10 @@ test.describe('OS integration', () => {
     await os(page, 'setLocked(true)');
     await expect.poll(async () => JSON.stringify(await trayItems(app))).not.toContain('Lunch');
     expect(JSON.stringify(await trayItems(app))).not.toContain('Standup');
+    // A real lock forgot it too. It only comes back from the page.
     await os(page, 'setLocked(false)');
-    await expect.poll(async () => JSON.stringify(await trayItems(app))).toContain('Lunch');
+    await page.waitForTimeout(200);
+    expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
   });
 
   test('tray and jump list items reach the page as commands, in order, shown or not', async () => {
@@ -172,6 +175,7 @@ test.describe('OS integration', () => {
     const { app, page } = running;
     await record(app);
     await listen(page);
+    await os(page, 'setLocked(false)');
     await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?', context: 'ctx' }], recent: [], nextEvent: { title: 'Standup', when: '09:30' } })`);
     await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Alice: Lunch?');
 
@@ -212,6 +216,7 @@ test.describe('OS integration', () => {
     await record(app);
     const send = (id: string, extra = '') => os(page, `notify({ id: '${id}', title: 'Alice', body: 'Lunch?', context: 'ctx', sound: true, actions: [{ id: 'archive', label: 'Archive' }], reply: { label: 'Reply', placeholder: 'Type' }${extra} })`) as Promise<{ shown: boolean; reason?: string; playSound: boolean }>;
     const setAssist = (value: string | null) => app.evaluate((_e, v) => (globalThis as unknown as { __bulwarkOs: { toasts: { setFocusAssistForTest: (x: unknown) => void } } }).__bulwarkOs.toasts.setFocusAssistForTest(v), value);
+    await os(page, 'setLocked(false)');
     const blur = () => app.evaluate(({ BrowserWindow }) => {
       // In a test nothing else takes the focus away, so ask as the code does.
       BrowserWindow.getFocusedWindow = () => null;
@@ -266,15 +271,219 @@ test.describe('OS integration', () => {
     expect(['off', 'priority', 'alarms', 'fullscreen']).toContain(value);
   });
 
+  test('the lock: counted as locked until the page says, only the main window may lift it, and a page can\'t lift what main decided', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await record(app);
+    await listen(page);
+    const locked = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
+    const pressDelete = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { toastAction: (a: string, c: string) => void } } }).__bulwarkOs.hub.toastAction('delete', 'ctx'));
+    // Whatever the page does at its start, a new page reports. This one hasn't had a say from us:
+    await page.reload();
+    await page.waitForLoadState('domcontentloaded');
+
+    await os(page, 'setLocked(true)');
+    await expect.poll(locked).toBe(true);
+    await listen(page);
+
+    // Behind the lock a toast's button acts on nothing: no command, and the window comes up.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+    await pressDelete();
+    await expect.poll(() => mainVisible(app)).toBe(true);
+    expect(await commands(page)).toEqual([]);
+
+    // Another window's word doesn't count.
+    await app.evaluate(({ webContents }) => {
+      const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setLockedByPage: (l: boolean, c: unknown) => void } } }).__bulwarkOs.hub;
+      hub.setLockedByPage(false, { id: -1 } as unknown as typeof webContents);
+    });
+    expect(await locked()).toBe(true);
+
+    await os(page, 'setLocked(false)');
+    await expect.poll(locked).toBe(false);
+    await pressDelete();
+    await expect.poll(() => commands(page)).toEqual([{ type: 'notification', action: 'delete', context: 'ctx' }]);
+
+    // Main's verdict stands over the page's.
+    await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { setLockedByMain: (l: boolean) => void } } }).__bulwarkOs.hub.setLockedByMain(true));
+    await os(page, 'setLocked(false)');
+    await page.waitForTimeout(200);
+    expect(await locked()).toBe(true);
+
+    // Titles carry subjects.
+    await page.evaluate(() => { document.title = 'Secret subject'; });
+    await page.waitForTimeout(300);
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toBe('Bulwark');
+    await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { setLockedByMain: (l: boolean) => void } } }).__bulwarkOs.hub.setLockedByMain(false));
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getTitle())).toBe('Secret subject');
+  });
+
+  test('a page navigating away counts as not having said: nothing is told until the new page says', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    const locked = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
+    await os(page, 'setLocked(false)');
+    await expect.poll(locked).toBe(false);
+    const stale = await page.evaluate(() => location.href);
+    await app.evaluate(({ BrowserWindow }, url) => { void BrowserWindow.getAllWindows()[0].webContents.loadURL(url); }, stale);
+    await expect.poll(locked).toBe(true);
+  });
+
+  test('sign-out clears what the OS shows; a quit does too', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await os(page, 'setLocked(false)');
+    await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
+    await os(page, 'setBadge(4)');
+    await expect.poll(async () => JSON.stringify(await trayItems(app))).toContain('Lunch');
+    await app.evaluate(({ Notification }) => {
+      const g = globalThis as unknown as { __removed: number };
+      g.__removed = 0;
+      Notification.removeAll = () => { g.__removed += 1; };
+    });
+    const files = await app.evaluate(async () => (await (globalThis as unknown as { __bulwarkOs: { files: { prepare: (r: unknown) => Promise<{ paths: string[] }> } } }).__bulwarkOs.files.prepare([{ name: 'a.txt', data: new Uint8Array([1]) }])).paths);
+    expect(existsSync(files[0])).toBe(true);
+    await os(page, 'clearSurfaces()');
+    await expect.poll(async () => JSON.stringify(await trayItems(app))).not.toContain('Lunch');
+    expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { badge: number } } }).__bulwarkOs.hub.badge)).toBe(0);
+    expect(await app.evaluate(() => (globalThis as unknown as { __removed: number }).__removed)).toBeGreaterThan(0);
+    expect(existsSync(files[0])).toBe(false);
+  });
+
+  test('a file a program holds stops neither the start nor a quit', async () => {
+    test.skip(!win);
+    const held = path.join(profile, 'os-files', 'old', 'open.txt');
+    mkdirSync(path.dirname(held), { recursive: true });
+    writeFileSync(held, 'x');
+    // A process that keeps the file open, without sharing it for delete.
+    const holder = spawn('powershell.exe', ['-NoProfile', '-Command', `$f = [IO.File]::Open('${held}', 'Open', 'Read', 'None'); Start-Sleep -Seconds 60`], { stdio: 'ignore', windowsHide: true });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      running = await launchStandalone(profile);
+      const { app } = running;
+      const closed = app.waitForEvent('close');
+      await app.evaluate(({ app: a }) => a.quit());
+      await closed;
+      running = null;
+    } finally {
+      holder.kill();
+    }
+  });
+
+  test('programs run by their full path, from a launch in a folder with a planted reg.exe', async () => {
+    test.skip(!win);
+    const planted = path.join(profile, 'launchdir');
+    mkdirSync(planted, { recursive: true });
+    // Does nothing and says it worked. If it ran, the keys below wouldn't be there.
+    copyFileSync('C:\\Windows\\System32\\hostname.exe', path.join(planted, 'reg.exe'));
+    copyFileSync('C:\\Windows\\System32\\hostname.exe', path.join(planted, 'powershell.exe'));
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) {
+      if (value !== undefined && name.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath' && name !== 'ELECTRON_RUN_AS_NODE') env[name] = value;
+    }
+    const app = await _electron.launch({ args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'], cwd: planted, env });
+    running = { app, page: await shownPage(app) };
+    const { page } = running;
+    await record(app);
+    expect(path.resolve(await app.evaluate(() => process.cwd())).toLowerCase()).toBe(path.resolve(profile).toLowerCase());
+    try {
+      await os(page, 'openDefaultAppSettings()');
+      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities', '/v', 'ApplicationName').out).toContain('Bulwark');
+    } finally {
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+    }
+    // The launch folder still counts for a relative file on the command line.
+    const launched = await app.evaluate(() => (globalThis as unknown as { __launchFolder?: string }).__launchFolder ?? null);
+    expect(launched === null || path.resolve(launched).toLowerCase() === path.resolve(planted).toLowerCase()).toBe(true);
+  });
+
+  test('a crashed main window comes back, and past the limit the user is told', async () => {
+    running = await launchStandalone(profile);
+    const { app } = running;
+    await record(app);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      return !contents.isCrashed() && !contents.isLoading();
+    }), { timeout: 60_000 }).toBe(true);
+    // Playwright's page died with the renderer, so ask the window.
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript('document.readyState').catch(() => null)), { timeout: 60_000 }).toBe('complete');
+
+    await app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      contents.reload = () => {};
+      for (let i = 0; i < 4; i += 1) contents.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 1 });
+    });
+    await expect.poll(async () => (await recorded(app)).shown.map((toast) => toast.title)).toContain('Bulwark stopped working');
+  });
+
+  test('a main window that failed to load tries again, and sooner on waking', async () => {
+    running = await launchStandalone(profile);
+    const { app } = running;
+    await app.evaluate(({ BrowserWindow }) => {
+      const g = globalThis as unknown as { __loads: string[] };
+      g.__loads = [];
+      const window = BrowserWindow.getAllWindows()[0];
+      window.loadURL = (async (url: string) => { g.__loads.push(url); }) as typeof window.loadURL;
+      window.webContents.emit('did-fail-load', {}, -106, 'offline', 'https://app.bulwark.localhost/', true);
+    });
+    const loads = () => app.evaluate(() => (globalThis as unknown as { __loads: string[] }).__loads);
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await expect.poll(loads, { timeout: 1500 }).toEqual(['https://app.bulwark.localhost/']);
+    // A certificate failure isn't one more try: its page says what to do.
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.emit('did-fail-load', {}, -202, 'cert', 'https://app.bulwark.localhost/', true);
+    });
+    await app.evaluate(({ powerMonitor }) => powerMonitor.emit('resume'));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect((await loads()).length).toBe(1);
+  });
+
+  test('a second launch during the boot is not lost', async () => {
+    // The boot waits for this file, so the second launch comes with no window and nothing live to take it.
+    const gate = path.join(profile, 'boot-gate');
+    const require = createRequire(import.meta.url);
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
+    delete env.ELECTRON_RUN_AS_NODE;
+    const hold = path.join(ROOT, 'test', 'support', 'hold-boot.cjs');
+    const app = await _electron.launch({
+      args: ['-r', hold, MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'],
+      cwd: ROOT,
+      env: { ...env, BULWARK_TEST_BOOT_GATE: gate },
+    });
+    await expect.poll(() => app.evaluate(({ app: electronApp }) => electronApp.listenerCount('second-instance')), { timeout: 30_000 }).toBeGreaterThan(0);
+    const second = spawn(require('electron') as unknown as string, [MAIN, `--bulwark-user-data=${profile}`, '--', 'webcal://example.org/early.ics'], { env, stdio: 'ignore' });
+    await new Promise((resolve) => second.once('exit', resolve));
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0);
+    writeFileSync(gate, '');
+    const page = await shownPage(app);
+    running = { app, page };
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-webcal')).catch(() => null), { timeout: 60_000 }).toContain('example.org/early.ics');
+  });
+
+  test('a cold toast action with close to tray off doesn\'t stay hidden', async () => {
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone', os: { closeToTray: false }, osToastSecret: 'k' }));
+    const { createHmac } = await import('node:crypto');
+    const context = '{}';
+    const signature = createHmac('sha256', 'k').update(`archive\n${context}`).digest('base64url');
+    const app = await launch(profile, '--standalone', '--', `bulwark://toast/archive?c=${encodeURIComponent(context)}&s=${signature}`);
+    running = { app, page: await shownPage(app) };
+    expect(await mainVisible(app)).toBe(true);
+  });
+
   test('a real toast: Windows holds it with its buttons, and pressing one reaches the page through the activator', async () => {
     test.skip(!win);
     running = await launchStandalone(profile);
     const { app, page } = running;
     await listen(page);
+    await os(page, 'setLocked(false)');
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getFocusedWindow = () => null;
     });
     const context = JSON.stringify({ emailId: 'real-1', accountId: 'a1' });
+    // The first toast of a process has no reply field: the activator isn't known to answer yet.
+    await page.evaluate((id) => (window as unknown as { bulwarkDesktop: { os: { notify: (n: unknown) => Promise<unknown> } } }).bulwarkDesktop.os.notify({ id, title: 'Bulwark test first', body: '', context: '{}', reply: { label: 'Reply', placeholder: 'Type' } }), 'os-spec-first-toast');
     const result = await page.evaluate(([ctx]) => (window as unknown as { bulwarkDesktop: { os: { notify: (n: unknown) => Promise<unknown> } } }).bulwarkDesktop.os.notify({
       id: 'os-spec-real-toast',
       group: 'os-spec',
@@ -287,13 +496,20 @@ test.describe('OS integration', () => {
     expect(result).toMatchObject({ shown: true });
 
     const script = path.join(ROOT, 'test', 'support', 'toast-readback.ps1');
-    const readback = () => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'os-spec-real-toast'], { encoding: 'utf8', windowsHide: true });
+    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', tag], { encoding: 'utf8', windowsHide: true });
     let xml = '';
     await expect.poll(() => {
       xml = readback();
       return xml;
     }, { timeout: 15_000 }).toContain('Bulwark test');
     for (const label of ['Archive', 'Mark read', 'Delete', 'Reply']) expect(xml).toContain(`content="${label}"`);
+
+    // Typed text only travels once this process has shown a toast: the first asks in the app, the next one inline.
+    const firstToast = readback('os-spec-first-toast');
+    expect(firstToast).toContain('Bulwark test first');
+    expect(firstToast).toContain('content="Reply"');
+    expect(firstToast).not.toContain('<input');
+    expect(xml).toContain('<input');
 
     // A button is a protocol launch: a second instance with the URL off the toast itself.
     const buttons = [...xml.matchAll(/content="([^"]+)" activationType="protocol" arguments="([^"]+)"/g)].map((match) => [match[1], match[2].replace(/&amp;/g, '&')]);
@@ -381,6 +597,7 @@ test.describe('OS integration', () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
     await record(app);
+    await os(page, 'setLocked(false)');
     await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { __flash: boolean[] };
       g.__flash = [];
@@ -390,7 +607,7 @@ test.describe('OS integration', () => {
       BrowserWindow.getFocusedWindow = () => null;
       (globalThis as unknown as { __bulwarkOs: { toasts: { setFocusAssistForTest: (x: unknown) => void } } }).__bulwarkOs.toasts.setFocusAssistForTest('off');
     });
-    const flashes = () => app.evaluate(() => (globalThis as unknown as { __flash: boolean[] }).__flash);
+    const flashes = () => app.evaluate(() => (globalThis as unknown as { __flash: boolean[] }).__flash.filter(Boolean));
     await os(page, `notify({ id: 'f1', title: 'T', body: 'B', context: '', attention: true })`);
     expect(await flashes()).toEqual([true]);
     await os(page, 'setSettings({ attentionOnNewMail: false })');
@@ -398,17 +615,26 @@ test.describe('OS integration', () => {
     expect(await flashes()).toEqual([true]);
   });
 
-  test('a mailto and an .eml on a cold start wait for the page; a second launch delivers at once', async () => {
+  test('a mailto on a cold start waits for the page, and a file next to it is not opened', async () => {
+    const other = path.join(profile, 'other.eml');
+    writeFileSync(other, 'From: a@example.org\r\nSubject: Should not open\r\n\r\nBody\r\n');
+    const app = await launch(profile, '--standalone', '--', 'mailto:a@example.org?subject=Hi', other);
+    const page = await shownPage(app);
+    running = { app, page };
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-mailto')).catch(() => null), { timeout: 60_000 }).toContain('a@example.org');
+    await expect(page.getByRole('heading', { name: 'Should not open' })).toHaveCount(0);
+  });
+
+  test('an .eml on a cold start waits for the page; a second launch delivers at once', async () => {
     const eml = path.join(profile, 'hello.eml');
     writeFileSync(eml, 'From: Someone <someone@example.org>\r\nTo: me@example.org\r\nSubject: Cold start letter\r\nDate: Tue, 3 Nov 2026 09:00:00 +0000\r\nContent-Type: text/plain\r\n\r\nBody\r\n');
-    const app = await launch(profile, '--standalone', '--', 'mailto:a@example.org?subject=Hi', eml);
+    const app = await launch(profile, '--standalone', '--', eml);
     const page = await shownPage(app);
     running = { app, page };
     await record(app);
 
-    // The page wasn't there when these were asked for. It took both once it was, signed in or not.
+    // The page wasn't there when this was asked for. It took it once it was, signed in or not.
     await expect(page.getByRole('heading', { name: 'Cold start letter' })).toBeVisible({ timeout: 60_000 });
-    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-mailto'))).toContain('a@example.org');
 
     await listen(page);
     // A real second launch, on the same profile, as the OS would start it.
@@ -515,6 +741,7 @@ test.describe('OS integration', () => {
     for (const file of drag.files) expect(file.startsWith(base)).toBe(true);
     expect(readFileSync(drag.files[0], 'utf8')).toBe('Subject: x');
     expect(path.basename(drag.files[0])).toBe('_.._evil_name_.eml');
+    // Where a roaming profile doesn't carry it: this is a development run, so under its profile.
     expect(readFileSync(drag.files[1], 'utf8')).toBe('second');
     if (win) expect(readFileSync(`${drag.files[0]}:Zone.Identifier`, 'utf8')).toContain('ZoneId=3');
 

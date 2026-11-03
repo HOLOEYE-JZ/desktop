@@ -19,11 +19,18 @@ export class OsHub extends EventEmitter<{
   summary: [OsSummary];
   badge: [number];
   locked: [boolean];
+  /** Sign-out, a wipe or a quit: nothing of this account stays on the OS's surfaces. */
+  cleared: [];
 }> {
   private readonly defaults = defaultSettings(process.platform, process.env);
   private readonly pending: OsCommand[] = [];
   private receiver: WebContents | null = null;
-  private lockedNow = false;
+  /**
+   * Fails closed. `unknown` until the main window's page has said, and again after it
+   * navigates: no content on any surface, and no toast's button acts. `main` is a lock
+   * main decided on (the app lock's call): no page can lift that.
+   */
+  private lockState: 'unknown' | 'open' | 'page' | 'main' = 'unknown';
   private summaryNow: OsSummary = EMPTY_SUMMARY;
   private badgeNow = 0;
   shortcutActive = false;
@@ -37,6 +44,7 @@ export class OsHub extends EventEmitter<{
       // A new page listens anew. A route change in the page isn't a navigation here.
       webContents.on('did-navigate', () => {
         if (this.receiver === webContents) this.receiver = null;
+        if (this.lockState === 'open') this.setLockState('unknown');
       });
     });
     ctx.windows.on('closed', (managed) => {
@@ -81,18 +89,53 @@ export class OsHub extends EventEmitter<{
     this.announce();
   }
 
+  /** Anything but a known open state counts as locked. */
   get locked(): boolean {
-    return this.lockedNow;
+    return this.lockState !== 'open';
   }
 
-  setLocked(locked: boolean): void {
-    if (locked === this.lockedNow) return;
-    this.lockedNow = locked;
-    this.emit('locked', locked);
+  /** Really locked, as opposed to not having heard yet: what's already delivered goes. */
+  get lockIsReal(): boolean {
+    return this.lockState === 'page' || this.lockState === 'main';
+  }
+
+  private setLockState(next: 'unknown' | 'open' | 'page' | 'main'): void {
+    const before = this.locked;
+    this.lockState = next;
+    if (this.lockIsReal) this.summaryNow = EMPTY_SUMMARY;
+    if (before !== this.locked || this.lockIsReal) this.emit('locked', this.locked);
+  }
+
+  /**
+   * From the bridge. Any window may lock. Only the main window's page may say it's open,
+   * and not if main locked it. A privileged plugin in that page can reach this call too,
+   * which is why the app lock's own state is kept with setLockedByMain.
+   */
+  setLockedByPage(locked: boolean, contents: WebContents): void {
+    if (locked) {
+      if (this.lockState !== 'main') this.setLockState('page');
+      return;
+    }
+    if (this.lockState === 'main' || this.ctx.windows.mainWindow()?.webContents !== contents) return;
+    this.setLockState('open');
+  }
+
+  /** For the app lock in main: its verdict stands over anything a page says. */
+  setLockedByMain(locked: boolean): void {
+    this.setLockState(locked ? 'main' : 'open');
   }
 
   get summary(): OsSummary {
-    return this.lockedNow ? EMPTY_SUMMARY : this.summaryNow;
+    return this.locked ? EMPTY_SUMMARY : this.summaryNow;
+  }
+
+  /** Sign-out, wipe, quit. */
+  clearSurfaces(): void {
+    this.summaryNow = EMPTY_SUMMARY;
+    this.badgeNow = 0;
+    this.emit('summary', this.summary);
+    this.emit('badge', 0);
+    this.emit('cleared');
   }
 
   setSummary(summary: OsSummary): void {
@@ -122,6 +165,11 @@ export class OsHub extends EventEmitter<{
 
   /** A button shouldn't throw a window in the user's face; the page opens the message if it can't. */
   toastAction(action: string, context: string, reply?: string): void {
+    // An old toast's Delete must not act behind the lock. The lock screen is what opens.
+    if (this.locked) {
+      this.ctx.showMain();
+      return;
+    }
     if (action === 'open' || action === 'reply') this.dispatch({ type: 'notification', action, context, reply });
     else this.dispatch({ type: 'notification', action, context }, { show: false });
   }

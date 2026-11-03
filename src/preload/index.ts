@@ -105,6 +105,7 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       setProgress: (progress: number | null, mode?: 'normal' | 'indeterminate' | 'paused' | 'error') =>
         ipcRenderer.send(CHANNEL.osSetProgress, progress, mode),
       setLocked: (locked: boolean) => ipcRenderer.send(CHANNEL.osSetLocked, locked),
+      clearSurfaces: () => ipcRenderer.send(CHANNEL.osClearSurfaces),
       notify: (notification: OsNotification): Promise<OsNotifyResult> => ipcRenderer.invoke(CHANNEL.osNotify, notification),
       onPower: (listener: (event: OsPowerEvent) => void) => subscribe(CHANNEL.osPower, listener),
       startDrag: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osStartDrag, files),

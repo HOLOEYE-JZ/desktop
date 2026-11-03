@@ -52,6 +52,8 @@ export function readLoginItem(): { openAtLogin: boolean; executableWillLaunchAtL
 }
 
 export function setupLogin(hub: OsHub): void {
+  // An uninstall took the entry, or an update moved the path: an installed app puts it back.
+  if (app.isPackaged && hub.settings().startAtLogin) applyLoginItem(true);
   hub.on('settings', (settings, changed) => {
     if ('startAtLogin' in changed) applyLoginItem(settings.startAtLogin);
   });

@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { app, BrowserWindow, Notification } from 'electron';
 import type { OsNotification, OsNotifyResult } from '../../shared/bridge';
 import { strings } from '../strings';
+import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
 import { buildToastXml, inQuietHours, parseFocusAssist, parseToastArguments, REPLY_INPUT, type FocusAssist } from './os-rules';
 
@@ -22,6 +23,8 @@ export const TOAST_CLSID = '{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}';
 // A development run points LocalServer32 at electron.exe: not over an installed app's.
 export const DEV_TOAST_CLSID = '{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}';
 const REPEAT_MS = 10 * 60 * 1000;
+/** Windows has taken a toast long before this. No word by then counts as shown. */
+const SHOW_WAIT_MS = 1500;
 const FOCUS_ASSIST_TTL_MS = 60 * 1000;
 const FOCUS_ASSIST_TIMEOUT_MS = 3000;
 /** Windows shows five at most. A typed reply takes one of them: buildToastXml. */
@@ -44,7 +47,7 @@ function runFocusAssistCheck(): Promise<FocusAssist> {
   const encoded = Buffer.from(FOCUS_ASSIST_SCRIPT, 'utf16le').toString('base64');
   return new Promise((resolve) => {
     execFile(
-      'powershell.exe',
+      systemExe('powershell.exe'),
       ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
       { windowsHide: true, timeout: FOCUS_ASSIST_TIMEOUT_MS },
       (error, stdout) => resolve(error ? 'off' : parseFocusAssist(stdout)),
@@ -54,7 +57,7 @@ function runFocusAssistCheck(): Promise<FocusAssist> {
 
 function runLinuxQuietCheck(): Promise<FocusAssist> {
   return new Promise((resolve) => {
-    execFile('gsettings', ['get', 'org.gnome.desktop.notifications', 'show-banners'], { timeout: FOCUS_ASSIST_TIMEOUT_MS }, (error, stdout) => {
+    execFile('/usr/bin/gsettings', ['get', 'org.gnome.desktop.notifications', 'show-banners'], { timeout: FOCUS_ASSIST_TIMEOUT_MS }, (error, stdout) => {
       resolve(!error && stdout.trim() === 'false' ? 'alarms' : 'off');
     });
   });
@@ -112,6 +115,8 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
   let focusCache: { value: FocusAssist; at: number } | null = null;
   let focusRunning: Promise<FocusAssist> | null = null;
   let focusOverride: FocusAssist | null = null;
+  /** Electron's activator answers once this process has shown a toast: typed text can travel. */
+  let activatorAnswers = false;
 
   const focusAssist = (): Promise<FocusAssist> => {
     if (focusOverride) return Promise.resolve(focusOverride);
@@ -139,12 +144,24 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     });
   }
 
+  const removeDelivered = () => {
+    if (win32 || process.platform === 'darwin') Notification.removeAll();
+  };
+
   hub.on('locked', (locked) => {
     // What's in the Action Center or on the lock screen goes when the app locks.
-    if (locked && (win32 || process.platform === 'darwin')) Notification.removeAll();
+    if (locked && hub.lockIsReal) removeDelivered();
   });
+  // Sign-out, wipe, quit. A reply field left behind by a quit would lose what's typed in it.
+  hub.on('cleared', removeDelivered);
 
-  const present = (request: OsNotification) => {
+  // Windows started us for a reply typed on a toast from before. The text didn't come along.
+  if (win32 && process.argv.some((arg) => arg.toLowerCase() === '-embedding')) {
+    const text = strings();
+    setTimeout(() => showNotice(text.replyLostTitle, text.replyLostBody), 3000).unref?.();
+  }
+
+  const present = (request: OsNotification): Promise<boolean> => {
     const toast = hub.locked
       ? {
           title: strings().toastLockedTitle,
@@ -159,7 +176,7 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     let notification: Notification;
     if (win32) {
       // The page plays the sound the user picked, so the toast never adds Windows' own.
-      notification = new Notification({ id, groupId, toastXml: buildToastXml({ ...toast, silent: true }, hub.toastSecret()) });
+      notification = new Notification({ id, groupId, toastXml: buildToastXml({ ...toast, silent: true }, hub.toastSecret(), activatorAnswers) });
     } else {
       const mac = process.platform === 'darwin';
       notification = new Notification({
@@ -183,11 +200,21 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     live.add(notification);
     const forget = () => live.delete(notification);
     notification.once('close', forget);
-    notification.on('failed', (_event, error) => {
-      console.warn('Notification failed:', error);
-      forget();
+    return new Promise((resolve) => {
+      const waiting = setTimeout(() => resolve(true), SHOW_WAIT_MS);
+      notification.once('show', () => {
+        activatorAnswers = true;
+        clearTimeout(waiting);
+        resolve(true);
+      });
+      notification.on('failed', (_event, error) => {
+        console.warn('Notification failed:', error);
+        forget();
+        clearTimeout(waiting);
+        resolve(false);
+      });
+      notification.show();
     });
-    notification.show();
   };
 
   const notify = async (raw: unknown): Promise<OsNotifyResult> => {
@@ -205,18 +232,18 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     // In front of the user the app says it itself.
     if (BrowserWindow.getFocusedWindow()) return { shown: false, reason: 'focused', playSound };
     // In Do Not Disturb Windows keeps it in the Action Center without a banner.
-    present(request);
+    if (!(await present(request))) return { shown: false, reason: 'failed', playSound };
     if (request.attention && !quiet) attention();
     return { shown: true, playSound };
   };
 
-  const showNotice = (title: string, body: string) => {
+  function showNotice(title: string, body: string): void {
     const notice = new Notification({ title, body, silent: true });
     live.add(notice);
     notice.once('close', () => live.delete(notice));
     notice.on('click', () => hub.ctx.showMain());
     notice.show();
-  };
+  }
 
   return {
     notify,
