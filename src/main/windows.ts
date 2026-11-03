@@ -887,7 +887,7 @@ export class WindowManager extends EventEmitter<{
   // ─── Finding and focusing ───────────────────────────────────
 
   findByKey(key: string): ManagedWindow | undefined {
-    return [...this.windows.values()].find((w) => w.key === key && !w.window.isDestroyed());
+    return [...this.windows.values()].find((w) => w.key === key && !w.closing && !w.window.isDestroyed());
   }
 
   managedFor(window: BrowserWindow): ManagedWindow | undefined {
@@ -909,7 +909,7 @@ export class WindowManager extends EventEmitter<{
   }
 
   focusWindow(window: BrowserWindow): void {
-    if (window.isDestroyed()) return;
+    if (window.isDestroyed() || this.windows.get(window.id)?.closing) return;
     if (window.isMinimized()) window.restore();
     if (!window.isVisible()) window.show();
     window.focus();

@@ -87,7 +87,9 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
   contents.on('did-create-window', (child, details) => {
     const parsed = parse(details.url);
     const windows = options.windows();
-    if (sameOrigin(parsed, options.origin)) {
+    // A blob's URL.origin is the app's too, but it's no window of the app's: it has none of its styles,
+    // so the frame check would take it for an older instance's page and rebuild it.
+    if (parsed?.protocol !== 'blob:' && sameOrigin(parsed, options.origin)) {
       const key = details.frameName && details.frameName !== '_blank' ? details.frameName : details.url;
       windows.adopt(child, windowTypeOf(parsed!.pathname), key, details.url);
       return;

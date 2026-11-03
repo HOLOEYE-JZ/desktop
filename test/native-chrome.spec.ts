@@ -204,10 +204,8 @@ test.describe('the app under the window controls', () => {
   test('the settings page\'s row is only there for them', async () => {
     await setSize(1240, 780);
     await visit('/settings');
-    await expect(page.locator('[data-window-only]').first()).toBeVisible({ timeout: 30_000 });
-    const height = await page.locator('[data-window-only]').first().evaluate((el) => el.getBoundingClientRect().height);
-    // Lines up with the sidebar's row.
-    expect(height).toBeGreaterThanOrEqual(56);
+    // Lines up with the sidebar's row. The skeleton's goes as the page takes over, so it's asked again.
+    await expect.poll(() => page.locator('[data-window-only]').evaluateAll((rows) => Math.max(0, ...rows.map((row) => row.getBoundingClientRect().height))), { timeout: 30_000 }).toBeGreaterThanOrEqual(56);
     expect(await page.evaluate(() => getComputedStyle(document.body, '::before').getPropertyValue('content'))).not.toBe('none');
   });
 

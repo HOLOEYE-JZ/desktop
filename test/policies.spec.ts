@@ -473,9 +473,14 @@ test.describe('the wipe nonce', () => {
 
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'first');
+    // A window waiting to come back goes with the rest.
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ ...stateOf(profile), session: [{ type: 'message', key: 'message:secret-id', url: `${instanceA}/popout/message/secret-id` }] }));
     started = await start(root, { profile });
     expect(await markers(started.page)).toEqual(NONE);
     expect(stateOf(profile).policyWipes).toEqual(['first']);
+    await settle();
+    expect(JSON.stringify(await windowUrls(started.app))).not.toContain('secret-id');
+    expect(JSON.stringify(stateOf(profile).session ?? [])).not.toContain('secret-id');
     // Marked done: new data survives another start.
     await plant(started.page);
     await stop(started, true);

@@ -255,6 +255,9 @@ test.describe('window-open guard', () => {
     await child.waitForLoadState();
     expect(await child.textContent('#b')).toBe('preview');
     expect(await child.evaluate(() => typeof (window as unknown as { bulwarkDesktop?: unknown }).bulwarkDesktop)).toBe('undefined');
+    // Past when the frame check runs: it stays this window.
+    await child.waitForTimeout(2000).catch(() => undefined);
+    expect(child.isClosed()).toBe(false);
     await child.close();
   });
 

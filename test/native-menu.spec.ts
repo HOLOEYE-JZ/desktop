@@ -318,16 +318,19 @@ test.describe('the app menu and windows', () => {
 
   test('the Window menu lists what\'s open and picks one', async () => {
     const other = await openPopout('list1');
-    await other.evaluate(() => {
-      document.title = 'A & B';
-    });
     const list = () => app.evaluate(({ Menu }) => {
       const windowMenu = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'Window');
       return windowMenu!.submenu!.items.filter((item) => item.id?.startsWith('window.focus.')).map((item) => item.label);
     });
     await expect.poll(list).toHaveLength(2);
     // A title with & must show as one, not turn the next letter into a mnemonic.
-    await expect.poll(async () => (await list()).some((label) => label === 'A && B')).toBe(true);
+    // Set again each time: the page sets its own title as it loads.
+    await expect.poll(async () => {
+      await other.evaluate(() => {
+        document.title = 'A & B';
+      });
+      return (await list()).some((label) => label === 'A && B');
+    }).toBe(true);
     const focused = await app.evaluate(({ Menu, BrowserWindow }) => {
       const seen: number[] = [];
       const original = BrowserWindow.prototype.focus;
@@ -396,7 +399,10 @@ test.describe('the app menu and windows', () => {
           g.__save = args[args.length - 1] as { defaultPath?: string };
           return { canceled: false, filePath: file };
         }) as typeof dialog.showSaveDialog;
-        BrowserWindow.getAllWindows()[0].setTitle('A/B report');
+        const window = BrowserWindow.getAllWindows()[0];
+        window.setTitle('A/B report');
+        // The menu acts on the focused window, and the one before it has just closed.
+        window.focus();
         Menu.getApplicationMenu()!.getMenuItemById('file.savePdf')!.click();
       }, target);
       await expect.poll(() => existsSync(target) && readFileSync(target).subarray(0, 5).toString(), { timeout: 30_000 }).toBe('%PDF-');
@@ -750,6 +756,12 @@ test.describe('closing', () => {
   const closeFirst = () => app.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.close();
   });
+  // By its id: with nobody signed in here, a pop-out's page moves on to the login page by itself.
+  const newestId = () => app.evaluate(({ BrowserWindow }) => Math.max(...BrowserWindow.getAllWindows().map((w) => w.id)));
+  const closeById = (id: number) => app.evaluate(({ BrowserWindow }, windowId) => {
+    BrowserWindow.fromId(windowId)?.close();
+  }, id);
+
   const onFlush = (on: Page, answer: unknown) => on.evaluate((value) => {
     (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (h: () => Promise<unknown>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(async () => value);
   }, answer);
@@ -773,14 +785,38 @@ test.describe('closing', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length)).toBe(2);
   });
 
+  test('a pop-out closed before its first paint takes nothing down', async () => {
+    for (const id of ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']) {
+      const other = await openPopout(id);
+      const windowId = await newestId();
+      await onFlush(other, {});
+      await closeById(windowId);
+      await expect.poll(windowCount, { timeout: 30_000 }).toBe(1);
+    }
+    expect(await page.evaluate(() => 1)).toBe(1);
+  });
+
+  test('a page closing its own window as it finishes loading takes nothing down', async () => {
+    for (const id of ['q1', 'q2', 'q3', 'q4', 'q5', 'q6']) {
+      const other = await openPopout(id);
+      const windowId = await newestId();
+      // No 'close' event on the window for this. Chromium ignores it once the page has moved on.
+      await other.evaluate(() => window.close()).catch(() => undefined);
+      await other.waitForTimeout(300).catch(() => undefined);
+      await closeById(windowId);
+      await expect.poll(windowCount, { timeout: 30_000 }).toBe(1);
+    }
+    expect(await page.evaluate(() => 1)).toBe(1);
+  });
+
   test('closing the last pop-out with the main window minimised leaves the app running', async () => {
-    const other = await openPopout('m9');
-    await other.waitForLoadState('domcontentloaded');
+    await openPopout('m9');
+    const windowId = await newestId();
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.minimize();
     });
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))!.isMinimized())).toBe(true);
-    await other.evaluate(() => window.close());
+    await closeById(windowId);
     await expect.poll(windowCount).toBe(1);
     // Long enough for a close of the main window to have gone through.
     await page.waitForTimeout(1500);
@@ -789,11 +825,12 @@ test.describe('closing', () => {
   });
 
   test('when the last pop-out goes too, so does the hidden main window, and the app quits', async () => {
-    const other = await openPopout('m3');
+    await openPopout('m3');
+    const windowId = await newestId();
     await closeFirst();
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.isVisible()).length)).toBe(1);
     const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
-    await other.evaluate(() => window.close());
+    await closeById(windowId).catch(() => undefined);
     await gone;
   });
 
@@ -887,6 +924,7 @@ test.describe('closing', () => {
 
   test('the X asks the page to save, once', async () => {
     const other = await openPopout('m5');
+    const windowId = await newestId();
     await other.evaluate(() => {
       const w = window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (h: () => Promise<unknown>) => void } } };
       w.bulwarkDesktop.lifecycle.onFlushRequest(async () => {
@@ -894,9 +932,7 @@ test.describe('closing', () => {
         return {};
       });
     });
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/'))!.close();
-    });
+    await closeById(windowId);
     await expect.poll(windowCount).toBe(1);
     expect(await page.evaluate(() => localStorage.getItem('saves'))).toBe('1');
     expect(await prompts(app)).toEqual([]);
@@ -905,10 +941,9 @@ test.describe('closing', () => {
   test('a save that failed asks before the window goes, and Stay keeps it', async () => {
     await fakeOsIntegration(app, 1);
     const other = await openPopout('m6');
+    const windowId = await newestId();
     await onFlush(other, { failed: 1 });
-    const closeIt = () => app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/'))!.close();
-    });
+    const closeIt = () => closeById(windowId);
     await closeIt();
     await expect.poll(async () => (await prompts(app)).length).toBe(1);
     expect((await prompts(app))[0].message).toBe('A draft could not be saved');

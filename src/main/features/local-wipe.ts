@@ -76,6 +76,9 @@ export interface WipeResult {
  */
 export async function runLocalWipe(reason: WipeReason, userData: string, state: StateFile): Promise<WipeResult> {
   await leaveWindows();
+  // The windows to bring back name drafts and messages. A wipe at the start comes before any window manager.
+  delete state.data.session;
+  delete state.data.restoreAttempts;
   const partitions = knownPartitions(state);
   const failed: string[] = [];
   // No session has these open, and none may: see knownPartitions.

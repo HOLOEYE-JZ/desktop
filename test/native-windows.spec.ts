@@ -328,6 +328,8 @@ test.describe('windows, signed in', () => {
     await alt('keyDown');
     await alt('keyUp');
     await expect(strip).toBeVisible({ timeout: 5000 });
+    // The keys go to the first name, which takes the focus just after it shows.
+    await expect(strip.getByRole('menuitem').first()).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(strip).toBeHidden({ timeout: 5000 });
   });
