@@ -59,6 +59,22 @@ async function listen(page: Page): Promise<void> {
 const commands = (page: Page) => page.evaluate(() => (window as unknown as { __cmds: { type: string }[] }).__cmds);
 const os = (page: Page, call: string) => page.evaluate(`window.bulwarkDesktop.os.${call}`);
 
+/**
+ * For a test that plays the page's part. The real page says it's open as it starts, and sends
+ * its own summary a while later: on the login page an empty one, over what the test set. So wait
+ * for its first word and drop its empty summaries. Anything else still comes over the bridge.
+ */
+async function takeOverFromPage(app: ElectronApplication): Promise<void> {
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+  await app.evaluate(() => {
+    const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setSummary: (s: { unread: unknown[]; recent: unknown[]; nextEvent: unknown }) => void } } }).__bulwarkOs.hub;
+    const real = hub.setSummary.bind(hub);
+    hub.setSummary = (summary) => {
+      if (summary.unread.length || summary.recent.length || summary.nextEvent) real(summary);
+    };
+  });
+}
+
 interface TrayItem { label?: string; type?: string; enabled?: boolean; submenu?: TrayItem[] }
 
 const trayItems = (app: ElectronApplication): Promise<TrayItem[]> =>
@@ -143,6 +159,7 @@ test.describe('OS integration', () => {
   test('the tray: left click toggles, and the menu shows unread and the next event unless locked', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
@@ -233,6 +250,7 @@ test.describe('OS integration', () => {
   test('tray and jump list items reach the page as commands, in order, shown or not', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
     await listen(page);
     await os(page, 'setLocked(false)');
@@ -273,6 +291,7 @@ test.describe('OS integration', () => {
   test('notifications: duplicates, quiet hours, Do Not Disturb, focus and the lock', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
     const send = (id: string, extra = '') => os(page, `notify({ id: '${id}', title: 'Alice', body: 'Lunch?', context: 'ctx', sound: true, actions: [{ id: 'archive', label: 'Archive' }], reply: { label: 'Reply', placeholder: 'Type' }${extra} })`) as Promise<{ shown: boolean; reason?: string; playSound: boolean }>;
     const setAssist = (value: string | null) => app.evaluate((_e, v) => (globalThis as unknown as { __bulwarkOs: { toasts: { setFocusAssistForTest: (x: unknown) => void } } }).__bulwarkOs.toasts.setFocusAssistForTest(v), value);
@@ -338,9 +357,9 @@ test.describe('OS integration', () => {
     await listen(page);
     const locked = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
     const pressDelete = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { toastAction: (a: string, c: string) => void } } }).__bulwarkOs.hub.toastAction('delete', 'ctx'));
-    // Whatever the page does at its start, a new page reports. This one hasn't had a say from us:
+    // A new page reports as it starts, which is later than its load. Past that, our word is the last one.
     await page.reload();
-    await page.waitForLoadState('domcontentloaded');
+    await expect.poll(locked).toBe(false);
 
     await os(page, 'setLocked(true)');
     await expect.poll(locked).toBe(true);
@@ -392,6 +411,7 @@ test.describe('OS integration', () => {
   test('sign-out clears what the OS shows; a quit does too', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await os(page, 'setLocked(false)');
     await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
     await os(page, 'setBadge(4)');
@@ -607,6 +627,7 @@ test.describe('OS integration', () => {
     test.skip(!win);
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { __overlay: unknown[]; __progress: unknown[] };
       g.__overlay = [];
