@@ -229,8 +229,10 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     if (inQuietHours(hub.settings(), new Date())) return { shown: false, reason: 'quiet-hours', playSound: false };
     const quiet = (await focusAssist()) !== 'off';
     const playSound = !!request.sound && !quiet && process.platform !== 'darwin';
-    // In front of the user the app says it itself.
-    if (BrowserWindow.getFocusedWindow()) return { shown: false, reason: 'focused', playSound };
+    // In front of the user the app says it itself, which only the main window does:
+    // a message in a pop-out must not swallow it, and neither must a window on its way out.
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && focused === hub.ctx.windows.mainWindow() && focused.isVisible()) return { shown: false, reason: 'focused', playSound };
     // In Do Not Disturb Windows keeps it in the Action Center without a banner.
     if (!(await present(request))) return { shown: false, reason: 'failed', playSound };
     if (request.attention && !quiet) attention();

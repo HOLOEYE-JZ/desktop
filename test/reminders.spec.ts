@@ -52,6 +52,9 @@ test.describe('reminder toasts', () => {
     profile = tempProfile('rem');
     running = await launchStandalone(profile);
     await record(running.app);
+    // Main counts as locked until the page says it's open, and this page has no build to say it.
+    await running.page.evaluate(() => (window as unknown as { bulwarkDesktop: Os }).bulwarkDesktop.os.setLocked(false));
+    await expect.poll(() => running.app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
   });
 
   test.afterEach(async () => {
@@ -68,6 +71,33 @@ test.describe('reminder toasts', () => {
     // A button that goes by protocol, so it works with the app closed.
     expect(toast.toastXml.match(/activationType="protocol"/g)!.length).toBe(1 + 5);
     expect(toast.toastXml).toContain('Board meeting');
+  });
+
+  test('a focused pop-out does not swallow it, the focused main window does', async () => {
+    const { app, page } = running;
+    await app.evaluate(({ BrowserWindow }) => {
+      const popOut = new BrowserWindow({ show: false });
+      BrowserWindow.getFocusedWindow = () => popOut;
+    });
+    expect(await notify(page, { ...REMINDER, id: 'reminder:popout' })).toMatchObject({ shown: true });
+    expect((await shown(app)).length).toBe(1);
+
+    await app.evaluate(({ BrowserWindow }) => {
+      const main = (globalThis as unknown as { __bulwarkOs: { hub: { ctx: { windows: { mainWindow: () => Electron.BrowserWindow } } } } }).__bulwarkOs.hub.ctx.windows.mainWindow();
+      BrowserWindow.getFocusedWindow = () => main;
+    });
+    expect(await notify(page, { ...REMINDER, id: 'reminder:main' })).toMatchObject({ shown: false, reason: 'focused' });
+    expect((await shown(app)).length).toBe(1);
+  });
+
+  test('a main window hidden in the tray does not count as in front', async () => {
+    const { app, page } = running;
+    await app.evaluate(({ BrowserWindow }) => {
+      const main = (globalThis as unknown as { __bulwarkOs: { hub: { ctx: { windows: { mainWindow: () => Electron.BrowserWindow } } } } }).__bulwarkOs.hub.ctx.windows.mainWindow();
+      main.hide();
+      BrowserWindow.getFocusedWindow = () => main;
+    });
+    expect(await notify(page, { ...REMINDER, id: 'reminder:hidden' })).toMatchObject({ shown: true });
   });
 
   test('a locked app shows no title, no button and no key, and says it is a reminder', async () => {
