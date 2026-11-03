@@ -610,6 +610,29 @@ test.describe('closing', () => {
     await gone;
   });
 
+  test('a pop-out closed before its first paint waits for it, and takes nothing down', async () => {
+    for (const id of ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']) {
+      const other = await openPopout(id);
+      await onFlush(other, {});
+      await app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/'))?.close();
+      });
+      await expect.poll(windowCount, { timeout: 30_000 }).toBe(1);
+    }
+  });
+
+  test('a minimized main window stays when the last pop-out closes', async () => {
+    await openPopout('m7');
+    await app.evaluate(({ BrowserWindow }) => {
+      const windows = BrowserWindow.getAllWindows();
+      windows.find((w) => !w.webContents.getURL().includes('/popout/'))!.minimize();
+      windows.find((w) => w.webContents.getURL().includes('/popout/'))!.close();
+    });
+    await expect.poll(windowCount).toBe(1);
+    await page.waitForTimeout(1500);
+    expect(await windowCount()).toBe(1);
+  });
+
   test('a window that asks to close itself isn\'t asked to save again', async () => {
     const other = await openPopout('m4');
     await other.evaluate(() => {
@@ -645,9 +668,9 @@ test.describe('closing', () => {
     await fakeOsIntegration(app, 1);
     const other = await openPopout('m6');
     await onFlush(other, { failed: 1 });
-    const closeIt = () => app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/'))!.close();
-    });
+    // By its id: with nobody signed in here, the pop-out's page moves on to the login page by itself.
+    const id = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/'))!.id);
+    const closeIt = () => app.evaluate(({ BrowserWindow }, windowId) => BrowserWindow.fromId(windowId)!.close(), id);
     await closeIt();
     await expect.poll(async () => (await prompts(app)).length).toBe(1);
     expect((await prompts(app))[0].message).toBe('A draft could not be saved');

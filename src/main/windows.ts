@@ -89,6 +89,10 @@ export interface ManagedWindow {
   flushable?: boolean;
   /** Saved: the next close goes straight through. */
   flushed?: boolean;
+  /** It has been on screen. */
+  shown?: boolean;
+  /** Asked to close before that. */
+  closeWhenShown?: boolean;
   /** What this window's open drafts come back as next time. */
   restoreUrls?: string[];
 }
@@ -282,6 +286,17 @@ export class WindowManager extends EventEmitter<{
       });
     }
     window.on('close', (event) => {
+      // Closed before its first paint, the main process can go down with it (0xFFFF7003, seen
+      // about one time in three). A window that isn't on screen yet loses nothing by waiting:
+      // it shows when painted, or at SHOW_FALLBACK_MS. A quit can't wait, and goes on.
+      if (!managed.shown && !window.isVisible() && managed.type !== 'main' && !this.quitting) {
+        event.preventDefault();
+        if (!managed.closeWhenShown) {
+          managed.closeWhenShown = true;
+          window.once('show', () => setImmediate(() => { if (!window.isDestroyed()) window.close(); }));
+        }
+        return;
+      }
       this.rememberBounds(managed);
       if (this.shouldHide(managed)) {
         event.preventDefault();
@@ -373,9 +388,12 @@ export class WindowManager extends EventEmitter<{
     return ![...this.windows.values()].some((w) => w !== managed && !w.window.isDestroyed() && this.onScreen(w));
   }
 
-  /** A pop-out still painting counts: only a main window can be hidden on purpose. */
+  /**
+   * A pop-out still painting counts: only a main window can be hidden on purpose. So does a
+   * minimized one: `isVisible` says false for it on Windows, and it's still the user's window.
+   */
   private onScreen(managed: ManagedWindow): boolean {
-    return managed.type !== 'main' || managed.window.isVisible();
+    return managed.type !== 'main' || managed.window.isVisible() || managed.window.isMinimized();
   }
 
   /** A pop-out closed. If only a hidden main is left and nothing keeps the app running, it goes too. */
@@ -412,6 +430,7 @@ export class WindowManager extends EventEmitter<{
 
   private showWhenPainted(managed: ManagedWindow, inactive = false): void {
     const { window } = managed;
+    window.once('show', () => { managed.shown = true; });
     const show = () => {
       if (inactive) window.showInactive();
       else window.show();
