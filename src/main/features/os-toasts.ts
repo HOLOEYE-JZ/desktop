@@ -27,6 +27,8 @@ const REPEAT_MS = 10 * 60 * 1000;
 const SHOW_WAIT_MS = 1500;
 const FOCUS_ASSIST_TTL_MS = 60 * 1000;
 const FOCUS_ASSIST_TIMEOUT_MS = 3000;
+/** Windows shows five at most. A typed reply takes one of them: buildToastXml. */
+const MAX_ACTIONS = 5;
 
 export function setToastActivator(): void {
   app.setToastActivatorCLSID(app.isPackaged ? TOAST_CLSID : DEV_TOAST_CLSID);
@@ -78,11 +80,11 @@ function cleanRequest(request: unknown): OsNotification | null {
   const title = text(input.title, 200);
   if (!id || !title) return null;
   const actions = Array.isArray(input.actions)
-    ? input.actions.slice(0, 4).flatMap((action) => {
+    ? input.actions.slice(0, MAX_ACTIONS).flatMap((action) => {
         const a = (action ?? {}) as Record<string, unknown>;
         const actionId = text(a.id, 32);
         const label = text(a.label, 40);
-        return actionId && label && actionId !== 'open' && actionId !== 'reply' ? [{ id: actionId, label }] : [];
+        return actionId && label && actionId !== 'reply' ? [{ id: actionId, label }] : [];
       })
     : [];
   const reply = input.reply as Record<string, unknown> | undefined;
@@ -96,6 +98,7 @@ function cleanRequest(request: unknown): OsNotification | null {
     reply: reply && text(reply.label, 40) ? { label: text(reply.label, 40), placeholder: text(reply.placeholder, 100) } : undefined,
     sound: input.sound === true,
     attention: input.attention === true,
+    kind: input.kind === 'reminder' ? 'reminder' : undefined,
   };
 }
 
@@ -160,7 +163,13 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
 
   const present = (request: OsNotification): Promise<boolean> => {
     const toast = hub.locked
-      ? { title: strings().toastLockedTitle, body: strings().toastLockedBody, context: '', actions: [], reply: undefined }
+      ? {
+          title: strings().toastLockedTitle,
+          body: request.kind === 'reminder' ? strings().toastLockedReminderBody : strings().toastLockedBody,
+          context: '',
+          actions: [],
+          reply: undefined,
+        }
       : { title: request.title, body: request.body, context: request.context, actions: request.actions ?? [], reply: request.reply };
     const id = shortId(request.id);
     const groupId = request.group ? shortId(request.group) : undefined;
@@ -220,8 +229,10 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     if (inQuietHours(hub.settings(), new Date())) return { shown: false, reason: 'quiet-hours', playSound: false };
     const quiet = (await focusAssist()) !== 'off';
     const playSound = !!request.sound && !quiet && process.platform !== 'darwin';
-    // In front of the user the app says it itself.
-    if (BrowserWindow.getFocusedWindow()) return { shown: false, reason: 'focused', playSound };
+    // In front of the user the app says it itself, which only the main window does:
+    // a message in a pop-out must not swallow it, and neither must a window on its way out.
+    const focused = BrowserWindow.getFocusedWindow();
+    if (focused && focused === hub.ctx.windows.mainWindow() && focused.isVisible()) return { shown: false, reason: 'focused', playSound };
     // In Do Not Disturb Windows keeps it in the Action Center without a banner.
     if (!(await present(request))) return { shown: false, reason: 'failed', playSound };
     if (request.attention && !quiet) attention();

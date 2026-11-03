@@ -10,7 +10,7 @@ export interface CollectorValidator {
   validateErrorBatch(input: unknown, now?: number): { errors: Record<string, unknown>[] } | null;
 }
 
-const REPO = process.env.BULWARK_DASHBOARD_DIR ?? 'C:/Users/info/Downloads/jmap-webmail/repos/dashboard';
+const REPO = process.env.BULWARK_DASHBOARD_DIR ?? '../dashboard';
 const REF = process.env.BULWARK_DASHBOARD_REF ?? 'feat/desktop-platform';
 
 export const hasCollector = existsSync(REPO);
