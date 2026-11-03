@@ -53,6 +53,8 @@ function readJson(file: string): Record<string, unknown> {
 const SEEDED_CONFIG = {
   setupComplete: true,
   allowCustomJmapEndpoint: true,
+  // The app's name on the login page and in window titles, where a server has its own.
+  appName: 'Bulwark',
   // People bring tokens from their mail provider: it's their own client.
   loginShowTokenLogin: true,
 };
@@ -128,6 +130,7 @@ export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platfo
     NODE_ENV: 'production',
     NEXT_TELEMETRY_DISABLED: '1',
     COOKIE_SECURE: 'true',
+    APP_NAME: 'Bulwark',
     BULWARK_UPDATE_CHECK: 'off',
     // The user's two switches decide, by message. Only an off gets past this allowlist.
     ...(telemetryOffInEnv(source) ? { BULWARK_TELEMETRY: 'off' } : {}),

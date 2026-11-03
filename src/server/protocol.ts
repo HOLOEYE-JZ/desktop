@@ -35,6 +35,8 @@ export interface MainErrorMessage {
 
 export interface InitMessage {
   type: 'init';
+  /** The server's root: resources/server.asar in a package, a plain folder in development. */
+  serverDir: string;
   port: number;
   /** Main's pid, to go down with it (host.ts). */
   parentPid: number;

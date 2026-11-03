@@ -18,7 +18,7 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
 import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, normalizeStack, type HostMessage, type InitMessage, type MainErrorMessage, type PrivacyMessage } from './protocol';
-import { isAdminLogin, sanitizeRequest } from './sanitize';
+import { isAdminLogin, isImageOptimizer, sanitizeRequest } from './sanitize';
 
 const TRUST_KEY = Symbol.for('bulwark.desktop.trustedJmapOrigins');
 const POLICY_KEY = Symbol.for('bulwark.desktop.serverPolicy');
@@ -103,7 +103,10 @@ function exitWithParent(pid: number): void {
 
 async function start(init: InitMessage): Promise<void> {
   exitWithParent(init.parentPid);
-  const serverDir = process.cwd();
+  const { serverDir } = init;
+  // Next and the webmail read their files relative to the working directory, and an asar
+  // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
+  process.cwd = () => serverDir;
   // The secrets, here rather than in the utilityProcess's env block. Next and
   // the webmail read them from process.env from here on.
   Object.assign(process.env, init.secretEnv);
@@ -138,6 +141,11 @@ async function start(init: InitMessage): Promise<void> {
       return;
     }
     sanitizeRequest(req);
+    if (isImageOptimizer(req.url)) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
     if (isJmapRoute(req.url)) {
       void forwardJmap(req, res, isTrusted);
       return;

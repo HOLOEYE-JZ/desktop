@@ -1,6 +1,7 @@
 node_modules/
 dist/
 release/
+release-test/
 release-strict/
 # The webmail build, from scripts/fetch-webmail.mjs. Never committed.
 webmail/
@@ -12,3 +13,5 @@ native/dist/
 test-results/
 playwright-report/
 *.log
+.server-build/
+.native-modules/

@@ -15,6 +15,11 @@ import {
   BRIDGE_VERSION,
   CHANNEL,
   PRELOAD_ARG,
+  type ConfirmOptions,
+  type FlushAnswer,
+  type LanguagesUpdate,
+  type MenuBarEntry,
+  type MenuBarEvent,
   type KeystoreDecryptScheme,
   type KeystoreAccessState,
   type KeystoreCertificate,
@@ -24,10 +29,22 @@ import {
   type LocalImportResumeResult,
   type LocalImportScanResult,
   type MenuState,
+  type OsCommand,
+  type OsDefaultAppStatus,
+  type OsFile,
+  type OsNotification,
+  type OsNotifyResult,
+  type OsPowerEvent,
+  type OsSettings,
+  type OsStatus,
+  type OsSummary,
+  type NativeMenuItem,
   type PrivacyState,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
+  type UpdateChannel,
+  type UpdateState,
   type WindowInfo,
 } from '../shared/bridge';
 import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
@@ -58,7 +75,14 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   const platform = process.platform as 'win32' | 'darwin' | 'linux';
   const flushHandlers = new Set<() => Promise<unknown>>();
   ipcRenderer.on(CHANNEL.lifecycleFlush, (_event, id: number) => {
-    void Promise.allSettled([...flushHandlers].map((handler) => handler())).then(() => ipcRenderer.send(CHANNEL.lifecycleFlushed, id));
+    void Promise.allSettled([...flushHandlers].map((handler) => handler())).then((settled) => {
+      const answers: FlushAnswer[] = settled.map((result) => {
+        if (result.status === 'rejected') return { failed: 1 };
+        const { failed, timedOut, unsent } = (result.value ?? {}) as FlushAnswer;
+        return { failed, timedOut, unsent };
+      });
+      ipcRenderer.send(CHANNEL.lifecycleFlushed, id, answers);
+    });
   });
   let policySnapshot: PolicySnapshot = (ipcRenderer.sendSync(CHANNEL.policyGet) as PolicySnapshot | null) ?? DEFAULT_POLICY_SNAPSHOT;
   ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
@@ -76,16 +100,61 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       focus: (id?: number) => ipcRenderer.send(CHANNEL.windowsFocus, id),
       list: (): Promise<WindowInfo[]> => ipcRenderer.invoke(CHANNEL.windowsList),
       onChanged: (listener: (windows: WindowInfo[]) => void) => subscribe(CHANNEL.windowsChanged, listener),
+      closeSelf: () => ipcRenderer.send(CHANNEL.windowsCloseSelf),
+      setRestore: (urls: string[]) => ipcRenderer.send(CHANNEL.windowsSetRestore, urls),
+      setRestoreEnabled: (enabled: boolean) => ipcRenderer.send(CHANNEL.windowsSetRestoreEnabled, enabled),
+      sessionReady: () => ipcRenderer.send(CHANNEL.windowsSessionReady),
+      spare: {
+        ready: () => ipcRenderer.send(CHANNEL.windowsSpareReady),
+        taken: () => ipcRenderer.send(CHANNEL.windowsSpareTaken),
+        onActivate: (listener: (url: string) => void) => subscribe(CHANNEL.windowsSpareActivate, listener),
+      },
     },
     theme: {
       set: (theme: ThemeColours) => ipcRenderer.send(CHANNEL.themeSet, theme),
       onSystemChange: (listener: (system: SystemTheme) => void) => subscribe(CHANNEL.themeSystem, listener),
+      system: (): Promise<SystemTheme> => ipcRenderer.invoke(CHANNEL.themeGetSystem),
     },
     menu: {
       setState: (state: MenuState) => ipcRenderer.send(CHANNEL.menuSetState, state),
+      onCommand: (listener: (id: string) => void) => subscribe(CHANNEL.menuCommand, listener),
+      popup: (items: NativeMenuItem[], at: { x: number; y: number }): Promise<string | null> =>
+        ipcRenderer.invoke(CHANNEL.menuPopup, items, at),
+      bar: {
+        entries: (): Promise<MenuBarEntry[]> => ipcRenderer.invoke(CHANNEL.menuBarEntries),
+        open: (id: string, at: { x: number; y: number }) => ipcRenderer.send(CHANNEL.menuBarOpen, id, at),
+        onEvent: (listener: (event: MenuBarEvent) => void) => subscribe(CHANNEL.menuBarEvent, listener),
+      },
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
+      setLanguages: (languages: LanguagesUpdate) => ipcRenderer.send(CHANNEL.shellSetLanguages, languages),
+    },
+    spellcheck: {
+      /** Languages with neither an OS checker nor a dictionary here. */
+      missing: (): Promise<string[]> => ipcRenderer.invoke(CHANNEL.spellListMissing),
+      onMissing: (listener: (language: string) => void) => subscribe(CHANNEL.spellMissing, listener),
+      /** The user said yes: dictionaries may come from Google. Never with no-third-party mode on. */
+      allowDownload: () => ipcRenderer.send(CHANNEL.spellAllowDownload),
+    },
+    dialogs: {
+      /** A native question. Answers with the index of the button chosen. */
+      confirm: (options: ConfirmOptions): Promise<number> => ipcRenderer.invoke(CHANNEL.dialogsConfirm, options),
+    },
+    clipboard: {
+      /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */
+      copyFile: (name: string, data: ArrayBuffer): Promise<boolean> => ipcRenderer.invoke(CHANNEL.clipboardCopyFile, name, data),
+      /** Signed out: nothing copied from that account stays on disk. */
+      clearFiles: () => ipcRenderer.send(CHANNEL.clipboardClearFiles),
+    },
+    updates: {
+      state: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesState),
+      check: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesCheck),
+      setChannel: (channel: UpdateChannel): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesSetChannel, channel),
+      installOlder: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesInstallOlder),
+      restart: () => ipcRenderer.send(CHANNEL.updatesRestart),
+      openDownload: () => ipcRenderer.send(CHANNEL.updatesOpenDownload),
+      onChanged: (listener: (state: UpdateState) => void) => subscribe(CHANNEL.updatesChanged, listener),
     },
     localImport: {
       /** Asks the user natively before it looks. See src/main/features/import.ts. */
@@ -108,6 +177,33 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
       deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
       onChange: (listener: (state: PrivacyState) => void) => subscribe(CHANNEL.privacyChanged, listener),
+    },
+    os: {
+      /**
+       * What the OS asks for: tray, jump list, toast buttons, opened files. Main holds
+       * these until the main window's page subscribes, so a cold start loses nothing.
+       */
+      onCommand: (listener: (command: OsCommand) => void) => {
+        const stop = subscribe(CHANNEL.osCommand, listener);
+        ipcRenderer.send(CHANNEL.osSubscribe);
+        return stop;
+      },
+      getStatus: (): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osGetStatus),
+      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch),
+      setPaused: (until: number | null) => ipcRenderer.send(CHANNEL.osSetPaused, until),
+      onStatusChange: (listener: (status: OsStatus) => void) => subscribe(CHANNEL.osStatusChanged, listener),
+      setBadge: (count: number) => ipcRenderer.send(CHANNEL.osSetBadge, count),
+      setSummary: (summary: OsSummary) => ipcRenderer.send(CHANNEL.osSetSummary, summary),
+      setProgress: (progress: number | null, mode?: 'normal' | 'indeterminate' | 'paused' | 'error') =>
+        ipcRenderer.send(CHANNEL.osSetProgress, progress, mode),
+      setLocked: (locked: boolean) => ipcRenderer.send(CHANNEL.osSetLocked, locked),
+      clearSurfaces: () => ipcRenderer.send(CHANNEL.osClearSurfaces),
+      notify: (notification: OsNotification): Promise<OsNotifyResult> => ipcRenderer.invoke(CHANNEL.osNotify, notification),
+      onPower: (listener: (event: OsPowerEvent) => void) => subscribe(CHANNEL.osPower, listener),
+      startDrag: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osStartDrag, files),
+      copyFiles: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osCopyFiles, files),
+      defaultAppStatus: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppStatus),
+      openDefaultAppSettings: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppOpen),
     },
     lifecycle: {
       /**

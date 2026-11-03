@@ -1,0 +1,21 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+# Winget manifest template, description part. See Bulwark.Bulwark.installer.yaml.
+PackageIdentifier: Bulwark.Bulwark
+PackageVersion: {{VERSION}}
+PackageLocale: en-US
+Publisher: Bulwark Mail
+PublisherUrl: https://bulwarkmail.org
+PublisherSupportUrl: https://github.com/bulwarkmail/desktop/issues
+PackageName: Bulwark
+PackageUrl: https://bulwarkmail.org
+License: AGPL-3.0-only
+LicenseUrl: https://github.com/bulwarkmail/desktop/blob/main/LICENSE
+ShortDescription: Mail, calendar and contacts for your own JMAP server.
+Moniker: bulwark
+Tags:
+  - email
+  - jmap
+  - mail
+ReleaseNotesUrl: https://github.com/bulwarkmail/desktop/releases/tag/v{{VERSION}}
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

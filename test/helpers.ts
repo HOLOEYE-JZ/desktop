@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
 
@@ -12,7 +13,7 @@ export const STALWARTS = [
   { label: '1.0', url: 'https://stalwart-1.internal.bulwarkmail.org' },
   { label: '0.16', url: 'https://stalwart.internal.bulwarkmail.org' },
 ];
-export const ACCOUNT = 'ent-alice@example.org';
+export const ACCOUNT = process.env.BULWARK_TEST_ACCOUNT ?? 'ent-alice@example.org';
 export const ENT_PASSWORD = process.env.IT_ENT_PASSWORD ?? '';
 export const SCREENSHOTS = 'C:\\Users\\info\\Downloads\\jmap-webmail\\local-data\\desktop-offline-screenshots';
 
@@ -40,16 +41,20 @@ export async function launch(profile: string, ...args: string[]): Promise<Electr
   const env: Record<string, string> = {};
   for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
   delete env.ELECTRON_RUN_AS_NODE;
+  // A warm spare is one more window, 8 s after the main one shows. Tests that want it ask.
+  const spare = args.includes('--bulwark-test-spare') ? [] : ['--bulwark-no-spare'];
+  // BULWARK_TEST_WEBMAIL: a webmail build of this branch, instead of ./webmail.
+  const server = process.env.BULWARK_TEST_WEBMAIL ? [`--bulwark-server-dir=${process.env.BULWARK_TEST_WEBMAIL}`] : [];
   return electron.launch({
-    args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', ...args],
+    args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', ...spare, ...server, ...args],
     cwd: ROOT,
     env,
   });
 }
 
 /**
- * The window the user sees. Not firstWindow(): a window whose page has no title bar
- * row is rebuilt once with a native frame before it's shown.
+ * The window the user sees. Not firstWindow(): a window whose page can't sit under the
+ * window's controls is rebuilt once with a native frame before it's shown.
  */
 export async function shownPage(app: ElectronApplication): Promise<Page> {
   const settled = () =>
@@ -161,5 +166,29 @@ export async function expectMailShown(page: Page): Promise<void> {
 }
 
 export function requireAccount(): void {
-  if (!ENT_PASSWORD) throw new Error('Run under: vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test');
+  if (!ENT_PASSWORD) throw new Error("Set IT_ENT_PASSWORD to the test account's password");
+}
+
+function reg(...args: string[]): void {
+  spawnSync('reg.exe', args, { windowsHide: true });
+}
+
+/** What a run may leave without this: the keys and the shortcut Electron makes on a toast. */
+export function removeOsTraces(): void {
+  if (process.platform !== 'win32') return;
+  reg('delete', 'HKCU\\Software\\Classes\\CLSID\\{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}', '/f');
+  for (const key of ['Software\\Bulwark', 'Software\\Classes\\bulwark', 'Software\\Classes\\Bulwark.Url.mailto', 'Software\\Classes\\Bulwark.Url.webcal', 'Software\\Classes\\Bulwark.File.eml', 'Software\\Classes\\Bulwark.File.ics', 'Software\\Classes\\Bulwark.File.vcf']) {
+    reg('delete', `HKCU\\${key}`, '/f');
+  }
+  reg('delete', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark', '/f');
+  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'Bulwark Dev', '/f');
+  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', '/v', 'Bulwark Dev', '/f');
+  for (const name of ['Electron.lnk', 'Bulwark.lnk']) {
+    const lnk = path.join(homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', name);
+    if (existsSync(lnk)) {
+      // Only ours: it points at this development Electron.
+      const target = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}').TargetPath`], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
+      if (/electron\\dist\\electron\.exe/i.test(target)) spawnSync('powershell.exe', ['-NoProfile', '-Command', `Remove-Item -LiteralPath '${lnk}'`], { windowsHide: true });
+    }
+  }
 }

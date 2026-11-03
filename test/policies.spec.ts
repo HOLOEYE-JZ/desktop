@@ -165,7 +165,7 @@ test.describe('precedence, on the real registry', () => {
 
     const chosen = await start(root, { profile, state });
     expect(new URL(chosen.page.url()).origin).toBe(new URL(instanceB).origin);
-    expect(await menuLabels(chosen.app)).toContain('Change Connection…');
+    expect(await menuLabels(chosen.app)).toContain('Change connection…');
     await stop(chosen, true);
 
     setString(key(root, 'User'), 'InstanceUrl', instanceA);
@@ -180,7 +180,7 @@ test.describe('precedence, on the real registry', () => {
     const started = await start(root);
     expect(new URL(started.page.url()).origin).toBe(new URL(instanceA).origin);
     expect((await bridgePolicy(started.page)).InstanceUrl).toMatchObject({ locked: false, source: 'recommended-user' });
-    expect(await menuLabels(started.app)).toContain('Change Connection…');
+    expect(await menuLabels(started.app)).toContain('Change connection…');
   });
 });
 
@@ -197,7 +197,7 @@ test.describe('a forced InstanceUrl', () => {
     expect((await bridgePolicy(window)).InstanceUrl).toMatchObject({ value: instanceA, source: 'forced-machine', locked: true });
 
     // The way to change it is gone.
-    expect(await menuLabels(app)).not.toContain('Change Connection…');
+    expect(await menuLabels(app)).not.toContain('Change connection…');
 
     // Everything else goes to the browser.
     await window.evaluate(() => {
@@ -246,7 +246,7 @@ test.describe('a forced InstanceUrl', () => {
     setNumber(key(root, 'Machine'), 'AllowStandalone', 1);
     const started = await start(root);
     expect(new URL(started.page.url()).origin).toBe(new URL(instanceA).origin);
-    expect(await menuLabels(started.app)).toContain('Change Connection…');
+    expect(await menuLabels(started.app)).toContain('Change connection…');
   });
 });
 
@@ -266,7 +266,7 @@ test.describe('an invalid value fails closed', () => {
     expect(text).toContain(insecure);
     // Stored as standalone, and it still doesn't fall back to it.
     expect(await hasServer(app)).toBe(false);
-    expect(await menuLabels(app)).not.toContain('Change Connection…');
+    expect(await menuLabels(app)).not.toContain('Change connection…');
     expect(await windowUrls(app)).toHaveLength(1);
     await window.screenshot({ path: path.join(SCREENSHOTS, 'desktop-policy-error.png') });
 
@@ -473,9 +473,14 @@ test.describe('the wipe nonce', () => {
 
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'first');
+    // A window waiting to come back goes with the rest.
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ ...stateOf(profile), session: [{ type: 'message', key: 'message:secret-id', url: `${instanceA}/popout/message/secret-id` }] }));
     started = await start(root, { profile });
     expect(await markers(started.page)).toEqual(NONE);
     expect(stateOf(profile).policyWipes).toEqual(['first']);
+    await settle();
+    expect(JSON.stringify(await windowUrls(started.app))).not.toContain('secret-id');
+    expect(JSON.stringify(stateOf(profile).session ?? [])).not.toContain('secret-id');
     // Marked done: new data survives another start.
     await plant(started.page);
     await stop(started, true);
@@ -498,10 +503,18 @@ test.describe('the wipe nonce', () => {
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     const started = await start(root);
     await plant(started.page);
+    // What the native windows keep locally: a copy to paste, and a window to bring back.
+    const leftover = path.join(started.profile, 'clipboard-files', 'report.pdf');
+    mkdirSync(path.dirname(leftover), { recursive: true });
+    writeFileSync(leftover, 'x');
+    await started.page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: '/popout/message/secret-id', emailId: 'secret-id' }));
+    await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).toContain('secret-id');
     setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
     await expect.poll(() => (existsSync(path.join(started.profile, 'shell-state.json')) ? stateOf(started.profile).policyWipes : undefined)).toEqual(['live']);
     await expect(started.page.locator('#stand-in')).toBeVisible();
     expect(await markers(started.page)).toEqual(NONE);
+    expect(existsSync(leftover)).toBe(false);
+    await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).not.toContain('secret-id');
 
     // An old value again: remembered per value.
     await plant(started.page);

@@ -15,6 +15,8 @@ export interface WindowInfo {
   type: WindowType;
   title: string;
   focused: boolean;
+  /** False for a main window hidden while pop-outs are open. */
+  visible?: boolean;
 }
 
 export type Mode = 'standalone' | 'instance';
@@ -40,6 +42,34 @@ export interface ThemeColours {
 export interface SystemTheme {
   dark: boolean;
   highContrast: boolean;
+  /** The OS accent colour as #rrggbb, where the OS has one and tells. */
+  accent?: string;
+}
+
+export type UpdateChannel = 'stable' | 'beta';
+
+/** `install`: replaces itself. `notify`: an MSI, deb, rpm or unsigned macOS, says a version exists. `none`: a development run. */
+export type UpdateAbility = 'install' | 'notify' | 'none';
+
+export interface UpdateState {
+  /** The running version. */
+  version: string;
+  channel: UpdateChannel;
+  /** Set by the `UpdateChannel` policy. */
+  channelLocked: boolean;
+  /** False when the `AutoUpdate` policy turned updates off. */
+  allowed: boolean;
+  ability: UpdateAbility;
+  /** Windows, and not the per-user installer: an MSI, whose updates come the way it did. */
+  perMachine: boolean;
+  /**
+   * `available`: a newer version, for `notify` installs. `older-available`: on stable, with
+   * a beta running, and the newest stable is older than it. `off`: the policy.
+   */
+  status: 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'available' | 'older-available' | 'error' | 'off';
+  /** The version the status is about. */
+  target?: string;
+  percent?: number;
 }
 
 export interface PolicyBridge {
@@ -50,6 +80,58 @@ export interface PolicyBridge {
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
 
+/** A native menu built by the page: an HTML menu read back, so the two can't drift. */
+export interface NativeMenuItem {
+  /** Handed back when this item is chosen. Left out of separators and submenus. */
+  id?: string;
+  label?: string;
+  type?: 'normal' | 'separator' | 'checkbox' | 'radio';
+  enabled?: boolean;
+  checked?: boolean;
+  submenu?: NativeMenuItem[];
+}
+
+/** One name in the strip that stands in for a menu bar in a window with no native frame. */
+export interface MenuBarEntry {
+  id: string;
+  label: string;
+  /** The letter that opens it with Alt, lower case. */
+  mnemonic?: string;
+}
+
+export interface MenuBarEvent {
+  visible: boolean;
+  /** Open this menu right away: Alt plus its letter. */
+  open?: string;
+}
+
+/** What a page says when asked to save before a window goes. */
+export interface FlushAnswer {
+  /** Drafts it couldn't save. */
+  failed?: number;
+  timedOut?: boolean;
+  /** Mail waiting to be sent. It goes out at the next start. */
+  unsent?: number;
+}
+
+export interface ConfirmOptions {
+  message: string;
+  detail?: string;
+  /** Button labels, the safe choice last. */
+  buttons: string[];
+  /** The button Enter takes. */
+  defaultId?: number;
+  type?: 'none' | 'info' | 'warning' | 'question';
+}
+
+export interface LanguagesUpdate {
+  /** The interface language. The shell's menus follow it too. */
+  ui: string;
+  /** What the composer's text is in, if it says. */
+  composer?: string[];
+  /** The shell's menu and dialog text in that language, by the keys of `src/main/strings.ts`. */
+  labels?: Record<string, string>;
+}
 export type KeystoreHash = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
 
 export interface KeystoreCertificate {
@@ -179,6 +261,92 @@ export type LocalImportResumeResult =
   /** `in-use`: none can be read right now, which may pass, so the job stays. `invalid`: they're gone, and so is the job. */
   | { ok: false; reason: 'later' | 'stopped' | 'busy' | 'invalid' | 'in-use' | 'unknown'; refused?: string[] };
 
+export interface OsSettings {
+  /** Closing the main window leaves the app running in the tray. */
+  closeToTray: boolean;
+  startAtLogin: boolean;
+  /** At login: no window, only the tray. */
+  startMinimized: boolean;
+  /** Taskbar flash or dock bounce on new mail. */
+  attentionOnNewMail: boolean;
+  quietHoursEnabled: boolean;
+  /** HH:MM, local time. */
+  quietHoursStart: string;
+  quietHoursEnd: string;
+  /** "Show Bulwark", an Electron accelerator. Null: off. */
+  showShortcut: string | null;
+}
+
+export interface OsStatus {
+  settings: OsSettings;
+  pausedUntil: number | null;
+  /** The shortcut in settings is really held. Another app can have it. */
+  shortcutActive: boolean;
+}
+
+export interface OsFile {
+  name: string;
+  data: Uint8Array;
+}
+
+/** What the OS asks the app to do: a tray item, a jump list entry, a toast, a double-clicked file. */
+export type OsCommand =
+  | { type: 'new-message' }
+  | { type: 'navigate'; target: 'inbox' | 'calendar' | 'contacts' }
+  | { type: 'open-message'; emailId: string; accountId?: string; context?: string }
+  | { type: 'open-mailbox'; mailboxId: string }
+  | { type: 'mailto'; url: string }
+  | { type: 'webcal'; url: string }
+  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[] }
+  | { type: 'notification'; action: string; context: string; reply?: string };
+
+export interface OsNotification {
+  /** Tag of the toast. Showing an id again within a few minutes does nothing. */
+  id: string;
+  group?: string;
+  title: string;
+  body: string;
+  /** Handed back with the action. Keep it short: Windows keeps it in the toast. */
+  context: string;
+  actions?: { id: string; label: string }[];
+  reply?: { label: string; placeholder: string };
+  /** The user wants a sound with this. */
+  sound?: boolean;
+  /** New mail: flash the taskbar or bounce the dock if that's on. */
+  attention?: boolean;
+}
+
+export interface OsNotifyResult {
+  shown: boolean;
+  reason?: 'duplicate' | 'paused' | 'quiet-hours' | 'focused' | 'unsupported' | 'invalid' | 'failed';
+  /** The page should play the sound the user picked. */
+  playSound: boolean;
+}
+
+export interface OsTrayMessage {
+  emailId: string;
+  accountId: string;
+  sender: string;
+  subject: string;
+  context?: string;
+}
+
+export interface OsSummary {
+  unread: OsTrayMessage[];
+  /** Newest conversations, whether read or not, for the jump list. */
+  recent: OsTrayMessage[];
+  nextEvent: { title: string; when: string } | null;
+}
+
+export type OsPowerEvent = 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
+
+export interface OsDefaultAppStatus {
+  /** Offered to the OS as a mail app. */
+  registered: boolean;
+  mailto: boolean;
+  webcal: boolean;
+}
+
 export interface PrivacyState {
   telemetry: { on: boolean; forcedOff: boolean };
   crashReports: { on: boolean; forcedOff: boolean; uploadUrl: string };
@@ -204,8 +372,28 @@ export const CHANNEL = {
   windowsChanged: 'bulwark:windows.changed',
   themeSet: 'bulwark:theme.set',
   themeSystem: 'bulwark:theme.system',
+  themeGetSystem: 'bulwark:theme.getSystem',
+  windowsCloseSelf: 'bulwark:windows.closeSelf',
+  windowsSetRestore: 'bulwark:windows.setRestore',
+  windowsSetRestoreEnabled: 'bulwark:windows.setRestoreEnabled',
+  windowsSessionReady: 'bulwark:windows.sessionReady',
+  windowsSpareReady: 'bulwark:windows.spareReady',
+  windowsSpareActivate: 'bulwark:windows.spareActivate',
+  windowsSpareTaken: 'bulwark:windows.spareTaken',
   menuSetState: 'bulwark:menu.setState',
+  menuCommand: 'bulwark:menu.command',
+  menuPopup: 'bulwark:menu.popup',
+  menuBarEntries: 'bulwark:menu.barEntries',
+  menuBarOpen: 'bulwark:menu.barOpen',
+  menuBarEvent: 'bulwark:menu.barEvent',
   shellOpenExternal: 'bulwark:shell.openExternal',
+  shellSetLanguages: 'bulwark:shell.setLanguages',
+  dialogsConfirm: 'bulwark:dialogs.confirm',
+  clipboardCopyFile: 'bulwark:clipboard.copyFile',
+  clipboardClearFiles: 'bulwark:clipboard.clearFiles',
+  spellMissing: 'bulwark:spell.missing',
+  spellListMissing: 'bulwark:spell.listMissing',
+  spellAllowDownload: 'bulwark:spell.allowDownload',
   serversPrepare: 'bulwark:servers.prepare',
   serversNoteSession: 'bulwark:servers.noteSession',
   serversForget: 'bulwark:servers.forget',
@@ -216,7 +404,31 @@ export const CHANNEL = {
   authComplete: 'bulwark:auth.complete',
   authCancel: 'bulwark:auth.cancel',
   pluginsInstall: 'bulwark:plugins.install',
+  osSubscribe: 'bulwark:os.subscribe',
+  osCommand: 'bulwark:os.command',
+  osGetStatus: 'bulwark:os.getStatus',
+  osSetSettings: 'bulwark:os.setSettings',
+  osSetPaused: 'bulwark:os.setPaused',
+  osStatusChanged: 'bulwark:os.statusChanged',
+  osSetBadge: 'bulwark:os.setBadge',
+  osSetSummary: 'bulwark:os.setSummary',
+  osSetProgress: 'bulwark:os.setProgress',
+  osSetLocked: 'bulwark:os.setLocked',
+  osClearSurfaces: 'bulwark:os.clearSurfaces',
+  osNotify: 'bulwark:os.notify',
+  osPower: 'bulwark:os.power',
+  osStartDrag: 'bulwark:os.startDrag',
+  osCopyFiles: 'bulwark:os.copyFiles',
+  osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
+  osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
   welcomeChoose: 'bulwark:welcome.choose',
+  updatesState: 'bulwark:updates.state',
+  updatesCheck: 'bulwark:updates.check',
+  updatesSetChannel: 'bulwark:updates.setChannel',
+  updatesRestart: 'bulwark:updates.restart',
+  updatesOpenDownload: 'bulwark:updates.openDownload',
+  updatesInstallOlder: 'bulwark:updates.installOlder',
+  updatesChanged: 'bulwark:updates.changed',
   policyGet: 'bulwark:policy.get',
   policyChanged: 'bulwark:policy.changed',
   privacyGet: 'bulwark:privacy.get',

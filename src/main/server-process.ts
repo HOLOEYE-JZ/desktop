@@ -49,7 +49,9 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
 
   const child = utilityProcess.fork(options.hostScript, [], {
     serviceName: 'Bulwark mail service',
-    cwd: options.serverDir,
+    // A real folder, whatever serverDir is: an asar can't be a working directory. host.ts
+    // makes process.cwd() answer serverDir.
+    cwd: options.logDir,
     env: options.env,
     stdio: 'pipe',
   });

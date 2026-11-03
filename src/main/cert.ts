@@ -8,7 +8,7 @@
  * app-session.ts, so it needs no chain, and a long validity costs nothing.
  */
 
-import { createHash, generateKeyPairSync, randomBytes, sign, X509Certificate } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign, X509Certificate } from 'node:crypto';
 
 const VALIDITY_DAYS = 3650;
 
@@ -68,6 +68,15 @@ export interface GeneratedCertificate {
 export function fingerprintOf(certPem: string): string {
   const der = new X509Certificate(certPem).raw;
   return `sha256/${createHash('sha256').update(der).digest('base64')}`;
+}
+
+/** False for an empty or damaged file too, and for a key and certificate of different rounds. */
+export function certificateFitsKey(certPem: string, keyPem: string): boolean {
+  try {
+    return new X509Certificate(certPem).checkPrivateKey(createPrivateKey(keyPem));
+  } catch {
+    return false;
+  }
 }
 
 export function generateCertificate(hostname: string, now: Date = new Date()): GeneratedCertificate {

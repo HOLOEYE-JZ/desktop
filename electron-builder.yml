@@ -1,5 +1,5 @@
-# Package layout and hardening. Installers, channels, MSI and release workflows are
-# step 6; this keeps `npm run pack:dir` and the fuses in place from the start.
+# Package layout, installers, hardening. `npm run dist:win`, `dist:mac`, `dist:linux`,
+# or the release workflows in .github/workflows. See "Packaging" in the README.
 appId: org.bulwarkmail.desktop
 productName: Bulwark
 copyright: Copyright (C) 2025-2026 Bulwark Project Authors
@@ -7,9 +7,12 @@ directories:
   output: release
   buildResources: build
 asar: true
-# A native module can't load from inside an asar. Electron's loader follows the link.
+# A native module can't load from inside an asar, so the native helper's and
+# policy-watcher's .node files go next to it. ASAR integrity is fine with this: tested
+# in test/package-guard.spec.ts.
 asarUnpack:
   - '**/*.node'
+# What goes in app.asar. electron-builder adds the production dependencies.
 files:
   - dist/**/*
   - package.json
@@ -18,19 +21,22 @@ files:
     to: native
     filter:
       - bulwark-native.node
-# The webmail server stays unpacked: it needs a real cwd, and Next reads its own files.
+# The webmail server, trimmed, guarded and packed for this target by before-pack.cjs.
+# As an extra resource so electron-builder lists it for ASAR integrity. Its unpacked files
+# go in by after-pack.cjs.
 extraResources:
   # ADMX, ADML and samples from the webmail, for IT. See scripts/fetch-webmail.mjs.
   - from: policies
     to: policies
-  - from: webmail
-    to: server
+  - from: .server-build/${os}-${arch}
+    to: .
     filter:
-      - '**/*'
-      - '**/.next/**'
-      - '!node_modules/**'
-# node_modules: see scripts/after-pack.cjs.
+      - server.asar
+beforePack: scripts/before-pack.cjs
 afterPack: scripts/after-pack.cjs
+# Chromium's own strings: the webmail's languages and their regional forms. The rest
+# falls back to en-US. Chromium has no Mongolian pack, so that's en-US as well.
+electronLanguages: [ar, ca, cs, da, de, en-GB, en-US, es, es-419, et, fa, fr, he, hu, it, ja, ko, lv, nb, nl, pl, pt-BR, pt-PT, ro, ru, sk, th, tr, uk, vi, zh-CN, zh-TW]
 # INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL. The NSIS side is build/installer.nsh.
 msiProjectCreated: scripts/msi-policies.cjs
 # policy-watcher is N-API, so what `npm ci` built loads in Electron as it is.
@@ -43,15 +49,176 @@ electronFuses:
   enableEmbeddedAsarIntegrityValidation: true
   onlyLoadAppFromAsar: true
   grantFileProtocolExtraPrivileges: false
+# electron-updater reads this from app-update.yml. A prerelease on GitHub is the beta
+# channel: its own release, with a latest.yml of its own in it. CI builds with
+# `--publish never` and uploads in a separate job, so no build step holds a write token.
+publish:
+  provider: github
+  owner: bulwarkmail
+  repo: desktop
+
 win:
-  # Signing hook: unsigned for now. A signing certificate or Azure signing goes here.
-  # signtoolOptions: {}
-  # azureSignOptions: {}
-  target: dir
+  # >>> WINDOWS SIGNING HOOK. Unsigned for now, nothing is configured on purpose. <<<
+  # When there is a certificate, this is the only place to change:
+  #   azureSignOptions:            # Azure Artifact Signing, the likely choice
+  #     endpoint: ...
+  #     certificateProfileName: ...
+  #     codeSigningAccountName: ...
+  #     publisherName: ...         # goes into app-update.yml too, see below
+  #   # or signtoolOptions: { certificateSubjectName: ..., publisherName: [...] }
+  # With a publisher name set, app-update.yml carries it and electron-updater refuses an
+  # installer that isn't signed by that name. With none, as now, it skips that check and
+  # relies on the sha512 in latest.yml, over TLS. See "Unsigned builds" in the README.
+  icon: build/icon.ico
+  executableName: Bulwark
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+    - target: msi
+      arch: [x64, arm64]
+# Windows registers its URL schemes and file types at run time (os-default-app.ts) and
+# not through these: electron-builder's NSIS writes them as HKCU's default for the type,
+# which takes mailto: and .eml from whoever had them. Which app is the default stays the
+# user's choice there.
+nsis:
+  # Per-user, no elevation. This is the install electron-updater can replace by itself.
+  oneClick: true
+  perMachine: false
+  packElevateHelper: false
+  # One installer per architecture, both named in latest.yml. electron-updater picks by
+  # process.arch in the file name. The default would put both in one big download.
+  buildUniversalInstaller: false
+  # Whole downloads only. electron-updater's differential path can't be cancelled, and this
+  # lets the installer compress better.
+  differentialPackage: false
+  artifactName: Bulwark-Setup-${version}-${arch}.${ext}
+  shortcutName: Bulwark
+  uninstallDisplayName: Bulwark
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: false
+  include: build/installer.nsh
+msi:
+  # Per-machine, for IT. electron-updater can't replace it: see "Updates" in the README.
+  # The upgrade code stays the same forever, it's how a new MSI replaces the old one.
+  oneClick: true
+  perMachine: true
+  runAfterFinish: false
+  upgradeCode: 7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47
+  artifactName: Bulwark-${version}-${arch}.${ext}
+  shortcutName: Bulwark
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+
 mac:
-  # Hardened runtime and notarization are driven by env in CI, unused here.
+  # Hardened runtime and notarization only come into play when CI signs. electron-builder
+  # signs when CSC_LINK and CSC_KEY_PASSWORD are set, and notarizes when APPLE_API_KEY,
+  # APPLE_API_KEY_ID and APPLE_API_ISSUER (or APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD and
+  # APPLE_TEAM_ID) are. Unused so far.
   hardenedRuntime: true
-  target: dir
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  icon: build/icon.icns
+  category: public.app-category.productivity
+  # electron-updater downloads the zip. A universal build merges an x64 and an arm64 tree.
+  # The server's sharp binaries for both architectures sit in both trees (after-pack.cjs),
+  # so they are the same file on both sides and must not go through lipo. Native modules
+  # in app.asar (the native helper) are built per architecture, and lipo merges those.
+  x64ArchFiles: '**/@img/**'
+  target:
+    - target: dmg
+      arch: universal
+    - target: zip
+      arch: universal
+  artifactName: Bulwark-${version}-${arch}.${ext}
+  protocols:
+    - name: Mail
+      schemes: [mailto]
+      role: Editor
+    - name: Calendar
+      schemes: [webcal, webcals]
+      role: Viewer
+    - name: Bulwark
+      schemes: [bulwark]
+      role: Viewer
+  fileAssociations:
+    - ext: eml
+      name: E-mail message
+      role: Viewer
+    - ext: ics
+      name: Calendar file
+      role: Viewer
+    - ext: vcf
+      name: Contact card
+      role: Viewer
+dmg:
+  sign: false
+
 linux:
-  target: dir
+  icon: build/icons
   category: Network;Email
+  maintainer: Bulwark Mail <dev@bulwarkmail.org>
+  vendor: Bulwark Mail
+  synopsis: Bulwark Mail for the desktop
+  executableName: bulwark
+  # The binary and the .desktop file named alike: the window's app_id follows desktopName
+  # in package.json. os-integration needs the same two for Unity's count.
+  syncDesktopName: true
+  # electron-builder adds %U to Exec and fills MimeType from these.
+  mimeTypes:
+    - x-scheme-handler/mailto
+    - x-scheme-handler/webcal
+    - x-scheme-handler/webcals
+    - x-scheme-handler/bulwark
+    - message/rfc822
+    - text/calendar
+    - text/vcard
+    - text/x-vcard
+  fileAssociations:
+    - ext: eml
+      mimeType: message/rfc822
+    - ext: ics
+      mimeType: text/calendar
+    - ext: vcf
+      mimeType: text/vcard
+  desktop:
+    entry:
+      Actions: NewMessage;Inbox;Calendar;Contacts;
+    desktopActions:
+      NewMessage:
+        Name: New message
+        Name[de]: Neue Nachricht
+        Exec: bulwark bulwark://new
+      Inbox:
+        Name: Inbox
+        Name[de]: Posteingang
+        Exec: bulwark bulwark://inbox
+      Calendar:
+        Name: Calendar
+        Name[de]: Kalender
+        Exec: bulwark bulwark://calendar
+      Contacts:
+        Name: Contacts
+        Name[de]: Kontakte
+        Exec: bulwark bulwark://contacts
+  # No architectures here: a target that names them builds them whatever the command line
+  # says, and each release job runs on the machine it builds for.
+  target:
+    - AppImage
+    - deb
+    - rpm
+appImage:
+  artifactName: Bulwark-${version}-${arch}.${ext}
+  # Never add --no-sandbox. AppRun still adds it by itself where user namespaces are
+  # blocked, and then the app refuses to run: see src/main/sandbox-check.ts.
+  executableArgs: []
+deb:
+  packageName: bulwark
+  artifactName: bulwark_${version}_${arch}.${ext}
+rpm:
+  packageName: bulwark
+  # Otherwise the package doesn't own its folders, and removing it leaves them empty.
+  fpm: ['--directories', '/opt/Bulwark']
+  artifactName: bulwark-${version}.${arch}.${ext}
