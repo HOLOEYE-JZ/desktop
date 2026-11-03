@@ -72,7 +72,7 @@ test.describe('window.bulwarkDesktop.keystore', () => {
       const bridge = (window as never as { bulwarkDesktop: Record<string, unknown> }).bulwarkDesktop;
       return { keystore: Object.keys(bridge.keystore as object).sort(), hello: 'hello' in bridge, policy: 'policy' in bridge };
     });
-    expect(shape).toEqual({ keystore: ['accessState', 'agree', 'decrypt', 'list', 'revokeAccess', 'sign'], hello: false, policy: false });
+    expect(shape).toEqual({ keystore: ['accessState', 'agree', 'clearGrants', 'decrypt', 'list', 'revokeAccess', 'sign'], hello: false, policy: false });
   });
 
   test('it signs in Electron through the bridge, and Node verifies it', async () => {
@@ -104,6 +104,17 @@ test.describe('window.bulwarkDesktop.keystore', () => {
     const answer = await call('decrypt', entry.id, [...data], { scheme: 'rsa-oaep', hash: 'SHA-1' });
     if (!answer.ok) throw new Error(answer.message);
     expect(Buffer.from(answer.bytes).equals(plain)).toBe(true);
+  });
+
+  test('clearGrants takes back this session\'s yes: the next account gets asked', async () => {
+    const keystoreQuestions = async () => (await prompts(launched.app)).filter((prompt) => /certificate/i.test(`${prompt.message} ${prompt.detail}`)).length;
+    await listed();
+    const before = await keystoreQuestions();
+    await listed();
+    expect(await keystoreQuestions()).toBe(before);
+    await launched.page.evaluate(() => (window as never as { bulwarkDesktop: { keystore: { clearGrants(): Promise<void> } } }).bulwarkDesktop.keystore.clearGrants());
+    await listed();
+    expect(await keystoreQuestions()).toBe(before + 1);
   });
 
   test('errors reach the page as the bare code', async () => {
@@ -151,7 +162,7 @@ test.describe('window.bulwarkDesktop.keystore', () => {
       }
       return out;
     });
-    expect(Object.keys(answers).sort()).toEqual(['access', 'agree', 'decrypt', 'list', 'revoke', 'sign'].map((name) => `bulwark:keystore.${name}`));
+    expect(Object.keys(answers).sort()).toEqual(['access', 'agree', 'clearGrants', 'decrypt', 'list', 'revoke', 'sign'].map((name) => `bulwark:keystore.${name}`));
     for (const [channel, [subframe, none, offOrigin, mainFrame]] of Object.entries(answers)) {
       expect(subframe, channel).toBe('Not allowed');
       expect(none, channel).toBe('Not allowed');
@@ -347,7 +358,7 @@ test.describe('consent, in main, whoever calls', () => {
   });
 });
 
-test('without the helper no keystore channel exists in main, and with it there are six', async () => {
+test('without the helper no keystore channel exists in main, and with it there are seven', async () => {
   test.setTimeout(240_000);
   const handlers = async (...args: string[]) => {
     const profile = tempProfile('channels');
@@ -364,5 +375,5 @@ test('without the helper no keystore channel exists in main, and with it there a
   };
   expect(await handlers('--bulwark-test-no-native')).toBe(0);
   // So the zero above can be wrong. Off Windows and macOS there's no keystore to offer.
-  if (process.platform === 'win32') expect(await handlers()).toBe(6);
+  if (process.platform === 'win32') expect(await handlers()).toBe(7);
 });
