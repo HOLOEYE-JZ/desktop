@@ -19,6 +19,7 @@ import { dialogsFeature } from './dialogs';
 import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
+import { importFeature } from './import';
 import { updaterFeature } from './updater';
 import { policiesFeature } from './policies';
 import { osIntegration } from './os';
@@ -53,7 +54,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature];
+export const FEATURES: Feature[] = [policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature, importFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {
