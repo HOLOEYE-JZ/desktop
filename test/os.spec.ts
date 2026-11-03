@@ -500,16 +500,26 @@ test.describe('OS integration', () => {
   });
 
   test('a second launch during the boot is not lost', async () => {
-    const app = await launch(profile, '--standalone');
-    // The window isn't up yet, and this one asks to be delivered once it is.
+    // The boot waits for this file, so the second launch comes with no window and nothing live to take it.
+    const gate = path.join(profile, 'boot-gate');
     const require = createRequire(import.meta.url);
-    const env = { ...process.env };
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) if (value !== undefined) env[name] = value;
     delete env.ELECTRON_RUN_AS_NODE;
+    const hold = path.join(ROOT, 'test', 'support', 'hold-boot.cjs');
+    const app = await _electron.launch({
+      args: ['-r', hold, MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'],
+      cwd: ROOT,
+      env: { ...env, BULWARK_TEST_BOOT_GATE: gate },
+    });
+    await expect.poll(() => app.evaluate(({ app: electronApp }) => electronApp.listenerCount('second-instance')), { timeout: 30_000 }).toBeGreaterThan(0);
     const second = spawn(require('electron') as unknown as string, [MAIN, `--bulwark-user-data=${profile}`, '--', 'webcal://example.org/early.ics'], { env, stdio: 'ignore' });
+    await new Promise((resolve) => second.once('exit', resolve));
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(0);
+    writeFileSync(gate, '');
     const page = await shownPage(app);
     running = { app, page };
     await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-webcal')).catch(() => null), { timeout: 60_000 }).toContain('example.org/early.ics');
-    second.kill();
   });
 
   test('a cold toast action with close to tray off doesn\'t stay hidden', async () => {
@@ -546,13 +556,20 @@ test.describe('OS integration', () => {
     expect(result).toMatchObject({ shown: true });
 
     const script = path.join(ROOT, 'test', 'support', 'toast-readback.ps1');
-    const readback = () => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'os-spec-real-toast'], { encoding: 'utf8', windowsHide: true });
+    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', tag], { encoding: 'utf8', windowsHide: true });
     let xml = '';
     await expect.poll(() => {
       xml = readback();
       return xml;
     }, { timeout: 15_000 }).toContain('Bulwark test');
     for (const label of ['Archive', 'Mark read', 'Delete', 'Reply']) expect(xml).toContain(`content="${label}"`);
+
+    // Typed text only travels once this process has shown a toast: the first asks in the app, the next one inline.
+    const firstToast = readback('os-spec-first-toast');
+    expect(firstToast).toContain('Bulwark test first');
+    expect(firstToast).toContain('content="Reply"');
+    expect(firstToast).not.toContain('<input');
+    expect(xml).toContain('<input');
 
     // A button is a protocol launch: a second instance with the URL off the toast itself.
     const buttons = [...xml.matchAll(/content="([^"]+)" activationType="protocol" arguments="([^"]+)"/g)].map((match) => [match[1], match[2].replace(/&amp;/g, '&')]);

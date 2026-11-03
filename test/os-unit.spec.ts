@@ -1,7 +1,10 @@
+import { EventEmitter } from 'node:events';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
+import type { FeatureContext } from '../src/main/features';
+import { OsHub } from '../src/main/features/os-hub';
 import { encodePng, overlayPng, overlayText, withUnreadDot } from '../src/main/features/os-icons';
 import { systemExe } from '../src/main/system-exe';
 import {
@@ -339,6 +342,48 @@ test.describe('registry', () => {
     expect(keys).toContain('Software\\Classes\\Bulwark.Url.mailto');
     expect(keys.some((key) => /\\\.eml$/.test(key))).toBe(false);
     expect(removed).toContainEqual({ key: 'Software\\Classes\\.eml\\OpenWithProgids', name: 'Bulwark.File.eml' });
+  });
+});
+
+test.describe('the lock in main', () => {
+  const contents = { id: 1 };
+  const hub = () => {
+    const windows = new EventEmitter() as EventEmitter & { mainWindow: () => unknown; broadcast: () => void };
+    windows.mainWindow = () => ({ webContents: contents });
+    windows.broadcast = () => {};
+    return new OsHub({ windows, state: { data: {}, touch() {}, save() {} }, showMain() {} } as unknown as FeatureContext);
+  };
+  const summary = { unread: [{ emailId: 'e', accountId: 'a', sender: 's', subject: 'Secret' }], recent: [], nextEvent: null };
+
+  test('fails closed: locked until the main window has said otherwise', () => {
+    const os = hub();
+    expect(os.locked).toBe(true);
+    os.setSummary(summary);
+    expect(os.summary.unread).toEqual([]);
+    os.setLockedByPage(false, { id: 2 } as never);
+    expect(os.locked).toBe(true);
+    os.setLockedByPage(false, contents as never);
+    expect(os.locked).toBe(false);
+    expect(os.summary.unread.length).toBe(1);
+  });
+
+  test('a real lock forgets what was showing; not having heard yet does not', () => {
+    const os = hub();
+    os.setSummary(summary);
+    expect(os.lockIsReal).toBe(false);
+    os.setLockedByPage(true, contents as never);
+    expect(os.lockIsReal).toBe(true);
+    os.setLockedByPage(false, contents as never);
+    expect(os.summary.unread).toEqual([]);
+  });
+
+  test("main's verdict stands over any page's, and main can lift it", () => {
+    const os = hub();
+    os.setLockedByMain(true);
+    os.setLockedByPage(false, contents as never);
+    expect(os.locked).toBe(true);
+    os.setLockedByMain(false);
+    expect(os.locked).toBe(false);
   });
 });
 
