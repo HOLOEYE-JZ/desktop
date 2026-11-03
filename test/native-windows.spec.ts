@@ -6,7 +6,7 @@ import { destroyMessages, draftsWithSubject, jmap, lastMenu, menuCount, menuItem
 
 /**
  * Multi-window on a real account, with a webmail build of this branch:
- *   BULWARK_TEST_WEBMAIL=<dir> vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test test/native-windows.spec.ts
+ *   BULWARK_TEST_WEBMAIL=<dir> IT_ENT_PASSWORD=<test account password> npx playwright test test/native-windows.spec.ts
  * BULWARK_TEST_SERVER_LABEL picks the Stalwart (1.0 by default).
  */
 const STALWART = STALWARTS.find((s) => s.label === (process.env.BULWARK_TEST_SERVER_LABEL ?? '1.0'))!;
