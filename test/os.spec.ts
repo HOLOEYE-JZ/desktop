@@ -1,10 +1,9 @@
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { launch, launchStandalone, removeProfile, shownPage, tempProfile, type Launched } from './helpers';
+import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, type Launched } from './helpers';
 
 /**
  * The real app, on its login page: the bridge and the OS calls don't need a sign-in or
@@ -21,26 +20,6 @@ const SHOW_SHORTCUT = 'CommandOrControl+Alt+Shift+F11';
 function reg(...args: string[]): { ok: boolean; out: string } {
   const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
   return { ok: result.status === 0, out: result.stdout ?? '' };
-}
-
-/** What a run may leave without this: the keys and the shortcut Electron makes on a toast. */
-function removeTraces(): void {
-  if (!win) return;
-  reg('delete', `HKCU\\Software\\Classes\\CLSID\\${DEV_CLSID}`, '/f');
-  for (const key of ['Software\\Bulwark', 'Software\\Classes\\bulwark', 'Software\\Classes\\Bulwark.Url.mailto', 'Software\\Classes\\Bulwark.Url.webcal', 'Software\\Classes\\Bulwark.File.eml', 'Software\\Classes\\Bulwark.File.ics', 'Software\\Classes\\Bulwark.File.vcf']) {
-    reg('delete', `HKCU\\${key}`, '/f');
-  }
-  reg('delete', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark', '/f');
-  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'Bulwark Dev', '/f');
-  reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', '/v', 'Bulwark Dev', '/f');
-  for (const name of ['Electron.lnk', 'Bulwark.lnk']) {
-    const lnk = path.join(homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', name);
-    if (existsSync(lnk)) {
-      // Only ours: it points at this development Electron.
-      const target = spawnSync('powershell.exe', ['-NoProfile', '-Command', `(New-Object -ComObject WScript.Shell).CreateShortcut('${lnk}').TargetPath`], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
-      if (/electron\\dist\\electron\.exe/i.test(target)) spawnSync('powershell.exe', ['-NoProfile', '-Command', `Remove-Item -LiteralPath '${lnk}'`], { windowsHide: true });
-    }
-  }
 }
 
 interface Recorded {
@@ -112,7 +91,7 @@ test.describe('OS integration', () => {
     await running?.app.close().catch(() => {});
     running = null;
     removeProfile(profile);
-    removeTraces();
+    removeOsTraces();
   });
 
   test('closing goes to the tray, says so once, and the page keeps its timers running', async () => {

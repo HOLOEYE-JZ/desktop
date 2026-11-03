@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { expectMailShown, launchStandalone, removeProfile, requireAccount, SCREENSHOTS, signIn, STALWARTS, tempProfile, ENT_PASSWORD, type Launched } from './helpers';
+import { expectMailShown, launchStandalone, removeOsTraces, removeProfile, requireAccount, SCREENSHOTS, signIn, STALWARTS, tempProfile, ENT_PASSWORD, type Launched } from './helpers';
 
 /**
  * The webmail's side on a real server, real mail arriving at a window hidden in the tray.
@@ -120,9 +120,13 @@ const composer = (page: Page) => page.locator('[data-testid="email-composer"]').
 
 async function closeComposer(page: Page): Promise<void> {
   await page.keyboard.press('Escape');
-  const discard = page.getByRole('button', { name: /discard/i }).first();
-  if (await discard.isVisible().catch(() => false)) await discard.click();
-  await composer(page).waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {});
+  // Its question comes on top of the composer's own button, and later in the page.
+  for (let tries = 0; tries < 4 && await composer(page).isVisible(); tries += 1) {
+    const discard = page.getByRole('button', { name: /discard/i }).last();
+    if (await discard.isVisible().catch(() => false)) await discard.click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(400);
+  }
+  await composer(page).waitFor({ state: 'hidden', timeout: 15_000 });
 }
 
 for (const { label, url } of STALWARTS) {
@@ -143,6 +147,7 @@ for (const { label, url } of STALWARTS) {
     test.afterAll(async () => {
       await running?.app.close().catch(() => {});
       removeProfile(profile);
+      removeOsTraces();
     });
 
     test('mail arriving at a window in the tray: a toast with its buttons, the badge and the tray menu', async () => {
