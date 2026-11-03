@@ -16,6 +16,8 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const MAIN = path.join(ROOT, 'dist', 'main.mjs');
 const DEV_CLSID = '{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}';
 const SHOW_SHORTCUT = 'CommandOrControl+Alt+Shift+F11';
+/** The app is done in under a second. The process going away can take far longer on a busy machine. */
+const CLOSE_WAIT = { timeout: 120_000 };
 
 function reg(...args: string[]): { ok: boolean; out: string } {
   const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
@@ -138,7 +140,7 @@ test.describe('OS integration', () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
     await os(page, 'setSettings({ closeToTray: false })');
-    const closed = app.waitForEvent('close');
+    const closed = app.waitForEvent('close', CLOSE_WAIT);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await closed;
     running = null;
@@ -150,7 +152,7 @@ test.describe('OS integration', () => {
     await record(app);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await expect.poll(() => mainVisible(app)).toBe(false);
-    const closed = app.waitForEvent('close');
+    const closed = app.waitForEvent('close', CLOSE_WAIT);
     await clickTray(app, 'Quit Bulwark');
     await closed;
     running = null;
@@ -381,7 +383,7 @@ test.describe('OS integration', () => {
       await new Promise((resolve) => setTimeout(resolve, 2500));
       running = await launchStandalone(profile);
       const { app } = running;
-      const closed = app.waitForEvent('close');
+      const closed = app.waitForEvent('close', CLOSE_WAIT);
       await app.evaluate(({ app: a }) => a.quit());
       await closed;
       running = null;
