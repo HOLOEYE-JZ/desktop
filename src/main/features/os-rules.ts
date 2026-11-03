@@ -36,6 +36,28 @@ const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 // keeps a page from storing something that fails on every later start.
 const ACCELERATOR = /^(?:(?:CommandOrControl|CmdOrCtrl|Command|Cmd|Control|Ctrl|Alt|Option|AltGr|Shift|Super|Meta)\+)+[A-Za-z0-9]{1,3}$/;
 
+/** Ctrl+Alt+N, Cmd+Opt+N. */
+export const QUICK_COMPOSE_SHORTCUT = 'CommandOrControl+Alt+N';
+
+/**
+ * Windows reads AltGr as Ctrl+Alt, and on Polish and Latvian keyboards AltGr+N types a
+ * letter (ń, ņ), which a global shortcut would take away from every app. The system's
+ * language stands in for the keyboard, since Electron can't ask for the layout. Neither
+ * has a letter on M.
+ */
+export function quickComposeBuiltIn(platform: string, systemLocale: string): string {
+  return platform === 'win32' && /^(pl|lv)\b/i.test(systemLocale) ? 'CommandOrControl+Alt+M' : QUICK_COMPOSE_SHORTCUT;
+}
+
+/**
+ * The shortcut in force, or null for none. A forced policy decides. Otherwise the user's
+ * choice, where off counts as a choice, then a recommendation, then what's built in.
+ */
+export function quickComposeShortcut(policy: { value: string | null; locked: boolean }, choice: string | null | undefined, builtIn: string | null = QUICK_COMPOSE_SHORTCUT): string | null {
+  const chosen = policy.locked ? policy.value : choice === undefined ? (policy.value ?? builtIn) : choice;
+  return !chosen || chosen.toLowerCase() === 'off' ? null : chosen;
+}
+
 export function isAccelerator(value: unknown): value is string {
   return typeof value === 'string' && value.length <= 64 && ACCELERATOR.test(value);
 }
@@ -53,6 +75,8 @@ export function cleanSettingsPatch(patch: unknown): Partial<OsSettings> {
   }
   if (input.showShortcut === null) out.showShortcut = null;
   else if (isAccelerator(input.showShortcut)) out.showShortcut = input.showShortcut;
+  if (input.quickComposeShortcut === null) out.quickComposeShortcut = null;
+  else if (isAccelerator(input.quickComposeShortcut)) out.quickComposeShortcut = input.quickComposeShortcut;
   return out;
 }
 

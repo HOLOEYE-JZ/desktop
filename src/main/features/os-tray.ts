@@ -115,7 +115,11 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
       ? [{ label: line(text.trayNextEvent(summary.nextEvent.title, summary.nextEvent.when)), click: () => hub.dispatch({ type: 'navigate', target: 'calendar' }) }]
       : [];
     return [
-      { label: text.trayNewMessage, click: () => hub.dispatch({ type: 'new-message' }) },
+      {
+        label: text.trayNewMessage,
+        ...(hub.quickComposeStatus?.active && hub.quickComposeStatus.shortcut ? { accelerator: hub.quickComposeStatus.shortcut, registerAccelerator: false } : {}),
+        click: () => hub.dispatch({ type: 'new-message' }),
+      },
       ...(unread.length ? [{ type: 'separator' } as const, { label: text.trayUnread, enabled: false }, ...unread] : []),
       ...(event.length ? [{ type: 'separator' } as const, ...event] : []),
       { type: 'separator' },

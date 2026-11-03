@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { expectMailShown, launchStandalone, removeOsTraces, removeProfile, requireAccount, SCREENSHOTS, signIn, STALWARTS, tempProfile, ENT_PASSWORD, type Launched } from './helpers';
+import { pageWith } from './native-helpers';
 
 /**
  * The webmail's side on a real server, real mail arriving at a window hidden in the tray.
@@ -242,8 +243,12 @@ for (const { label, url } of STALWARTS) {
     test('tray commands and launches: New message, mailto, and each file type opened through the handoff', async () => {
       const { app, page } = running;
       await press(app, { type: 'new-message' }, true);
-      await composer(page).waitFor({ state: 'visible', timeout: 30_000 });
-      await closeComposer(page);
+      const quick = await pageWith(app, '/popout/compose');
+      await composer(quick).waitFor({ state: 'visible', timeout: 30_000 });
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().includes('/popout/compose')) window.close();
+      });
+      await expect.poll(() => quick.isClosed(), { timeout: 30_000 }).toBe(true);
 
       await press(app, { type: 'mailto', url: `mailto:someone@example.org?subject=${encodeURIComponent(`mailto ${RUN}`)}` }, true);
       await composer(page).waitFor({ state: 'visible', timeout: 30_000 });

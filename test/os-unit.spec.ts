@@ -10,6 +10,8 @@ import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  quickComposeBuiltIn,
+  quickComposeShortcut,
   isRetryableLoadError,
   launchSkipPaths,
   needsRegistration,
@@ -173,6 +175,40 @@ test.describe('quiet hours', () => {
   });
 });
 
+test.describe('quick compose keys', () => {
+  const free = { value: null, locked: false };
+
+  test('nobody chose: the built-in ones', () => {
+    expect(quickComposeShortcut(free, undefined)).toBe('CommandOrControl+Alt+N');
+    expect(quickComposeShortcut(free, undefined, 'CommandOrControl+Alt+M')).toBe('CommandOrControl+Alt+M');
+    expect(quickComposeShortcut(free, undefined, null)).toBeNull();
+  });
+
+  test('a recommendation goes over those, the user over it, and off counts as a choice', () => {
+    const recommended = { value: 'Ctrl+Alt+J', locked: false };
+    expect(quickComposeShortcut(recommended, undefined)).toBe('Ctrl+Alt+J');
+    expect(quickComposeShortcut(recommended, 'Ctrl+Alt+K')).toBe('Ctrl+Alt+K');
+    expect(quickComposeShortcut(recommended, null)).toBeNull();
+    expect(quickComposeShortcut({ value: 'off', locked: false }, undefined)).toBeNull();
+    expect(quickComposeShortcut({ value: 'off', locked: false }, 'Ctrl+Alt+K')).toBe('Ctrl+Alt+K');
+  });
+
+  test('forced goes over everyone, and forced off means off', () => {
+    expect(quickComposeShortcut({ value: 'Ctrl+Alt+J', locked: true }, 'Ctrl+Alt+K')).toBe('Ctrl+Alt+J');
+    expect(quickComposeShortcut({ value: 'Ctrl+Alt+J', locked: true }, null)).toBe('Ctrl+Alt+J');
+    expect(quickComposeShortcut({ value: 'off', locked: true }, 'Ctrl+Alt+K')).toBeNull();
+  });
+
+  test('takes no letter from a keyboard where AltGr+N types one', () => {
+    expect(quickComposeBuiltIn('win32', 'en-US')).toBe('CommandOrControl+Alt+N');
+    expect(quickComposeBuiltIn('win32', 'de-DE')).toBe('CommandOrControl+Alt+N');
+    expect(quickComposeBuiltIn('win32', 'pl-PL')).toBe('CommandOrControl+Alt+M');
+    expect(quickComposeBuiltIn('win32', 'lv')).toBe('CommandOrControl+Alt+M');
+    // Option isn't AltGr to a global shortcut on a Mac, and nothing here reads it that way.
+    expect(quickComposeBuiltIn('darwin', 'pl-PL')).toBe('CommandOrControl+Alt+N');
+  });
+});
+
 test.describe('settings from a page', () => {
   test('only known keys of the right type', () => {
     expect(cleanSettingsPatch({ closeToTray: false, nonsense: true, startAtLogin: 'yes' })).toEqual({ closeToTray: false });
@@ -180,6 +216,9 @@ test.describe('settings from a page', () => {
     expect(cleanSettingsPatch({ showShortcut: 'rm -rf' })).toEqual({});
     expect(cleanSettingsPatch({ showShortcut: 'CommandOrControl+Shift+B' })).toEqual({ showShortcut: 'CommandOrControl+Shift+B' });
     expect(cleanSettingsPatch({ showShortcut: null })).toEqual({ showShortcut: null });
+    expect(cleanSettingsPatch({ quickComposeShortcut: 'rm -rf' })).toEqual({});
+    expect(cleanSettingsPatch({ quickComposeShortcut: 'CommandOrControl+Alt+M' })).toEqual({ quickComposeShortcut: 'CommandOrControl+Alt+M' });
+    expect(cleanSettingsPatch({ quickComposeShortcut: null })).toEqual({ quickComposeShortcut: null });
     expect(cleanSettingsPatch(null)).toEqual({});
   });
 

@@ -1,7 +1,7 @@
 /**
  * Sleep, wake, lock and unlock go to the page, which reconnects and syncs at once. Plus
- * the global "Show Bulwark". Quick compose's shortcut belongs to another feature, so
- * this only ever touches its own accelerator.
+ * the global "Show Bulwark". Quick compose's shortcut is os-quick-compose.ts's, so this
+ * only ever touches its own accelerator.
  */
 
 import { globalShortcut, powerMonitor } from 'electron';

@@ -211,7 +211,6 @@ test.describe('OS integration', () => {
     await clickTray(app, 'Alice: Lunch?');
     await clickTray(app, 'Next: Standup, 09:30');
     await expect.poll(() => commands(page)).toEqual([
-      { type: 'new-message' },
       { type: 'open-message', emailId: 'e1', accountId: 'a1', context: 'ctx' },
       { type: 'navigate', target: 'calendar' },
     ]);
