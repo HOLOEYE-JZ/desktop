@@ -44,6 +44,8 @@ export interface ShellState {
   restoreWindows?: boolean;
   /** Chromium's zoom level: 0 is 100%. */
   zoomLevel?: number;
+  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
+  keystoreOrigins?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

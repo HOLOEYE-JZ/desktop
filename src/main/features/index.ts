@@ -18,6 +18,7 @@ import { dialogsFeature } from './dialogs';
 import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
+import { keystoreFeature } from './keystore';
 
 export interface FeatureContext {
   mode: Mode;
@@ -43,7 +44,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [contextMenuFeature, windowInputFeature, dialogsFeature];
+export const FEATURES: Feature[] = [contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

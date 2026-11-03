@@ -1,0 +1,45 @@
+[package]
+name = "bulwark_native"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "The few things the Bulwark desktop app can't do from JavaScript. See README.md."
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No default features: only Node-API as old as Electron's oldest, no tokio.
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+
+[target.'cfg(windows)'.dependencies]
+windows-future = "0.3"
+windows-core = "0.62"
+windows = { version = "0.62", features = [
+  "Foundation",
+  "Security_Credentials_UI",
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_System_WinRT",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# macos-12 for SecTrust::chain. Electron 45 needs macOS 12 anyway. The two crates after
+# it are what security-framework itself is built on, for the calls it doesn't wrap.
+security-framework = { version = "3", features = ["macos-12"] }
+security-framework-sys = "2"
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+
+[build-dependencies]
+napi-build = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
