@@ -5,6 +5,7 @@
  */
 
 import { app } from 'electron';
+import { LABEL_KEY } from './label-keys';
 
 const en = {
   unsavedTitle: 'A draft could not be saved',
@@ -390,9 +391,6 @@ const de: typeof en = {
 
 let uiLanguage: string | null = null;
 let labels: Partial<typeof en> = {};
-
-/** Plain text keys the webmail may translate, so the menus speak all its languages. */
-const LABEL_KEY = /^(menu|context|leave|stay|closeAnyway|closeNow|unsaved|unsent|update)/;
 
 /** Keeps what fits: a known key with text, of a sane length, and no function replaced. */
 export function cleanLabels(raw: unknown): Record<string, string> {

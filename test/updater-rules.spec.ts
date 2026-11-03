@@ -3,7 +3,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
-import { cleanLabels } from '../src/main/strings';
+import { LABEL_KEY } from '../src/main/label-keys';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -186,7 +186,8 @@ test.describe('what the policy reader passes on', () => {
 
 test.describe('nothing published yet', () => {
   test('the webmail can translate what the updater says', () => {
-    expect(cleanLabels({ updateReadyTitle: 'x', menuRestartToUpdate: 'y', updateNotAKey: 'z', sandboxTitle: 'w' })).toEqual({ updateReadyTitle: 'x', menuRestartToUpdate: 'y' });
+    for (const key of ['menuRestartToUpdate', 'updateReadyTitle', 'updateOlderDetail']) expect(LABEL_KEY.test(key), key).toBe(true);
+    expect(LABEL_KEY.test('sandboxTitle')).toBe(false);
   });
 
   test('is what electron-updater says when a channel has no release, and nothing else', () => {
