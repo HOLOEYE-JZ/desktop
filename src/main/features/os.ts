@@ -11,6 +11,7 @@ import { CHANNEL, type OsSummary, type OsTrayMessage } from '../../shared/bridge
 import { strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 import { setupDefaultApp } from './os-default-app';
+import { setupEdit } from './os-edit';
 import { setupFiles } from './os-files';
 import { OsHub } from './os-hub';
 import { setupLaunch } from './os-launch';
@@ -90,6 +91,7 @@ function setup(ctx: FeatureContext): void {
   const launch = setupLaunch(hub);
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));
+  const edit = setupEdit(hub);
   hub.on('cleared', files.clear);
   hub.on('locked', (locked) => {
     if (locked && hub.lockIsReal) files.clear();
@@ -137,6 +139,7 @@ function setup(ctx: FeatureContext): void {
       launch,
       defaultApp,
       files,
+      edit,
       power,
       applyLoginItem,
       readLoginItem,

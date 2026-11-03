@@ -11,7 +11,13 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { editFileName } from '../shared/edit-rules';
 import {
+  type EditBeginResult,
+  type EditFile,
+  type EditOpenResult,
+  type EditReadResult,
+  type EditSession,
   BRIDGE_VERSION,
   CHANNEL,
   PRELOAD_ARG,
@@ -193,6 +199,21 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       copyFiles: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osCopyFiles, files),
       defaultAppStatus: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppStatus),
       openDefaultAppSettings: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppOpen),
+    },
+    edit: {
+      /** Whether this file may go through Edit at all: the same rule main enforces. */
+      canEdit: (name: string) => editFileName(name) !== null,
+      begin: (key: string): Promise<EditBeginResult> => ipcRenderer.invoke(CHANNEL.editBegin, key),
+      open: (ticket: string, file: EditFile): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editOpen, ticket, file),
+      reopen: (ticket: string, id: string): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editReopen, ticket, id),
+      list: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editList),
+      read: (id: string): Promise<EditReadResult> => ipcRenderer.invoke(CHANNEL.editRead, id),
+      taken: (id: string, hash: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editTaken, id, hash),
+      discard: (id: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editDiscard, id),
+      clear: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.editClear, account),
+      setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
+      claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
+      onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
     },
     lifecycle: {
       /**

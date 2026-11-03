@@ -292,6 +292,45 @@ export type CrashSendResult =
   | { ok: true }
   | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
 
+/** An attachment copied to a private folder and open in its default program. */
+export interface EditSession {
+  id: string;
+  name: string;
+  type: string;
+  /** The local account it belongs to. */
+  account: string;
+  /** What the page said it came from. Main only keeps it. */
+  source: string;
+  /** Saved differently from what the page last took. */
+  changed: boolean;
+  /** Goes up with each save. */
+  version: number;
+  /** A composer has it and offers the update itself. */
+  claimed: boolean;
+}
+
+export interface EditFile {
+  /** One session per key: Edit on the same attachment opens the same file. */
+  key: string;
+  name: string;
+  type: string;
+  data: Uint8Array;
+  account: string;
+  source: string;
+}
+
+export type EditBeginResult =
+  | { ok: true; ticket: string; /** A session for that key exists: reopen this one. */ open?: string }
+  | { ok: false; reason: 'locked' | 'gesture' };
+
+export type EditOpenResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: 'locked' | 'ticket' | 'type' | 'too-large' | 'full' | 'no-app' | 'failed' };
+
+export type EditReadResult =
+  | { ok: true; name: string; type: string; data: Uint8Array; hash: string }
+  | { ok: false; reason: 'locked' | 'missing' | 'busy' | 'too-large' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -351,6 +390,17 @@ export const CHANNEL = {
   osCopyFiles: 'bulwark:os.copyFiles',
   osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
   osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
+  editBegin: 'bulwark:edit.begin',
+  editOpen: 'bulwark:edit.open',
+  editReopen: 'bulwark:edit.reopen',
+  editList: 'bulwark:edit.list',
+  editRead: 'bulwark:edit.read',
+  editTaken: 'bulwark:edit.taken',
+  editDiscard: 'bulwark:edit.discard',
+  editClear: 'bulwark:edit.clear',
+  editSetSource: 'bulwark:edit.setSource',
+  editClaim: 'bulwark:edit.claim',
+  editChanged: 'bulwark:edit.changed',
   welcomeChoose: 'bulwark:welcome.choose',
   updatesState: 'bulwark:updates.state',
   updatesCheck: 'bulwark:updates.check',

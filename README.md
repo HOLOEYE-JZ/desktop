@@ -38,6 +38,8 @@ Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu sh
 
 A file dragged or copied out of the app is a temporary copy in a private folder (`%LOCALAPPDATA%\Bulwark\os-files`, or under userData elsewhere), gone within minutes, at sign-out and at quit. Save it somewhere before working on it: a program opened straight on that copy loses its edits when the copy goes. Decrypted S/MIME and PGP attachments never go through that folder.
 
+"Edit" on an attachment is a different thing (`features/os-edit.ts`): a copy in a private folder of its own (`%LOCALAPPDATA%\Bulwark\edit-files`, or under userData elsewhere), only readable by this user, opened in its default program and watched, so a save there can be attached to a reply or update the draft it came from. Saved edits survive closing that program and quitting the app, and are offered again at the next start. Unchanged copies go after a day, changed ones when the user decides, at sign-out, at a wipe or after 30 days. `shared/edit-rules.ts` lists the file types that stay out of it. The app lock stops new files opening and hides what was saved until the unlock, but it can't close another program: a file already open stays open there, and stays on disk until the user is done with it.
+
 ## Packaging
 
 ```sh
