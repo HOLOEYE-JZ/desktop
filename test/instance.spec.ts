@@ -45,7 +45,17 @@ test('it shows the instance, in a session of its own, with no embedded server', 
 test('the bridge is there on the instance, but without the standalone parts', async () => {
   expect(await bridgeType()).toBe('object');
   const keys = await page.evaluate(() => Object.keys((window as unknown as { bulwarkDesktop: object }).bulwarkDesktop).sort());
-  expect(keys).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'version', 'windows']);
+  // `keystore` is only there where the native helper loaded: the next test.
+  expect(keys.filter((key) => key !== 'keystore')).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'version', 'windows']);
+});
+
+test('the OS keystore is on the instance too, as narrow as in standalone', async () => {
+  test.skip(process.platform !== 'win32', 'the helper is built on Windows here');
+  const keystore = await page.evaluate(() => {
+    const member = (window as unknown as { bulwarkDesktop: { keystore?: object } }).bulwarkDesktop.keystore;
+    return member ? Object.keys(member).sort() : null;
+  });
+  expect(keystore).toEqual(['agree', 'decrypt', 'list', 'sign']);
 });
 
 test('the same preload on a foreign origin exposes no bridge', async () => {

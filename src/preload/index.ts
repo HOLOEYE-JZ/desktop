@@ -15,6 +15,10 @@ import {
   BRIDGE_VERSION,
   CHANNEL,
   PRELOAD_ARG,
+  type KeystoreDecryptScheme,
+  type KeystoreCertificate,
+  type KeystoreResult,
+  type KeystoreSignScheme,
   type MenuState,
   type SessionUrls,
   type SystemTheme,
@@ -31,6 +35,13 @@ function subscribe<T>(channel: string, listener: (value: T) => void): () => void
   const wrapped = (_event: unknown, value: T) => listener(value);
   ipcRenderer.on(channel, wrapped);
   return () => ipcRenderer.removeListener(channel, wrapped);
+}
+
+/** Only the code gets through contextBridge, which is all a plugin's frame can see anyway. */
+async function keystoreAnswer<T>(call: Promise<KeystoreResult<T>>): Promise<T> {
+  const result = await call;
+  if (!result.ok) throw new Error(result.code);
+  return result.value;
 }
 
 const allowedOrigin = argument(PRELOAD_ARG.allowedOrigin);
@@ -100,5 +111,21 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       }
     : {};
 
-  contextBridge.exposeInMainWorld('bulwarkDesktop', { ...common, ...standalone });
+  // Only where the helper loaded and the OS has a keystore. Stays this narrow: see
+  // src/main/features/keystore.ts.
+  const keystore = argument(PRELOAD_ARG.keystore) === '1'
+    ? {
+        keystore: {
+          list: () => keystoreAnswer<KeystoreCertificate[]>(ipcRenderer.invoke(CHANNEL.keystoreList)),
+          sign: (id: string, digest: Uint8Array, scheme: KeystoreSignScheme) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreSign, id, digest, scheme)),
+          decrypt: (id: string, data: Uint8Array, scheme: KeystoreDecryptScheme) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme)),
+          agree: (id: string, peerPublicKey: Uint8Array) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
+        },
+      }
+    : {};
+
+  contextBridge.exposeInMainWorld('bulwarkDesktop', { ...common, ...standalone, ...keystore });
 }
