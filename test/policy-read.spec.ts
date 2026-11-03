@@ -425,6 +425,9 @@ test.describe('the test root', () => {
     expect(withHooks).toContain('BulwarkTest');
     expect(production).not.toContain('--bulwark-test-policy');
     expect(production).not.toContain('BulwarkTest');
+    // Nothing in a real build can move the quick compose keys, or hold none.
+    expect(withHooks).toContain('--bulwark-test-quick-compose-default=');
+    expect(production).not.toContain('--bulwark-test-quick-compose-default=');
     // Dev switches hang on the build, not on the exe's name.
     for (const name of ['bulwark-user-data', 'bulwark-server-dir', 'bulwark-test-wrong-pin']) expect(production).not.toContain(name);
     expect(withHooks).toContain('bulwark-user-data');

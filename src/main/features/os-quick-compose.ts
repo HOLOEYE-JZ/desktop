@@ -28,16 +28,16 @@ const WINDOW_KEY = 'quick-compose';
 /** Unlocking or signing in later than this is about something else by now. */
 const WAIT_LIMIT_MS = 2 * 60_000;
 
-const TEST_DEFAULT_SWITCH = '--bulwark-test-quick-compose-default=';
-
 /**
  * A test run mustn't take the real keys from whoever is at this computer: it holds what
  * it names, or nothing.
  */
 function builtInShortcut(): string | null {
-  if (!__BULWARK_TEST_BUILD__) return quickComposeBuiltIn(process.platform, app.getSystemLocale());
-  const named = process.argv.find((arg) => arg.startsWith(TEST_DEFAULT_SWITCH));
-  return named ? named.slice(TEST_DEFAULT_SWITCH.length) : null;
+  if (__BULWARK_TEST_BUILD__) {
+    const named = process.argv.find((arg) => arg.startsWith('--bulwark-test-quick-compose-default='));
+    return named ? named.slice(named.indexOf('=') + 1) : null;
+  }
+  return quickComposeBuiltIn(process.platform, app.getSystemLocale());
 }
 
 export interface QuickComposeHandle {

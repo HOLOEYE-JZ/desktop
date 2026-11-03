@@ -28,12 +28,18 @@ const os = (page: Page, call: string) => page.evaluate(`window.bulwarkDesktop.os
 const quickStatus = async (page: Page) => (await os(page, 'getStatus()') as { quickCompose: Status }).quickCompose;
 
 const composers = (app: ElectronApplication): Promise<Seen[]> =>
-  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
-    .filter((w) => w.webContents.getURL().includes('/popout/compose'))
-    .map((w) => ({ id: w.id, visible: w.isVisible(), focused: w.isFocused(), width: w.getBounds().width, height: w.getBounds().height })));
+  app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().flatMap((w) => {
+    // A window on its way out can throw on any of these, before it says it's destroyed.
+    try {
+      if (!w.webContents.getURL().includes('/popout/compose')) return [];
+      return [{ id: w.id, visible: w.isVisible(), focused: w.isFocused(), width: w.getBounds().width, height: w.getBounds().height }];
+    } catch {
+      return [];
+    }
+  }));
 
 const mainWindowVisible = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
-  .filter((w) => !w.webContents.getURL().includes('/popout/'))
+  .filter((w) => !w.isDestroyed() && !w.webContents.getURL().includes('/popout/'))
   .some((w) => w.isVisible()));
 
 const hideMain = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => {
@@ -42,7 +48,7 @@ const hideMain = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) 
 
 const closeComposers = async (app: ElectronApplication) => {
   await app.evaluate(({ BrowserWindow }) => {
-    for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().includes('/popout/compose')) window.close();
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed() && window.webContents.getURL().includes('/popout/compose')) window.close();
   });
   await expect.poll(() => composers(app)).toEqual([]);
 };
