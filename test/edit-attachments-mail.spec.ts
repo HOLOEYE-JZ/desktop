@@ -8,7 +8,7 @@ import { destroyMessages, jmap, lastMenu, mailboxIdOf, menuCount, pageWith, pick
  * Edit on a real message, on a real server, in the webmail build of this branch. Nothing
  * starts on the desktop: `shell.openPath` only records, and the test saves the file itself.
  *
- *   BULWARK_TEST_WEBMAIL=<dir> vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway accounts/password" -- npx playwright test test/edit-attachments-mail.spec.ts
+ *   BULWARK_TEST_WEBMAIL=<dir> IT_ENT_PASSWORD=<the test account's password> npx playwright test test/edit-attachments-mail.spec.ts
  */
 
 const SENDER = 'ent-carol@example.org';
