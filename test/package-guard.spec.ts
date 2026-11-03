@@ -256,6 +256,10 @@ test.describe('what sits next to the server', () => {
       rmSync(tree, { recursive: true, force: true });
       expect(findResourceProblems(resources)).toEqual([]);
       rmSync(path.join(resources, 'app.asar'));
+      // Electron's own license files sit in Resources on macOS, and in no other way next to app.asar.
+      writeFileSync(path.join(resources, 'LICENSE.electron.txt'), 'x');
+      writeFileSync(path.join(resources, 'LICENSES.chromium.html'), 'x');
+      expect(findResourceProblems(resources)).toEqual([]);
       writeFileSync(path.join(resources, 'something.txt'), 'x');
       expect(findResourceProblems(resources)).toEqual(['resources/something.txt']);
     } finally {

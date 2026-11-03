@@ -137,7 +137,7 @@ export function asarFiles(file) {
  */
 export function findResourceProblems(resources) {
   const problems = [];
-  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|.*\.lproj|.*\.icns|.*\.nib|.*\.plist)$/;
+  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|LICENSE\.electron\.txt|LICENSES\.chromium\.html|.*\.lproj|.*\.icns|.*\.nib|.*\.plist)$/;
   for (const name of readdirSync(resources)) if (!known.test(name)) problems.push(`resources/${name}`);
   const asar = path.join(resources, 'app.asar');
   if (existsSync(asar)) {
