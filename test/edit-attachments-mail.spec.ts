@@ -149,12 +149,12 @@ for (const server of STALWARTS) {
       await expect(composer.getByText('notes.txt')).toHaveCount(1);
 
       // Edit from the chip goes back to the same file, with its edits.
-      await composer.locator('[data-testid="composer-edit"]').first().click();
+      await composer.locator('[data-testid="composer-edit"]:visible').first().click();
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(2);
       expect((await openedFiles(app))[1]).toBe(file);
       expect(readFileSync(file, 'utf8')).toBe(secondEdit);
 
-      await composer.locator('[data-testid="composer-send"]').first().click();
+      await composer.locator('[data-testid="composer-send"]:visible').first().click();
       await expect.poll(() => sentAttachmentSize(server.url, subject), { timeout: 90_000, intervals: [2000] }).toBe(secondEdit.length);
       cleanup.push(...await sentIds(server.url, subject));
 
@@ -182,7 +182,7 @@ for (const server of STALWARTS) {
       const notTaken = 'Saved after that, and never attached to anything.';
       writeFileSync(file, notTaken);
       await expect(composer.locator('[data-testid="composer-edit-update"]')).toBeVisible({ timeout: 30_000 });
-      await composer.locator('[data-testid="composer-send"]').first().click();
+      await composer.locator('[data-testid="composer-send"]:visible').first().click();
       // fakeOsIntegration answers with the first button: Send anyway.
       await expect.poll(() => sentAttachmentSize(server.url, subject), { timeout: 90_000, intervals: [2000] }).toBe(taken.length);
       cleanup.push(...await sentIds(server.url, subject));
@@ -215,7 +215,7 @@ for (const server of STALWARTS) {
       await expect(offer).toHaveCount(0, { timeout: 30_000 });
 
       // Closed with Save (the first button).
-      await composer.locator('[data-testid="composer-close"]').first().click();
+      await composer.locator('[data-testid="composer-close"]:visible').first().click();
       await expect(composer).toHaveCount(0, { timeout: 30_000 });
 
       writeFileSync(file, 'A second version, saved with the composer closed.');
@@ -230,12 +230,16 @@ for (const server of STALWARTS) {
       await expect(update).toHaveCount(0, { timeout: 30_000 });
       await expect(window.getByText('notes.txt')).toHaveCount(1);
 
-      // Discarded: the copy goes with the draft.
-      await window.locator('[data-testid="composer-close"]').first().click().catch(() => {});
+      // Discarded (the first button): the copy goes with the draft.
+      await window.getByRole('button', { name: /^Discard/ }).first().click();
+      await expect.poll(() => existsSync(file), { timeout: 30_000 }).toBe(false);
       await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 30_000 }).toBe(1);
-      const drafts = await mailboxIdOf(server.url, ACCOUNT, ENT_PASSWORD, 'drafts');
-      const [[, query]] = await jmap(server.url, ACCOUNT, ENT_PASSWORD, [['Email/query', { filter: { inMailbox: drafts, subject }, limit: 10 }, 'q']]);
-      cleanup.push(...(query as { ids: string[] }).ids);
+      await expect(offer).toHaveCount(0);
+      await expect.poll(async () => {
+        const drafts = await mailboxIdOf(server.url, ACCOUNT, ENT_PASSWORD, 'drafts');
+        const [[, query]] = await jmap(server.url, ACCOUNT, ENT_PASSWORD, [['Email/query', { filter: { inMailbox: drafts, subject }, limit: 10 }, 'q']]);
+        return (query as { ids: string[] }).ids.length;
+      }, { timeout: 30_000 }).toBe(0);
     });
 
     test('a file type that runs something gets no Edit', async () => {
@@ -275,10 +279,10 @@ for (const server of STALWARTS) {
     });
 
     test('sign-out takes the copies', async () => {
-      await page.reload();
-      await expectMailShown(page);
       const subject = `Edit out ${server.label} ${RUN}`;
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
+      await page.reload();
+      await expectMailShown(page);
       await openMessage(page, subject);
       const seen = (await openedFiles(app)).length;
       await rightClickAttachment(app, page, 'Edit');
