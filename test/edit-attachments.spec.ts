@@ -259,6 +259,14 @@ test.describe('in the app', () => {
     expect((await list(page))[0]).toMatchObject({ changed: false, version: 0 });
   });
 
+  test('settling sees a save the watcher is still waiting on', async () => {
+    const { app, page } = started;
+    const { id } = await startEdit(app);
+    writeFileSync(fileIn(profile, id!), 'saved a moment ago');
+    const sessions = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { edit: { settle: () => Promise<SessionView[]> } } }).bulwarkDesktop.edit.settle());
+    expect(sessions[0]).toMatchObject({ id, changed: true, version: 1 });
+  });
+
   test('Edit on the same attachment again opens the same file and keeps its edits', async () => {
     const { app, page } = started;
     const { id } = await startEdit(app);

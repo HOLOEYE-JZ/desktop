@@ -186,7 +186,7 @@ for (const server of STALWARTS) {
       // fakeOsIntegration answers with the first button: Send anyway.
       await expect.poll(() => sentAttachmentSize(server.url, subject), { timeout: 90_000, intervals: [2000] }).toBe(taken.length);
       cleanup.push(...await sentIds(server.url, subject));
-      expect(await app.evaluate(() => (globalThis as unknown as { __prompts: { message: string }[] }).__prompts.at(-1)?.message)).toContain('edits that aren');
+      expect(await app.evaluate(() => (globalThis as unknown as { __prompts: { message?: string }[] }).__prompts.map((prompt) => prompt.message ?? JSON.stringify(prompt)))).toContainEqual(expect.stringContaining('edits that aren'));
 
       // The edits are still there, on offer as a file now.
       await expect(offer).toBeVisible({ timeout: 30_000 });

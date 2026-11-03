@@ -211,6 +211,7 @@ export function setupEdit(hub: OsHub): EditHandle {
     source: record.source,
     changed: record.currentHash !== record.baseHash,
     version: record.version,
+    hash: record.currentHash,
     claimed: (claims.get(record.id)?.size ?? 0) > 0,
   });
 
@@ -534,6 +535,18 @@ export function setupEdit(hub: OsHub): EditHandle {
     }
   };
 
+  /** A save a moment ago, still in the watcher's wait. Only a changed file costs any time here. */
+  const settle = async (): Promise<EditSession[]> => {
+    const busy = () => [...sessions.values()].some((session) => session.checking);
+    const quiet = async () => {
+      for (let tries = 0; busy() && tries < 60; tries += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+    };
+    await quiet();
+    await Promise.all([...sessions.values()].map(check));
+    await quiet();
+    return list();
+  };
+
   const taken = async (id: unknown, hash: unknown) => {
     const session = typeof id === 'string' ? sessions.get(id) : undefined;
     if (!session || typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash)) return;
@@ -595,6 +608,7 @@ export function setupEdit(hub: OsHub): EditHandle {
   ctx.handle(CHANNEL.editOpen, (event, _window, ticket, file) => open(event.sender, ticket, file));
   ctx.handle(CHANNEL.editReopen, (event, _window, ticket, id) => reopen(event.sender, ticket, id));
   ctx.handle(CHANNEL.editList, () => list());
+  ctx.handle(CHANNEL.editSettle, () => settle());
   ctx.handle(CHANNEL.editRead, (_event, _window, id) => read(id));
   ctx.handle(CHANNEL.editTaken, (_event, _window, id, hash) => taken(id, hash));
   ctx.handle(CHANNEL.editDiscard, (_event, _window, id) => {

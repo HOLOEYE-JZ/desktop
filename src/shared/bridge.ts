@@ -377,6 +377,8 @@ export interface EditSession {
   changed: boolean;
   /** Goes up with each save. */
   version: number;
+  /** What the file holds now: a chip holding this version has nothing to update. */
+  hash: string;
   /** A composer has it and offers the update itself. */
   claimed: boolean;
 }
@@ -466,6 +468,7 @@ export const CHANNEL = {
   editOpen: 'bulwark:edit.open',
   editReopen: 'bulwark:edit.reopen',
   editList: 'bulwark:edit.list',
+  editSettle: 'bulwark:edit.settle',
   editRead: 'bulwark:edit.read',
   editTaken: 'bulwark:edit.taken',
   editDiscard: 'bulwark:edit.discard',
