@@ -20,6 +20,9 @@
     "dist:mac": "node build.mjs && electron-builder --mac --publish never",
     "dist:linux": "node build.mjs && electron-builder --linux --publish never"
   },
+  "config": {
+    "webmailTag": "v1.21.0"
+  },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@types/node": "^24.19.2",
