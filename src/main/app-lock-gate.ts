@@ -25,7 +25,7 @@ function isProof(proof: unknown): proof is Uint8Array {
   return proof instanceof Uint8Array && proof.length === 32;
 }
 
-export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [boolean] }> {
+export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [boolean]; requested: [] }> {
   private file: string | null = null;
   private proofHash: string | null = null;
   private lockedNow = true;
@@ -69,6 +69,13 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   /** Only ever more locked, so anyone may ask. */
   lock(): void {
     this.set(true);
+  }
+
+  /** The screen locked, or "Lock now" in the menu or tray: the pages save and go to the lock screen. */
+  requestLock(): void {
+    if (!this.enrolled) return;
+    this.set(true);
+    this.emit('requested');
   }
 
   matches(proof: unknown): boolean {

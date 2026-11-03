@@ -100,7 +100,7 @@ function setup(ctx: FeatureContext): void {
     id: 'file.lockNow',
     label: strings().menuLockNow,
     enabled: appLockGate.enrolled && !appLockGate.locked,
-    click: () => askToLock(),
+    click: () => appLockGate.requestLock(),
   }]);
 
   appLockGate.on('locked', (locked) => {
@@ -110,14 +110,10 @@ function setup(ctx: FeatureContext): void {
 
   appLockGate.on('enrolled', () => ctx.menu.rebuild());
 
-  /** Tells the pages, which save what's open and go to the lock screen. */
-  const askToLock = () => {
-    if (!appLockGate.enrolled) return;
-    appLockGate.lock();
-    windows.broadcast(CHANNEL.appLockRequest, null);
-  };
+  // Tells the pages, which save what's open and go to the lock screen.
+  appLockGate.on('requested', () => windows.broadcast(CHANNEL.appLockRequest, null));
 
-  powerMonitor.on('lock-screen', askToLock);
+  powerMonitor.on('lock-screen', () => appLockGate.requestLock());
   // Toasts, the jump list and window titles outlive this run, or come up before the next page does.
   app.on('before-quit', () => {
     if (appLockGate.enrolled) appLockGate.lock();
