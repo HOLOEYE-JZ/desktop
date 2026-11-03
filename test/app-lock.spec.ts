@@ -103,6 +103,10 @@ async function run(verify: 'yes' | 'no', body: (app: ElectronApplication, page: 
   process.env.BULWARK_TEST_OS_VERIFY = verify;
   const launched = await launchStandalone(profile);
   try {
+    // A page with no app in it: the webmail takes the page's two calls in its first render.
+    await launched.page.goto(new URL('/api/health', launched.page.url()).href);
+    // What the webmail's OS code says as it starts: main counts as locked until then.
+    await launched.page.evaluate(() => (window as unknown as { bulwarkDesktop: { os: { setLocked(locked: boolean): void } } }).bulwarkDesktop.os.setLocked(false));
     await body(launched.app, launched.page);
   } finally {
     delete process.env.BULWARK_TEST_OS_VERIFY;
@@ -340,6 +344,8 @@ test.describe('through the real preload and IPC', () => {
         return { folder: existsSync(join(electronApp.getPath('userData'), 'app-lock')), locked: gate.locked, enrolled: gate.enrolled };
       });
       expect(after).toEqual({ folder: false, locked: false, enrolled: false });
+      // A real wipe restarts the app. Its windows are on a blank page now, with nothing to answer a quit.
+      await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined);
     });
   });
 
