@@ -2,7 +2,9 @@
  * Reads OS policies into layers of raw values. No Electron here, so tests can load
  * it: `features/policies.ts` resolves the layers and acts on them.
  *
- * Windows reads with `reg.exe`. @vscode/policy-watcher reads a key from HKLM and
+ * Windows reads with `reg.exe`, in a console set to UTF-8: left alone it writes in the
+ * OEM code page and drops what doesn't fit, so https://müller.de would come out as a
+ * different address. @vscode/policy-watcher reads a key from HKLM and
  * then HKCU and hands back one merged value: it can't say which hive a value came
  * from, and merging by value would mix two lists entry by entry where the machine's
  * list must win as a whole. It only answers asynchronously too, while the auth
@@ -88,14 +90,27 @@ export function regPath(exists: (file: string) => boolean = existsSync, env: Nod
   return null;
 }
 
+/** Only keys we name ourselves go on this command line: nothing a policy value could reach. */
+const SAFE_REG_ARG = /^[A-Za-z0-9_\\ ./-]+$/;
+
+export function regCommandLine(file: string, args: readonly string[]): string[] {
+  const quoted = args.map((arg) => {
+    if (!SAFE_REG_ARG.test(arg)) throw new Error('reg: refused argument');
+    return arg.includes(' ') ? `"${arg}"` : arg;
+  });
+  // /d: no AutoRun commands from the user's own registry. /s: keep the outer quotes' meaning plain.
+  return ['/d', '/s', '/c', `"chcp 65001>nul & "${file}" ${quoted.join(' ')}"`];
+}
+
 export const runRegExe: RunReg = (args) =>
   new Promise((resolve) => {
     const file = regPath();
-    if (!file) {
+    const cmd = file ? path.win32.join(path.win32.dirname(file), 'cmd.exe') : null;
+    if (!file || !cmd) {
       resolve({ code: -1, stdout: '' });
       return;
     }
-    execFile(file, args, { windowsHide: true, encoding: 'utf8', maxBuffer: REG_MAX_BUFFER, timeout: REG_TIMEOUT_MS }, (error, stdout) => {
+    execFile(cmd, regCommandLine(file, args), { windowsHide: true, windowsVerbatimArguments: true, encoding: 'utf8', maxBuffer: REG_MAX_BUFFER, timeout: REG_TIMEOUT_MS }, (error, stdout) => {
       if (!error) {
         resolve({ code: 0, stdout });
         return;
@@ -104,6 +119,31 @@ export const runRegExe: RunReg = (args) =>
       resolve({ code, stdout: '' });
     });
   });
+
+/** False on a machine with Windows elsewhere than C:, where the path comes from the environment. */
+export function regPathIsStandard(exists: (file: string) => boolean = existsSync): boolean {
+  return exists('C:\\Windows\\System32\\reg.exe');
+}
+
+/**
+ * Whether reg.exe's answer agrees with the native watcher's. On a machine where reg.exe's
+ * path comes from the environment, a planted one could answer "no policies". The watcher
+ * has no such path. It merges machine over user and reads narrow strings, so only ASCII
+ * single values can be compared: that's enough to catch a value left out or changed.
+ */
+export function registryAgrees(fromReg: PolicyLayers, fromWatcher: PolicyLayers): boolean {
+  const same = (reg: PolicyLayer, user: PolicyLayer, watcher: PolicyLayer) =>
+    SCALARS.every((key) => {
+      const seen = watcher[key];
+      if (typeof seen === 'string' && /[^\x20-\x7e]/.test(seen)) return true;
+      const read = reg[key] ?? user[key];
+      return read === seen;
+    });
+  return (
+    same(fromReg.forcedMachine, fromReg.forcedUser, fromWatcher.forcedMachine) &&
+    same(fromReg.recommendedMachine, fromReg.recommendedUser, fromWatcher.recommendedMachine)
+  );
+}
 
 type RegValues = Map<string, unknown>;
 type RegTree = Map<string, RegValues>;
@@ -357,45 +397,76 @@ export function readPolicyFile(file: string, fs: LinuxFs): PolicyReadResult {
   }
 }
 
-/** What's needed of Electron's systemPreferences, and of the native helper. */
+/** What's needed of Electron's systemPreferences. */
 export interface MacPreferences {
   getUserDefault(key: string, type: 'string' | 'array' | 'dictionary'): unknown;
 }
 
-/**
- * macOS gives no way to read "absent": getUserDefault answers '' or [] for that,
- * and asking for 'boolean' answers false. So everything single is read as a string
- * (NSUserDefaults turns numbers and booleans into "1" and "0") and '' means unset,
- * which is why a shortcut is turned off there with the word `off`.
- *
- * `isForced` is objectIsForcedForKey from the native helper. Without the helper a
- * value counts as forced: a profile's value always beats the user's own defaults on
- * the Mac, so this can't unlock anything, and what can go wrong is a user's own
- * `defaults write` showing as locked.
- */
-export function readMacPreferences(prefs: MacPreferences, isForced: ((key: string) => boolean) | null): PolicyLayers {
-  const forced: PolicyLayer = {};
-  const recommended: PolicyLayer = {};
-  const read = (key: PolicyKey, from: (name: string, type: 'string' | 'array') => unknown): unknown => {
-    if (POLICY_SCHEMA[key].type === 'list') {
-      const items = from(key, 'array');
-      return Array.isArray(items) && items.length ? items : undefined;
-    }
-    const text = from(key, 'string');
-    return typeof text === 'string' && text !== '' ? text : undefined;
+/** A file only root can change, or nothing we'd trust. Same rule as the Linux file. */
+export function managedPlistProblem(file: FileFacts): 'plist_unsafe' | null {
+  if (file.isSymbolicLink() || !file.isFile() || file.uid !== 0 || (file.mode & 0o022) !== 0) return 'plist_unsafe';
+  return null;
+}
+
+/** The profile's values as MDM wrote them: `/Library/Managed Preferences/...`. */
+export function managedPlistPaths(bundleId: string, user: string): { machine: string; user: string } {
+  return {
+    machine: `/Library/Managed Preferences/${bundleId}.plist`,
+    user: `/Library/Managed Preferences/${user}/${bundleId}.plist`,
   };
+}
+
+export type ReadManagedPlist = (file: string) => { ok: true; values: Record<string, unknown> | null } | { ok: false; reason: string };
+
+function pickKnown(source: unknown): PolicyLayer {
+  const layer: PolicyLayer = {};
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) return layer;
   for (const key of POLICY_KEYS) {
-    const raw = read(key, (name, type) => prefs.getUserDefault(name, type));
-    if (raw === undefined) continue;
-    if (!isForced || isForced(key)) forced[key] = raw;
-    else recommended[key] = raw;
+    if (Object.prototype.hasOwnProperty.call(source, key)) layer[key] = (source as Record<string, unknown>)[key];
   }
-  const dictionary = prefs.getUserDefault(POLICY_RECOMMENDED_SUBKEY, 'dictionary');
-  if (typeof dictionary === 'object' && dictionary !== null && !Array.isArray(dictionary)) {
-    for (const key of POLICY_KEYS) {
-      const value = (dictionary as Record<string, unknown>)[key];
-      if (value !== undefined && recommended[key] === undefined) recommended[key] = value;
+  return layer;
+}
+
+/**
+ * NSUserDefaults alone can't be trusted: `defaults write` puts anything there, with no
+ * way to tell. What counts as forced is what's in the root-owned managed files, plus what
+ * the native helper's objectIsForcedForKey vouches for. The rest of NSUserDefaults can
+ * only be a recommendation, and forced-only keys ignore those.
+ *
+ * macOS gives no way to read "absent" from NSUserDefaults: getUserDefault answers '' or
+ * [], and asking for 'boolean' answers false. So everything single is read as a string
+ * (numbers and booleans become "1" and "0") and '' means unset, which is why a shortcut
+ * is turned off there with the word `off`.
+ */
+export function readMacPolicies(
+  prefs: MacPreferences,
+  isForced: ((key: string) => boolean) | null,
+  paths: { machine: string; user: string },
+  readPlist: ReadManagedPlist,
+): PolicyReadResult {
+  const machine = readPlist(paths.machine);
+  if (!machine.ok) return machine;
+  const user = readPlist(paths.user);
+  if (!user.ok) return user;
+
+  const forcedMachine = pickKnown(machine.values);
+  const forcedUser = pickKnown(user.values);
+  const recommendedMachine = pickKnown(machine.values?.[POLICY_RECOMMENDED_SUBKEY]);
+  const recommendedUser = pickKnown(user.values?.[POLICY_RECOMMENDED_SUBKEY]);
+
+  for (const key of POLICY_KEYS) {
+    if (forcedMachine[key] !== undefined || forcedUser[key] !== undefined) continue;
+    let raw: unknown;
+    if (POLICY_SCHEMA[key].type === 'list') {
+      const items = prefs.getUserDefault(key, 'array');
+      raw = Array.isArray(items) && items.length ? items : undefined;
+    } else {
+      const text = prefs.getUserDefault(key, 'string');
+      raw = typeof text === 'string' && text !== '' ? text : undefined;
     }
+    if (raw === undefined) continue;
+    if (isForced?.(key)) forcedMachine[key] = raw;
+    else if (recommendedMachine[key] === undefined) recommendedUser[key] = raw;
   }
-  return { forcedMachine: forced, forcedUser: {}, recommendedMachine: recommended, recommendedUser: {} };
+  return { ok: true, layers: { forcedMachine, forcedUser, recommendedMachine, recommendedUser } };
 }

@@ -35,6 +35,10 @@ export interface ShellState {
   askConnection?: boolean;
   /** WipeOfflineData values already acted on, so each deletes once, across restarts. */
   policyWipes?: string[];
+  /** Every partition this profile has used: a wipe covers them all. */
+  partitions?: string[];
+  /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
+  offlineClearedForPolicy?: boolean;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

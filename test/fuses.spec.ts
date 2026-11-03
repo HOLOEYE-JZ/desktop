@@ -5,7 +5,7 @@ import { expect, test } from '@playwright/test';
 import { removeProfile, tempProfile } from './helpers';
 
 /**
- * Reads the hardening back from the built binary: `npm run pack:dir` first. No
+ * Reads the hardening back from the built binary: `npm run pack:test` first. No
  * dependency: the fuse wire is a sentinel in the executable, then a version byte,
  * a length byte, and one byte per fuse ('0' off, '1' on, 'r' removed).
  */
@@ -49,7 +49,7 @@ function allFiles(dir: string, found: string[] = []): string[] {
 }
 
 test.describe('the packaged app', () => {
-  test.skip(!existsSync(EXE), 'run `npm run pack:dir` first');
+  test.skip(!existsSync(EXE), 'run `npm run pack:test` first');
 
   test('fuses read back from the built binary', () => {
     const fuses = readFuses(EXE);

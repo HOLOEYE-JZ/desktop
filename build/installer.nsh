@@ -3,7 +3,10 @@
 ;   Bulwark-Setup.exe /S /INSTANCE_URL=https://mail.example.com /FORCE_INSTANCE=1 /UPDATE_CHANNEL=stable
 ;
 ; writes HKLM\SOFTWARE\Policies\Bulwark\Desktop, or \Recommended without
-; /FORCE_INSTANCE=1. electron-builder includes this file by itself.
+; /FORCE_INSTANCE=1, and takes the value out of the other one. electron-builder includes
+; this file by itself. /FORCE_INSTANCE=1 needs /INSTANCE_URL=: without it nothing is
+; written and the installer ends with exit code 87, since an install that looks forced
+; and isn't would be worse.
 ;
 ; The per-user install doesn't elevate, and only an administrator can write policies. So
 ; this has to run elevated. If it can't write, it says so and ends with exit code 5: the
@@ -61,6 +64,18 @@ scanNext:
   Goto scanNext
 done:
   StrCpy $R0 $R0 $R3
+  ; No quotes in a value: the app's check would refuse it, but it shouldn't get that far.
+  StrCpy $R5 ""
+  StrCpy $R3 0
+strip:
+  StrCpy $R4 $R0 1 $R3
+  StrCmp $R4 "" stripped
+  IntOp $R3 $R3 + 1
+  StrCmp $R4 '"' strip
+  StrCpy $R5 "$R5$R4"
+  Goto strip
+stripped:
+  StrCpy $R0 $R5
   ClearErrors
   Goto finish
 absent:
@@ -95,14 +110,36 @@ FunctionEnd
   Push "/FORCE_INSTANCE="
   Call bulwarkOption
   Pop $1
+  Push $4
   ${If} $1 == "1"
     StrCpy $2 "${BULWARK_POLICY_KEY}"
+    StrCpy $4 "${BULWARK_POLICY_KEY}\Recommended"
   ${Else}
     StrCpy $2 "${BULWARK_POLICY_KEY}\Recommended"
+    StrCpy $4 "${BULWARK_POLICY_KEY}"
+  ${EndIf}
+
+  StrCpy $3 ""
+  ${If} $1 == "1"
+    Push $0
+    Push "/INSTANCE_URL="
+    Call bulwarkOption
+    Pop $3
+    ${If} ${Errors}
+    ${OrIf} $3 == ""
+      StrCpy $3 "stop"
+    ${Else}
+      StrCpy $3 ""
+    ${EndIf}
   ${EndIf}
 
   SetRegView 64
   StrCpy $1 ""
+
+  ${If} $3 == "stop"
+    StrCpy $1 "unforced"
+    Goto bulwarkPoliciesDone
+  ${EndIf}
 
   Push $0
   Push "/INSTANCE_URL="
@@ -113,6 +150,8 @@ FunctionEnd
     WriteRegStr ${BULWARK_POLICY_HIVE} "$2" "InstanceUrl" "$3"
     ${If} ${Errors}
       StrCpy $1 "failed"
+    ${Else}
+      DeleteRegValue ${BULWARK_POLICY_HIVE} "$4" "InstanceUrl"
     ${EndIf}
   ${EndIf}
 
@@ -125,10 +164,18 @@ FunctionEnd
     WriteRegStr ${BULWARK_POLICY_HIVE} "$2" "UpdateChannel" "$3"
     ${If} ${Errors}
       StrCpy $1 "failed"
+    ${Else}
+      DeleteRegValue ${BULWARK_POLICY_HIVE} "$4" "UpdateChannel"
     ${EndIf}
   ${EndIf}
 
+bulwarkPoliciesDone:
   SetRegView lastused
+  Pop $4
+  ${If} $1 == "unforced"
+    SetErrorLevel 87
+    MessageBox MB_ICONEXCLAMATION|MB_OK "Bulwark was installed, but /FORCE_INSTANCE=1 needs /INSTANCE_URL=. No settings were written." /SD IDOK
+  ${EndIf}
   ${If} $1 == "failed"
     SetErrorLevel 5
     MessageBox MB_ICONEXCLAMATION|MB_OK "Bulwark was installed, but its settings could not be written. Run the installer as an administrator to set /INSTANCE_URL or /UPDATE_CHANNEL." /SD IDOK

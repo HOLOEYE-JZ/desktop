@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from 'node:http';
 import { createServer as createHttpsServer, type Server } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -127,6 +127,100 @@ test.describe('standalone', () => {
     expect(locked).toMatchObject({ value: false, locked: true, invalid: 'not_a_switch' });
     await expect(page.getByTestId('offline-forbidden')).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId('offline-forbidden').locator('[data-org-locked]')).toContainText('Set by your organisation');
+  });
+});
+
+/** Just enough JMAP for the webmail to sign in and show an inbox. Counts what it gets. */
+function fakeJmap(): { server: HttpServer; hits: () => number; origin: () => string } {
+  let count = 0;
+  const origin = () => `http://localhost:${(server.address() as AddressInfo).port}`;
+  const capabilities = { 'urn:ietf:params:jmap:core': { maxObjectsInGet: 500, maxObjectsInSet: 500, maxCallsInRequest: 16, maxSizeRequest: 10000000, maxSizeUpload: 10000000, maxConcurrentUpload: 4, maxConcurrentRequests: 4, collationAlgorithms: [] }, 'urn:ietf:params:jmap:mail': {}, 'urn:ietf:params:jmap:submission': {} };
+  const server = createHttpServer((req, res) => {
+    count += 1;
+    res.setHeader('content-type', 'application/json');
+    if (req.method === 'GET') {
+      res.end(JSON.stringify({
+        capabilities,
+        accounts: { a1: { name: ACCOUNT, isPersonal: true, isReadOnly: false, accountCapabilities: capabilities } },
+        primaryAccounts: { 'urn:ietf:params:jmap:mail': 'a1', 'urn:ietf:params:jmap:core': 'a1' },
+        username: ACCOUNT,
+        apiUrl: `${origin()}/jmap`,
+        downloadUrl: `${origin()}/d/{accountId}/{blobId}/{name}?accept={type}`,
+        uploadUrl: `${origin()}/u/{accountId}`,
+        eventSourceUrl: `${origin()}/e`,
+        state: 's1',
+      }));
+      return;
+    }
+    let body = '';
+    req.on('data', (chunk) => (body += chunk));
+    req.on('end', () => {
+      const { methodCalls = [] } = JSON.parse(body || '{}') as { methodCalls?: [string, unknown, string][] };
+      const methodResponses = methodCalls.map(([name, , id]) => {
+        if (name === 'Mailbox/get') {
+          return [name, { accountId: 'a1', state: 's1', notFound: [], list: [{ id: 'm1', name: 'Inbox', role: 'inbox', sortOrder: 1, totalEmails: 0, unreadEmails: 0, totalThreads: 0, unreadThreads: 0, myRights: { mayReadItems: true, mayAddItems: true, mayRemoveItems: true, maySetSeen: true, maySetKeywords: true, mayCreateChild: true, mayRename: true, mayDelete: true, maySubmit: true }, isSubscribed: true }] }, id];
+        }
+        if (name.endsWith('/query')) return [name, { accountId: 'a1', queryState: 'q1', canCalculateChanges: false, position: 0, ids: [], total: 0 }, id];
+        if (name.endsWith('/changes')) return [name, { accountId: 'a1', oldState: 's1', newState: 's1', hasMoreChanges: false, created: [], updated: [], destroyed: [] }, id];
+        return [name, { accountId: 'a1', state: 's1', notFound: [], list: [] }, id];
+      });
+      res.end(JSON.stringify({ methodResponses, sessionState: 's1' }));
+    });
+  });
+  return { server, hits: () => count, origin };
+}
+
+test.describe('an account on a server taken off the list', () => {
+  test('stops without signing out, keeping its data, and resumes with no sign-in when listed again', async () => {
+    const fake = fakeJmap();
+    await new Promise<void>((resolve) => fake.server.listen(0, '127.0.0.1', resolve));
+    const root = fresh();
+    setString(forced(root, 'AllowedJmapServers'), '1', fake.origin());
+    const { page, profile } = await start(root, { state: { mode: 'standalone' } });
+    try {
+      await signIn(page, fake.origin());
+      await expect.poll(() => fake.hits()).toBeGreaterThan(1);
+
+      const stored = () => page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        const files: string[] = [];
+        for await (const name of (root as unknown as { keys(): AsyncIterable<string> }).keys()) files.push(name);
+        const registry = JSON.parse(localStorage.getItem('account-registry') ?? '{}') as { state?: { accounts?: { id: string; serverUrl: string }[] } };
+        return { files: files.sort(), accounts: registry.state?.accounts?.map((account) => [account.id, account.serverUrl]) };
+      });
+      const before = await stored();
+      const cookies = () => page.context().cookies(APP_ORIGIN).then((list) => list.map((cookie) => cookie.name).sort());
+      const cookiesBefore = await cookies();
+
+      // Off the list.
+      setString(forced(root, 'AllowedJmapServers'), '1', 'https://other.example');
+      await page.waitForURL(/\/login/, { timeout: 30_000 });
+      await waitForLogin(page);
+      await expect(page.getByTestId('desktop-policy-notice')).toContainText("doesn't allow this server");
+      await page.waitForTimeout(2000);
+      const quiet = fake.hits();
+      await page.waitForTimeout(6000);
+      expect(fake.hits()).toBe(quiet);
+
+      // Nothing is gone: the account, its session and its local data wait.
+      const during = await stored();
+      expect(before.accounts).toHaveLength(1);
+      expect(during.accounts).toEqual(before.accounts);
+      expect(during.files).toEqual(before.files);
+      expect(await cookies()).toEqual(cookiesBefore);
+      expect(JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).approvedServers.map((server: { origin: string }) => server.origin)).toEqual([fake.origin()]);
+
+      // The route refuses it too, keeping the cookie.
+      const restore = await page.evaluate(async () => (await fetch('/api/auth/session', { method: 'PUT' })).status);
+      expect(restore).toBe(403);
+
+      // Back on the list: no sign-in.
+      setString(forced(root, 'AllowedJmapServers'), '1', fake.origin());
+      await expectMailShown(page);
+      await expect.poll(() => fake.hits()).toBeGreaterThan(quiet);
+    } finally {
+      fake.server.close();
+    }
   });
 });
 

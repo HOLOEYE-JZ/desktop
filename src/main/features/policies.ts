@@ -8,15 +8,19 @@
  * Nothing the app stores itself ever counts as a policy.
  */
 
+import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { lstatSync, readFileSync, watch as watchFile } from 'node:fs';
+import { lstatSync, readFileSync, watch as watchFile, type Stats } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dialog, ipcMain, systemPreferences, type CommandLine, type WebContents } from 'electron';
+import { userInfo } from 'node:os';
+import path from 'node:path';
+import { app, dialog, ipcMain, systemPreferences, type CommandLine, type Session } from 'electron';
 import { CHANNEL } from '../../shared/bridge';
 import {
   DEFAULT_POLICY_SNAPSHOT,
   POLICY_BUNDLE_ID,
   POLICY_LINUX_FILE,
+  POLICY_MAX_FILE_BYTES,
   POLICY_RECOMMENDED_SUBKEY,
   POLICY_REGISTRY_ROOT,
   jmapServerAllowed,
@@ -30,8 +34,13 @@ import { senderAllowed } from '../ipc';
 import type { PluginPolicyCheck } from '../plugins';
 import {
   REAL_REGISTRY_TARGETS,
-  readMacPreferences,
+  managedPlistPaths,
+  managedPlistProblem,
+  readMacPolicies,
   readPolicyFile,
+  regPathIsStandard,
+  registryAgrees,
+  type ReadManagedPlist,
   readRegistry,
   readThroughWatcher,
   testPolicyRoot,
@@ -43,7 +52,9 @@ import {
   type RegistryTargets,
 } from '../policy-read';
 import { standaloneAllowed, type PolicySourceProblem } from '../policy-start';
+import { requestGate } from '../request-gate';
 import type { StateFile } from '../state';
+import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
 
 // Set by build.mjs: true only with --test. Dropped from what a package holds, since a
@@ -53,6 +64,16 @@ declare const __BULWARK_TEST_BUILD__: boolean;
 /** A value written with `reg add` or by an installer fires no event. Group Policy does. */
 const POLL_MS = 2 * 60_000;
 const MAX_REMEMBERED_WIPES = 32;
+const RESTART_ASK_MS = 15 * 60_000;
+const RESTART_DEADLINE_MS = 60 * 60_000;
+
+function parseUrl(url: string): URL | null {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+}
 
 function loadWatcher(): CreateWatcher | null {
   try {
@@ -64,6 +85,42 @@ function loadWatcher(): CreateWatcher | null {
   }
 }
 
+/**
+ * objectIsForcedForKey, from the native helper, on macOS. Loaded on its own here so the
+ * policies don't wait for the helper's loader: the file is the same (src/main/native-loader.ts).
+ */
+function loadNativeForcedCheck(): ((key: string) => boolean) | null {
+  const root = app.getAppPath();
+  const file = app.isPackaged
+    ? path.join(root, 'native', 'bulwark-native.node')
+    : path.join(root, 'native', 'dist', `${process.platform}-${process.arch}`, 'bulwark-native.node');
+  try {
+    const native = createRequire(import.meta.url)(file) as { policyIsForced?: (key: string) => boolean };
+    return native.policyIsForced ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reads a root-owned managed preferences file through /usr/bin/plutil. No file is no policy. */
+const readManagedPlistFile: ReadManagedPlist = (file) => {
+  let facts: Stats;
+  try {
+    facts = lstatSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { ok: true, values: null };
+    return { ok: false, reason: 'plist_unreadable' };
+  }
+  const problem = managedPlistProblem(facts);
+  if (problem) return { ok: false, reason: problem };
+  try {
+    const json = execFileSync('/usr/bin/plutil', ['-convert', 'json', '-o', '-', file], { encoding: 'utf8', timeout: 5000, maxBuffer: POLICY_MAX_FILE_BYTES });
+    return { ok: true, values: JSON.parse(json) as Record<string, unknown> };
+  } catch {
+    return { ok: false, reason: 'plist_unreadable' };
+  }
+};
+
 function registryPathOf(key: string): string {
   return key.replace(/^HK[A-Z_]+\\/i, '');
 }
@@ -72,10 +129,12 @@ export interface PolicyEvents {
   /** The resolved values changed. */
   changed: [snapshot: PolicySnapshot, previous: PolicySnapshot];
   /**
-   * A forced WipeOfflineData value the app hasn't acted on. Delete local mail, then
-   * call `markWipeDone`. Fires once per value per run, until someone marks it done.
+   * A forced WipeOfflineData value the app hasn't acted on, as its wipe starts. Fires once
+   * per value per run. To delete more, see addWipeStep in local-wipe.ts.
    */
   'wipe-offline-data': [nonce: string];
+  /** A wipe ran with windows open: they're blank now. */
+  wiped: [];
 }
 
 export class PolicyManager extends EventEmitter<PolicyEvents> {
@@ -91,6 +150,7 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
   private forcedCheck: ((key: string) => boolean) | null = null;
   private state: StateFile | null = null;
   private wipeAnnounced = new Set<string>();
+  private settling: Promise<void> = Promise.resolve();
 
   /** Reads once. Awaited at the top of main, since the auth switches must be set before `ready`. */
   async start(options: { argv: string[]; isPackaged: boolean }): Promise<void> {
@@ -101,10 +161,11 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       if (poll) this.pollMs = Number(poll.split('=')[1]) || POLL_MS;
     }
     if (process.platform !== 'linux') this.watcher = loadWatcher();
+    if (process.platform === 'darwin') this.forcedCheck ??= loadNativeForcedCheck();
     await this.refresh(true);
   }
 
-  /** The native helper's objectIsForcedForKey, on macOS. */
+  /** The native helper's objectIsForcedForKey, on macOS, if something wants to set it first. */
   useForcedCheck(check: (key: string) => boolean): void {
     this.forcedCheck = check;
   }
@@ -112,12 +173,23 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
   private async read(): Promise<PolicyReadResult> {
     if (process.platform === 'win32') {
       const read = await readRegistry(this.targets);
-      if (read.ok || !this.watcher) return read;
-      console.warn(`Reading policies with reg.exe failed (${read.reason}). Using the watcher's merged values.`);
-      return readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
+      if (!this.watcher) return read.ok && regPathIsStandard() ? read : read.ok ? { ok: false, reason: 'reg_mismatch' } : read;
+      if (!read.ok) {
+        console.warn(`Reading policies with reg.exe failed (${read.reason}). Using the watcher's merged values.`);
+        return readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
+      }
+      // Windows not on C: reg.exe's path came from the environment, so check its answer.
+      if (!regPathIsStandard()) {
+        const native = await readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
+        if (!native.ok || !registryAgrees(read.layers, native.layers)) {
+          console.warn('reg.exe and the watcher disagree. Using the watcher.');
+          return native.ok ? native : { ok: false, reason: 'reg_mismatch' };
+        }
+      }
+      return read;
     }
     if (process.platform === 'darwin') {
-      return { ok: true, layers: readMacPreferences(systemPreferences, this.forcedCheck) };
+      return readMacPolicies(systemPreferences, this.forcedCheck, managedPlistPaths(POLICY_BUNDLE_ID, userInfo().username), readManagedPlistFile);
     }
     return readPolicyFile(POLICY_LINUX_FILE, { lstat: (file) => lstatSync(file), read: (file) => readFileSync(file, 'utf8') });
   }
@@ -226,7 +298,7 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
   }
 
   /** Remembered per value, written at once: a crash right after must not delete again. */
-  markWipeDone(nonce: string): void {
+  private markWipeDone(nonce: string): void {
     if (!this.state) return;
     const done = this.state.data.policyWipes ?? [];
     if (done.includes(nonce)) return;
@@ -234,59 +306,67 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
     this.state.save();
   }
 
-  announceWipe(): void {
+  /**
+   * What the policies say about data already on the device, for every partition, not only
+   * the one in use: a new WipeOfflineData value, and OfflineEnabled forced off. Runs at each
+   * boot before any window opens, and on a change. `inUse` is what pages have open: for
+   * OfflineEnabled those clear account by account themselves.
+   */
+  async settleLocalData(inUse: readonly Session[] = []): Promise<void> {
+    if (!this.state) return;
+    this.settling = this.settling.then(() => this.settleOnce(inUse)).catch((error) => console.error(error));
+    return this.settling;
+  }
+
+  private async settleOnce(inUse: readonly Session[]): Promise<void> {
+    const state = this.state!;
+    const userData = app.getPath('userData');
     const nonce = this.pendingWipe();
-    if (!nonce || this.wipeAnnounced.has(nonce)) return;
-    this.wipeAnnounced.add(nonce);
-    this.emit('wipe-offline-data', nonce);
+    if (nonce) {
+      if (!this.wipeAnnounced.has(nonce)) {
+        this.wipeAnnounced.add(nonce);
+        this.emit('wipe-offline-data', nonce);
+      }
+      const { failed } = await runLocalWipe('policy-nonce', userData, state);
+      // Done only if every partition is: otherwise the next start tries again.
+      if (failed.length === 0) this.markWipeDone(nonce);
+      if (inUse.length > 0) this.emit('wiped');
+    }
+    const { OfflineEnabled } = this.snapshot;
+    const forcedOff = OfflineEnabled.locked && OfflineEnabled.value === false;
+    if (forcedOff && !state.data.offlineClearedForPolicy) {
+      const failed = await clearStoreFiles(userData, state, inUse);
+      if (failed.length === 0) {
+        state.data.offlineClearedForPolicy = true;
+        state.save();
+      }
+    } else if (!forcedOff && state.data.offlineClearedForPolicy) {
+      state.data.offlineClearedForPolicy = undefined;
+      state.save();
+    }
   }
 }
 
-export const policies = new PolicyManager();
-
 /**
- * Hands a pending wipe to one window that asked to hear about it. The page's handlers
- * run in the preload, which answers when they've finished. A window that goes away
- * first passes it to the next one, or to the next launch.
+ * Ask again every so often, restart at the deadline: a user can't sit on a forced change
+ * for good. A test build can shorten these.
  */
-function setupWipe(ctx: FeatureContext): void {
-  const listening = new Set<WebContents>();
-  let inFlight: { nonce: string; contents: WebContents } | null = null;
-
-  const dispatch = () => {
-    policies.announceWipe();
-    const nonce = policies.pendingWipe();
-    if (!nonce || inFlight) return;
-    const contents = [...listening].find((candidate) => !candidate.isDestroyed());
-    if (!contents) return;
-    inFlight = { nonce, contents };
-    contents.send(CHANNEL.policyWipeRequest, nonce);
+export function addRestartTimers(askAgain: () => void, restart: () => void): () => void {
+  let askEvery = RESTART_ASK_MS;
+  let deadline = RESTART_DEADLINE_MS;
+  if (__BULWARK_TEST_BUILD__) {
+    const times = process.argv.find((arg) => arg.startsWith('--bulwark-test-policy-restart='))?.split('=')[1]?.split(',').map(Number);
+    if (times?.length === 2) [askEvery, deadline] = times;
+  }
+  const again = setInterval(askAgain, askEvery);
+  const end = setTimeout(restart, deadline);
+  return () => {
+    clearInterval(again);
+    clearTimeout(end);
   };
-
-  const release = (contents: WebContents) => {
-    listening.delete(contents);
-    if (inFlight?.contents === contents) inFlight = null;
-    dispatch();
-  };
-
-  ctx.on(CHANNEL.policyWipeListen, (event) => {
-    const contents = event.sender;
-    // A reload comes back with a fresh preload: what it was doing is gone.
-    if (inFlight?.contents === contents) inFlight = null;
-    if (!listening.has(contents)) contents.once('destroyed', () => release(contents));
-    listening.add(contents);
-    dispatch();
-  });
-  ctx.on(CHANNEL.policyWipeDone, (event, _window, nonce, ok) => {
-    if (inFlight?.contents !== event.sender || inFlight.nonce !== nonce) return;
-    inFlight = null;
-    if (ok === true) policies.markWipeDone(nonce as string);
-    else listening.delete(event.sender);
-    dispatch();
-  });
-  policies.on('changed', dispatch);
-  dispatch();
 }
+
+export const policies = new PolicyManager();
 
 /**
  * On an instance only the page's own gate stops a plugin, and an older instance has
@@ -295,21 +375,21 @@ function setupWipe(ctx: FeatureContext): void {
  * cached. The instance's admin area is out of reach of this, as it should be.
  */
 function blockPluginsOnInstance(ctx: FeatureContext): void {
-  const refuse = (url: string): boolean => {
+  requestGate(ctx.session).add((url) => {
     const { value: mode } = policies.snapshot.PluginsMode;
     if (mode === 'allowed') return false;
-    let pathname: string;
+    const parsed = parseUrl(url);
+    if (!parsed) return true;
+    if (parsed.origin !== ctx.origin) return false;
+    if (mode === 'off' && parsed.pathname.startsWith('/plugin-sandbox')) return true;
+    const bundle = /^\/api\/admin\/plugins\/([^/]+)\/bundle$/.exec(parsed.pathname);
+    if (!bundle) return false;
     try {
-      pathname = new URL(url).pathname;
+      return !pluginAllowedByPolicy(mode, policies.snapshot.PluginAllowlist.value, decodeURIComponent(bundle[1]));
     } catch {
+      // %E0 and the like: a name that can't be decoded is on no list.
       return true;
     }
-    if (mode === 'off' && pathname.startsWith('/plugin-sandbox')) return true;
-    const bundle = /^\/api\/admin\/plugins\/([^/]+)\/bundle$/.exec(pathname);
-    return bundle ? !pluginAllowedByPolicy(mode, policies.snapshot.PluginAllowlist.value, decodeURIComponent(bundle[1])) : false;
-  };
-  ctx.session.webRequest.onBeforeRequest({ urls: [`${ctx.origin}/plugin-sandbox*`, `${ctx.origin}/api/admin/plugins/*`] }, (details, callback) => {
-    callback({ cancel: refuse(details.url) });
   });
 }
 
@@ -324,7 +404,7 @@ export const policiesFeature: Feature = {
       event.returnValue = senderAllowed(event.senderFrame, ctx.origin) ? policies.snapshot : null;
     });
     policies.on('changed', (snapshot) => ctx.windows.broadcast(CHANNEL.policyChanged, snapshot));
-    setupWipe(ctx);
+    policies.on('changed', () => void policies.settleLocalData([ctx.session]).catch((error) => console.error(error)));
     if (ctx.mode === 'instance') blockPluginsOnInstance(ctx);
     policies.watch();
   },

@@ -46,12 +46,6 @@ export interface PolicyBridge {
   /** What's in force now. Synchronous: a page can read it in its first render. */
   get: () => PolicySnapshot;
   onChange: (listener: (snapshot: PolicySnapshot) => void) => () => void;
-  /**
-   * A forced WipeOfflineData value the app hasn't acted on. Delete local mail in the
-   * handler: when its promise resolves the value counts as done and never comes back,
-   * also after a restart. If it rejects, the next launch asks again.
-   */
-  onWipeOfflineData: (handler: (nonce: string) => Promise<unknown>) => () => void;
 }
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
@@ -88,9 +82,6 @@ export const CHANNEL = {
   welcomeChoose: 'bulwark:welcome.choose',
   policyGet: 'bulwark:policy.get',
   policyChanged: 'bulwark:policy.changed',
-  policyWipeListen: 'bulwark:policy.wipeListen',
-  policyWipeRequest: 'bulwark:policy.wipeRequest',
-  policyWipeDone: 'bulwark:policy.wipeDone',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */

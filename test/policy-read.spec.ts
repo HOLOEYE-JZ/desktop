@@ -8,7 +8,12 @@ import {
   parseRegOutput,
   layersFromRegistry,
   policyFileProblem,
-  readMacPreferences,
+  managedPlistPaths,
+  managedPlistProblem,
+  readMacPolicies,
+  regCommandLine,
+  registryAgrees,
+  runRegExe,
   readPolicyFile,
   readRegistry,
   readThroughWatcher,
@@ -20,8 +25,10 @@ import {
   type CreateWatcher,
   type RunReg,
 } from '../src/main/policy-read';
-import { decideStart, restartKey, standaloneAllowed } from '../src/main/policy-start';
-import { EMPTY_POLICY_LAYERS, POLICY_KEYS, resolvePolicies, type PolicyLayer } from '../src/shared/policy-schema';
+import { FORCED_SSO_LIMIT_MS, SsoChain } from '../src/main/navigation-rules';
+import { connectionMustChange, decideStart, restartKey, standaloneAllowed } from '../src/main/policy-start';
+import { deniedSwitches, withoutDeniedSwitches } from '../src/main/switch-guard';
+import { EMPTY_POLICY_LAYERS, POLICY_CONSUMERS, POLICY_KEYS, resolvePolicies, type PolicyLayer } from '../src/shared/policy-schema';
 
 /** A row per test. Playwright has no test.each. */
 function each<const Row>(rows: readonly Row[]) {
@@ -131,6 +138,42 @@ test.describe('when reg.exe gives no answer', () => {
   test('a reg.exe that will not start does not either', async () => {
     const run: RunReg = async () => ({ code: -1, stdout: '' });
     expect(await readRegistry(REAL_REGISTRY_TARGETS, run)).toEqual({ ok: false, reason: 'reg_failed' });
+  });
+
+  test('non-ASCII comes through whole, through the real reg.exe', async () => {
+    test.skip(process.platform !== 'win32', 'Windows registry');
+    const key = `HKCU\\Software\\BulwarkTest\\Policies\\enc${process.pid}`;
+    spawnSync('reg.exe', ['add', `${key}\\Machine`, '/v', 'InstanceUrl', '/t', 'REG_SZ', '/d', 'https://m\u00fcller.de', '/f'], { windowsHide: true });
+    try {
+      const read = await readRegistry(testRegistryTargets(key));
+      expect(read.ok && read.layers.forcedMachine.InstanceUrl).toBe('https://m\u00fcller.de');
+      if (read.ok) expect(resolvePolicies(read.layers).InstanceUrl.value).toBe('https://xn--mller-kva.de/');
+    } finally {
+      spawnSync('reg.exe', ['delete', 'HKCU\\Software\\BulwarkTest', '/f'], { windowsHide: true });
+    }
+  });
+
+  test('reg.exe\'s own exit codes still come through cmd', async () => {
+    test.skip(process.platform !== 'win32', 'Windows registry');
+    expect((await runRegExe(['query', 'HKCU\\Software\\BulwarkTest\\NotThere'])).code).toBe(1);
+    expect((await runRegExe(['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', '/v', 'CurrentBuild'])).code).toBe(0);
+  });
+
+  test('nothing unusual gets onto cmd\'s command line', () => {
+    expect(() => regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKCU\\a & calc'])).toThrow('refused');
+    expect(() => regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKCU\\a"b'])).toThrow('refused');
+    expect(regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKLM\\Windows NT'])[3]).toContain('"HKLM\\Windows NT"');
+    expect(regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'k']).slice(0, 3)).toEqual(['/d', '/s', '/c']);
+  });
+
+  test('a planted reg.exe that hides a value disagrees with the watcher', () => {
+    const empty = { ...EMPTY_POLICY_LAYERS };
+    const watcher = { ...EMPTY_POLICY_LAYERS, forcedMachine: { InstanceUrl: 'https://mail.example.com' } };
+    expect(registryAgrees(empty, watcher)).toBe(false);
+    expect(registryAgrees({ ...empty, forcedUser: { InstanceUrl: 'https://mail.example.com' } }, watcher)).toBe(true);
+    expect(registryAgrees({ ...empty, forcedMachine: { InstanceUrl: 'https://other.example' } }, watcher)).toBe(false);
+    // The watcher's narrow strings aren't compared when they aren't plain ASCII.
+    expect(registryAgrees({ ...empty, forcedMachine: { InstanceUrl: 'https://m\u00fcller.de' } }, { ...empty, forcedMachine: { InstanceUrl: 'https://m\u00e4ller.de' } })).toBe(true);
   });
 
   test('its path can\'t be redirected by the environment', () => {
@@ -277,32 +320,65 @@ test.describe('macOS managed preferences', () => {
     // What Electron gives for a key that isn't there.
     getUserDefault: (key: string, type: string) => values[key] ?? (type === 'array' ? [] : type === 'dictionary' ? {} : ''),
   });
+  const PATHS = { machine: '/m.plist', user: '/u.plist' };
+  const plists = (files: Record<string, Record<string, unknown>> = {}) => (file: string) => ({ ok: true as const, values: files[file] ?? null });
+  const read = (values: Record<string, unknown>, isForced: ((key: string) => boolean) | null, files?: Record<string, Record<string, unknown>>) => {
+    const result = readMacPolicies(prefs(values), isForced, PATHS, plists(files));
+    if (!result.ok) throw new Error(result.reason);
+    return result.layers;
+  };
 
-  test('objectIsForcedForKey decides between forced and recommended', () => {
-    const layers = readMacPreferences(prefs({ InstanceUrl: 'https://a.example', AutoUpdate: '0' }), (key) => key === 'InstanceUrl');
+  test('`defaults write` alone is never forced: with no helper and no managed file, it can only recommend', () => {
+    const layers = read({ AllowStandalone: '1', AllowInsecureInstance: '1', InstanceUrl: 'http://evil.example', PluginsMode: 'allowed', UpdateChannel: 'beta' }, null);
+    expect(layers.forcedMachine).toEqual({});
+    const snapshot = resolvePolicies(layers);
+    // Forced-only keys don't hear it at all.
+    expect(snapshot.AllowStandalone).toMatchObject({ source: 'default', locked: false });
+    expect(snapshot.AllowInsecureInstance).toMatchObject({ value: false, source: 'default' });
+    expect(snapshot.InstanceUrl.locked).toBe(false);
+    expect(snapshot.UpdateChannel).toMatchObject({ value: 'beta', locked: false });
+  });
+
+  test('a user\'s default can\'t open what the managed file closed', () => {
+    const layers = read({ AllowStandalone: '1', InstanceUrl: 'https://mine.example' }, () => false, { '/m.plist': { InstanceUrl: 'https://mail.example.com' } });
+    const snapshot = resolvePolicies(layers);
+    expect(snapshot.InstanceUrl).toMatchObject({ value: 'https://mail.example.com/', source: 'forced-machine', locked: true });
+    expect(snapshot.AllowStandalone).toMatchObject({ source: 'default', locked: false });
+  });
+
+  test('the managed files give machine and user levels, and their Recommended', () => {
+    const layers = read({}, null, {
+      '/m.plist': { UpdateChannel: 'beta', Recommended: { AutoUpdate: false } },
+      '/u.plist': { AutoUpdate: true, Junk: 1 },
+    });
+    expect(layers.forcedMachine).toEqual({ UpdateChannel: 'beta' });
+    expect(layers.forcedUser).toEqual({ AutoUpdate: true });
+    expect(layers.recommendedMachine).toEqual({ AutoUpdate: false });
+  });
+
+  test('objectIsForcedForKey vouches for a value in NSUserDefaults', () => {
+    const layers = read({ InstanceUrl: 'https://a.example', AutoUpdate: '0' }, (key) => key === 'InstanceUrl');
     expect(layers.forcedMachine).toEqual({ InstanceUrl: 'https://a.example' });
-    expect(layers.recommendedMachine).toEqual({ AutoUpdate: '0' });
+    expect(layers.recommendedUser).toEqual({ AutoUpdate: '0' });
   });
 
   test('an absent key isn\'t read as false or empty', () => {
-    const layers = readMacPreferences(prefs({}), () => true);
+    const layers = read({}, () => true);
     expect(layers.forcedMachine).toEqual({});
     expect(resolvePolicies(layers).AllowStandalone.source).toBe('default');
   });
 
-  test('booleans come as "1" and "0" and still resolve', () => {
-    const layers = readMacPreferences(prefs({ AllowStandalone: '0' }), () => true);
-    expect(resolvePolicies(layers).AllowStandalone).toMatchObject({ value: false, locked: true });
+  test('a managed file that can\'t be trusted or read stops, rather than counting as no policy', () => {
+    expect(readMacPolicies(prefs({}), null, PATHS, () => ({ ok: false, reason: 'plist_unsafe' }))).toEqual({ ok: false, reason: 'plist_unsafe' });
   });
 
-  test('without the native helper, a value counts as forced', () => {
-    expect(readMacPreferences(prefs({ PluginsMode: 'off' }), null).forcedMachine).toEqual({ PluginsMode: 'off' });
-  });
-
-  test('a list and the Recommended dictionary', () => {
-    const layers = readMacPreferences(prefs({ PluginAllowlist: ['a'], Recommended: { UpdateChannel: 'beta', Junk: 1 } }), () => true);
-    expect(layers.forcedMachine.PluginAllowlist).toEqual(['a']);
-    expect(layers.recommendedMachine).toEqual({ UpdateChannel: 'beta' });
+  test('only a root-owned file that others can\'t write passes', () => {
+    const file = (uid: number, mode: number, link = false) => ({ uid, mode, size: 1, isFile: () => !link, isSymbolicLink: () => link, isDirectory: () => false });
+    expect(managedPlistProblem(file(0, 0o100644))).toBeNull();
+    expect(managedPlistProblem(file(501, 0o100644))).toBe('plist_unsafe');
+    expect(managedPlistProblem(file(0, 0o100666))).toBe('plist_unsafe');
+    expect(managedPlistProblem(file(0, 0o120777, true))).toBe('plist_unsafe');
+    expect(managedPlistPaths('org.bulwarkmail.desktop', 'me').user).toBe('/Library/Managed Preferences/me/org.bulwarkmail.desktop.plist');
   });
 });
 
@@ -349,6 +425,9 @@ test.describe('the test root', () => {
     expect(withHooks).toContain('BulwarkTest');
     expect(production).not.toContain('--bulwark-test-policy');
     expect(production).not.toContain('BulwarkTest');
+    // Dev switches hang on the build, not on the exe's name.
+    for (const name of ['bulwark-user-data', 'bulwark-server-dir', 'bulwark-test-wrong-pin']) expect(production).not.toContain(name);
+    expect(withHooks).toContain('bulwark-user-data');
   });
 });
 
@@ -411,6 +490,40 @@ test.describe('what the app opens with', () => {
     expect(decideStart(both, null, { askConnection: true })).toMatchObject({ kind: 'welcome', allowStandalone: true, instanceUrl: INSTANCE, urlLocked: true });
   });
 
+  test('AllowedJmapServers also covers a server anyone chose', () => {
+    const listed = { AllowedJmapServers: ['https://mail.example.com'] };
+    const stored = { mode: 'instance' as const, instanceUrl: 'https://mine.example/' };
+    expect(decideStart(snapshot(listed), null, stored)).toMatchObject({ kind: 'welcome' });
+    expect(decideStart(snapshot(listed), null, { mode: 'instance', instanceUrl: INSTANCE })).toMatchObject({ kind: 'instance', url: INSTANCE });
+    expect(decideStart(snapshot(listed), null, { devInstance: 'https://mine.example' })).toMatchObject({ kind: 'welcome' });
+    // A recommendation has to be on it as well.
+    expect(decideStart(snapshot(listed, { InstanceUrl: 'https://mine.example' }), null, {})).toMatchObject({ kind: 'welcome', instanceUrl: null });
+    // A forced one is the admin's own word.
+    expect(decideStart(snapshot({ ...listed, InstanceUrl: 'https://mine.example' }), null, {})).toMatchObject({ kind: 'instance', forced: true });
+  });
+
+  test('a recommended AllowStandalone can\'t open what a forced server closed', () => {
+    const both = snapshot({ InstanceUrl: INSTANCE }, { AllowStandalone: 1 });
+    expect(standaloneAllowed(both)).toBe(false);
+    expect(decideStart(both, null, { mode: 'standalone' })).toEqual({ kind: 'instance', url: INSTANCE, forced: true, canSwitch: false });
+  });
+
+  test('"Later" only lasts where nothing forced moved', () => {
+    const on = (url: string) => ({ kind: 'instance' as const, url, forced: true, canSwitch: false });
+    const chosen = { kind: 'instance' as const, url: INSTANCE, forced: false, canSwitch: true };
+    const standalone = { kind: 'standalone' as const, canSwitch: true };
+    const welcome = { kind: 'welcome' as const, allowStandalone: false, instanceUrl: null, urlLocked: false, canSwitch: false as const };
+    const error = { kind: 'policy-error' as const, policy: 'InstanceUrl', reason: 'scheme', canSwitch: false as const };
+    expect(connectionMustChange(on('https://a.example/'), on('https://b.example/'))).toBe(true);
+    expect(connectionMustChange(chosen, on('https://b.example/'))).toBe(true);
+    expect(connectionMustChange(on('https://a.example/'), error)).toBe(true);
+    expect(connectionMustChange(standalone, welcome)).toBe(true);
+    // Lifted: nothing is wrong with staying.
+    expect(connectionMustChange(on('https://a.example/'), chosen)).toBe(false);
+    expect(connectionMustChange(on('https://a.example/'), on('https://a.example/'))).toBe(false);
+    expect(connectionMustChange(error, error)).toBe(false);
+  });
+
   test('a restart is only worth asking for when the outcome changes', () => {
     const a = snapshot({ InstanceUrl: INSTANCE });
     const key = (s: typeof a) => restartKey(decideStart(s, null, {}), s);
@@ -420,8 +533,78 @@ test.describe('what the app opens with', () => {
   });
 });
 
-test('the shell\'s copy of the schema has every key', () => {
-  expect(POLICY_KEYS).toHaveLength(18);
+test.describe('the switches a production build refuses', () => {
+  const EXE = 'Bulwark.exe';
+
+  each([
+    '--remote-debugging-port=9347', '--remote-debugging-pipe', '--remote-allow-origins=*', '--inspect=9229', '--inspect-brk', '--user-data-dir=C:\\x',
+    '--host-rules=MAP * 1.2.3.4', '--host-resolver-rules=MAP * 1.2.3.4', '--ignore-certificate-errors', '--ignore-certificate-errors-spki-list=a',
+    '--proxy-server=1.2.3.4:80', '--proxy-pac-url=http://x', '--proxy-bypass-list=*', '--no-proxy-server', '--no-sandbox', '--disable-gpu-sandbox',
+    '--disable-web-security', '--allow-running-insecure-content', '--disable-features=X', '--enable-features=X', '--js-flags=--x', '--load-extension=C:\\x',
+    '--disable-site-isolation-trials', '--auth-server-whitelist=*', '--renderer-cmd-prefix=x', '--browser-subprocess-path=x', '--ssl-key-log-file=x', '--log-net-log=x',
+    '--unsafely-treat-insecure-origin-as-secure=http://x',
+  ])('%s', (arg) => {
+    expect(deniedSwitches([EXE, arg], 'linux').length).toBe(1);
+    expect(withoutDeniedSwitches([EXE, arg, 'bulwark://x'], 'linux')).toEqual([EXE, 'bulwark://x']);
+  });
+
+  test('Windows also takes -name and /name, in any case', () => {
+    for (const arg of ['-remote-debugging-port=9', '/remote-debugging-port=9', '--REMOTE-DEBUGGING-PORT=9', '/NO-SANDBOX']) {
+      expect(deniedSwitches([EXE, arg], 'win32').length).toBe(1);
+    }
+    expect(deniedSwitches([EXE, '/remote-debugging-port=9'], 'linux')).toEqual([]);
+  });
+
+  test('leaves the rest alone: the exe itself, ordinary switches, a link, and what follows --', () => {
+    const argv = [EXE, '--lang=de', '--ozone-platform=wayland', '--port-retry', 'mailto:a@example.org', '--', '--no-sandbox'];
+    expect(deniedSwitches(argv, 'linux')).toEqual([]);
+    expect(withoutDeniedSwitches(argv, 'linux')).toEqual(argv);
+  });
+
+  test('names each once', () => {
+    expect(deniedSwitches([EXE, '--no-sandbox', '--no-sandbox=1'], 'linux')).toEqual(['no-sandbox']);
+  });
+});
+
+test.describe('a sign-in chain', () => {
+  test('runs until it ends, with no limit where nothing is forced', () => {
+    let now = 0;
+    const chain = new SsoChain(() => null, () => now);
+    expect(chain.active()).toBe(false);
+    chain.start();
+    now = FORCED_SSO_LIMIT_MS * 10;
+    expect(chain.active()).toBe(true);
+    chain.end();
+    expect(chain.active()).toBe(false);
+  });
+
+  test('has a limit when the server is forced', () => {
+    let now = 0;
+    const chain = new SsoChain(() => FORCED_SSO_LIMIT_MS, () => now);
+    chain.start();
+    now = FORCED_SSO_LIMIT_MS;
+    expect(chain.active()).toBe(true);
+    now += 1;
+    expect(chain.active()).toBe(false);
+    expect(chain.active()).toBe(false);
+  });
+});
+
+test.describe('every key has someone acting on it', () => {
+  test('the shell\'s named consumers read their key', () => {
+    for (const key of POLICY_KEYS) {
+      const consumer = POLICY_CONSUMERS[key];
+      if ('repo' in consumer && consumer.repo === 'shell') {
+        expect(readFileSync(path.resolve(import.meta.dirname, '..', consumer.file), 'utf8'), key).toContain(key);
+      }
+    }
+  });
+
+  test('a key nobody wired yet names who owes it', () => {
+    const pending = POLICY_KEYS.filter((key) => 'pendingConsumer' in POLICY_CONSUMERS[key]);
+    expect(pending.sort()).toEqual(['AppLockRequired', 'AppLockTimeoutMinutes', 'AutoSelectCertificateForUrls', 'AutoUpdate', 'CrashReportsAllowed', 'KeystoreAllowedOrigins', 'QuickComposeShortcut', 'TelemetryAllowed', 'UpdateChannel'].sort());
+    for (const key of pending) expect((POLICY_CONSUMERS[key] as { pendingConsumer: string }).pendingConsumer).toMatch(/\S{3}/);
+  });
 });
 
 test.describe('the MSI properties', () => {
@@ -429,24 +612,31 @@ test.describe('the MSI properties', () => {
   const { addPolicies } = require('../scripts/msi-policies.cjs') as { addPolicies: (project: string) => string };
   const project = '<Wix><Product Id="*"><Feature Id="ProductFeature" Absent="disallow">\n<ComponentGroupRef Id="ProductComponents"/></Feature>\n  </Product></Wix>';
 
-  test('writes the forced key with FORCE_INSTANCE=1, and Recommended without', () => {
+  test('writes the forced key with FORCE_INSTANCE=1, and Recommended without, and clears the other', () => {
     const out = addPolicies(project);
-    for (const id of ['INSTANCE_URL', 'FORCE_INSTANCE', 'UPDATE_CHANNEL']) expect(out).toContain(`<Property Id="${id}" Secure="yes"/>`);
-    expect(out).toMatch(/INSTANCE_URL AND FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop" Name="InstanceUrl"[^>]*Value="\[INSTANCE_URL\]"/);
-    expect(out).toMatch(/INSTANCE_URL AND NOT FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop\\Recommended" Name="InstanceUrl"/);
-    expect(out).toMatch(/UPDATE_CHANNEL AND FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop" Name="UpdateChannel"/);
-    expect(out).toMatch(/UPDATE_CHANNEL AND NOT FORCE_INSTANCE = "1"[\s\S]*?Recommended" Name="UpdateChannel"/);
+    expect(out).toMatch(/INSTANCE_URL AND FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop" Name="InstanceUrl"[^>]*Value="\[INSTANCE_URL\]"[\s\S]*?RemoveRegistryValue Root="HKLM" Key="SOFTWARE\\Policies\\Bulwark\\Desktop\\Recommended" Name="InstanceUrl"/);
+    expect(out).toMatch(/INSTANCE_URL AND NOT FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop\\Recommended" Name="InstanceUrl"[\s\S]*?RemoveRegistryValue Root="HKLM" Key="SOFTWARE\\Policies\\Bulwark\\Desktop" Name="InstanceUrl"/);
+    expect(out).toMatch(/FORCE_INSTANCE = "1"[\s\S]*?Key="SOFTWARE\\Policies\\Bulwark\\Desktop" Name="UpdateChannel"/);
   });
 
-  test('every component is in the feature, is permanent, and sits in HKLM', () => {
+  test('a standard user\'s repair can\'t set them: not secure properties', () => {
     const out = addPolicies(project);
-    const components = [...out.matchAll(/<Component Id="([^"]+)"[^>]*>/g)];
-    expect(components).toHaveLength(4);
-    for (const [tag, id] of components) {
-      expect(tag).toContain('Permanent="yes"');
-      expect(out).toContain(`<ComponentRef Id="${id}"/>`);
-    }
-    expect(out.match(/Root="HKLM"/g)).toHaveLength(4);
+    for (const id of ['INSTANCE_URL', 'FORCE_INSTANCE', 'UPDATE_CHANNEL']) expect(out).not.toContain(`<Property Id="${id}"`);
+    expect(out).not.toContain('Secure="yes"');
+  });
+
+  test('a repair or upgrade writes back what was there, and a real uninstall removes it', () => {
+    const out = addPolicies(project);
+    expect(out).toContain('<Property Id="BW_PREV_FORCED_URL">');
+    expect(out).toMatch(/RegistrySearch[^>]*Key="SOFTWARE\\Policies\\Bulwark\\Desktop"[^>]*Name="InstanceUrl"[^>]*Win64="yes"/);
+    expect(out).toContain('<SetProperty Id="INSTANCE_URL" Value="[BW_PREV_FORCED_URL]"');
+    expect(out).not.toContain('Permanent="yes"');
+    for (const [, id] of out.matchAll(/<Component Id="([^"]+)"/g)) expect(out).toContain(`<ComponentRef Id="${id}"/>`);
+    expect(out.match(/<RegistryValue Root="HKLM"/g)).toHaveLength(4);
+  });
+
+  test('FORCE_INSTANCE without a server stops the install', () => {
+    expect(addPolicies(project)).toMatch(/<Condition Message="FORCE_INSTANCE=1 needs INSTANCE_URL[^"]*"><!\[CDATA\[Installed OR NOT FORCE_INSTANCE = "1" OR INSTANCE_URL/);
   });
 
   test('refuses a project it does not recognise, rather than shipping without the switches', () => {

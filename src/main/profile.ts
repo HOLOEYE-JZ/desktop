@@ -70,11 +70,14 @@ export const SEEDED_FEATURES = {
 
 /**
  * With plugins off by policy the server's own switches go off too, which also closes
- * the sandbox routes, the plugin proxy and the settings page. When it's lifted they
- * come back on: nothing the user set lives here.
+ * the sandbox routes, the plugin proxy and the settings page. A list closes uploads: a
+ * package can name any id. When it's lifted they come back on: nothing the user set
+ * lives here.
  */
 export function pluginFeatures(mode: 'allowed' | 'allowlist' | 'off'): Record<string, boolean> {
-  return mode === 'off' ? { ...SEEDED_FEATURES, pluginsEnabled: false, pluginsUploadEnabled: false } : SEEDED_FEATURES;
+  if (mode === 'off') return { ...SEEDED_FEATURES, pluginsEnabled: false, pluginsUploadEnabled: false };
+  if (mode === 'allowlist') return { ...SEEDED_FEATURES, pluginsUploadEnabled: false };
+  return SEEDED_FEATURES;
 }
 
 /**

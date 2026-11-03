@@ -4,42 +4,111 @@
 //   msiexec /i Bulwark.msi /qn ALLUSERS=1 INSTANCE_URL=https://mail.example.com FORCE_INSTANCE=1 UPDATE_CHANNEL=stable
 //
 // writes HKLM\SOFTWARE\Policies\Bulwark\Desktop, or \Recommended without
-// FORCE_INSTANCE=1. The values go through the app's own checks when it reads them, and a
-// bad one shows an error page that names the policy.
+// FORCE_INSTANCE=1, and takes the value out of the other one. The values go through the
+// app's own checks when it reads them.
 //
-// The components are permanent: a major upgrade removes the old version first, and an
-// upgrade run without these properties must not take the machine's policy with it. So
-// an uninstall leaves them too. Removing them is the admin's call.
+// A standard user can repair a per-machine product, and a repair runs as SYSTEM. So these
+// properties are NOT in SecureCustomProperties: only an administrator's command line
+// reaches the part of the install that writes. What a repair or an upgrade writes is what
+// was there before, read back with a registry search (the "remember property" pattern).
+//
+// A major upgrade removes the old version first. That removes these values, and the new
+// version writes back what the search found, so an upgrade without the properties keeps
+// them. A real uninstall removes them: MSI wrote them, so it takes them back. Values set
+// by Group Policy live in the same place and come back at its next refresh.
 
 const { readFileSync, writeFileSync } = require('node:fs');
 
 const FORCED = 'SOFTWARE\\Policies\\Bulwark\\Desktop';
 const RECOMMENDED = `${FORCED}\\Recommended`;
 
-// Fixed forever: a component's GUID is how Windows Installer knows it.
-const VALUES = [
-  { id: 'PolicyInstanceForced', guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A01', property: 'INSTANCE_URL', name: 'InstanceUrl', key: FORCED, forced: true },
-  { id: 'PolicyInstanceRecommended', guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A02', property: 'INSTANCE_URL', name: 'InstanceUrl', key: RECOMMENDED, forced: false },
-  { id: 'PolicyChannelForced', guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A03', property: 'UPDATE_CHANNEL', name: 'UpdateChannel', key: FORCED, forced: true },
-  { id: 'PolicyChannelRecommended', guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A04', property: 'UPDATE_CHANNEL', name: 'UpdateChannel', key: RECOMMENDED, forced: false },
+// GUIDs are fixed forever: a component's GUID is how Windows Installer knows it.
+const COMPONENTS = [
+  {
+    id: 'PolicyInstanceForced',
+    guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A01',
+    condition: 'INSTANCE_URL AND FORCE_INSTANCE = "1"',
+    key: FORCED,
+    other: RECOMMENDED,
+    name: 'InstanceUrl',
+    value: '[INSTANCE_URL]',
+  },
+  {
+    id: 'PolicyInstanceRecommended',
+    guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A02',
+    condition: 'INSTANCE_URL AND NOT FORCE_INSTANCE = "1"',
+    key: RECOMMENDED,
+    other: FORCED,
+    name: 'InstanceUrl',
+    value: '[INSTANCE_URL]',
+  },
+  {
+    id: 'PolicyChannelForced',
+    guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A03',
+    condition: 'UPDATE_CHANNEL AND FORCE_INSTANCE = "1"',
+    key: FORCED,
+    other: RECOMMENDED,
+    name: 'UpdateChannel',
+    value: '[UPDATE_CHANNEL]',
+  },
+  {
+    id: 'PolicyChannelRecommended',
+    guid: '6B4B8C0E-3B0B-4B7E-9D55-0F6E5B1C2A04',
+    condition: 'UPDATE_CHANNEL AND NOT FORCE_INSTANCE = "1"',
+    key: RECOMMENDED,
+    other: FORCED,
+    name: 'UpdateChannel',
+    value: '[UPDATE_CHANNEL]',
+  },
 ];
+
+function search(id, key, name) {
+  return [
+    `    <Property Id="${id}">`,
+    `      <RegistrySearch Id="${id}_Search" Root="HKLM" Key="${key}" Name="${name}" Type="raw" Win64="yes"/>`,
+    '    </Property>',
+  ].join('\n');
+}
+
+function setProperty(id, value, after, condition) {
+  return `    <SetProperty Id="${id}" Value="${value}" After="${after}" Sequence="both"><![CDATA[${condition}]]></SetProperty>`;
+}
 
 function addPolicies(project) {
   if (!project.includes('<Feature Id="ProductFeature"') || !project.includes('</Product>')) {
     throw new Error('msi-policies: the WiX project does not look as expected');
   }
-  const properties = ['INSTANCE_URL', 'FORCE_INSTANCE', 'UPDATE_CHANNEL'].map((id) => `    <Property Id="${id}" Secure="yes"/>`);
-  const components = VALUES.map(({ id, guid, property, name, key, forced }) => {
-    const condition = forced ? `${property} AND FORCE_INSTANCE = "1"` : `${property} AND NOT FORCE_INSTANCE = "1"`;
-    return [
-      `      <Component Id="${id}" Guid="{${guid}}" Permanent="yes">`,
-      `        <Condition><![CDATA[${condition}]]></Condition>`,
-      `        <RegistryValue Root="HKLM" Key="${key}" Name="${name}" Type="string" Value="[${property}]" KeyPath="yes"/>`,
-      '      </Component>',
-    ].join('\n');
-  });
+  const properties = [
+    // INSTANCE_URL and friends aren't declared: a declared one would have to be Secure. See above.
+    search('BW_PREV_FORCED_URL', FORCED, 'InstanceUrl'),
+    search('BW_PREV_RECOMMENDED_URL', RECOMMENDED, 'InstanceUrl'),
+    search('BW_PREV_FORCED_CHANNEL', FORCED, 'UpdateChannel'),
+    search('BW_PREV_RECOMMENDED_CHANNEL', RECOMMENDED, 'UpdateChannel'),
+    // What the command line didn't say stays as it was. FORCE first: it looks at INSTANCE_URL.
+    setProperty('FORCE_INSTANCE', '1', 'AppSearch', 'NOT INSTANCE_URL AND NOT FORCE_INSTANCE AND BW_PREV_FORCED_URL'),
+    setProperty('INSTANCE_URL', '[BW_PREV_FORCED_URL]', 'SetFORCE_INSTANCE', 'NOT INSTANCE_URL AND BW_PREV_FORCED_URL'),
+    '    <CustomAction Id="BwSetRecommendedUrl" Property="INSTANCE_URL" Value="[BW_PREV_RECOMMENDED_URL]"/>',
+    '    <CustomAction Id="BwSetForcedChannel" Property="UPDATE_CHANNEL" Value="[BW_PREV_FORCED_CHANNEL]"/>',
+    '    <CustomAction Id="BwSetRecommendedChannel" Property="UPDATE_CHANNEL" Value="[BW_PREV_RECOMMENDED_CHANNEL]"/>',
+    ...['InstallUISequence', 'InstallExecuteSequence'].map((sequence) => [
+      `    <${sequence}>`,
+      '      <Custom Action="BwSetRecommendedUrl" After="SetINSTANCE_URL"><![CDATA[NOT INSTANCE_URL AND BW_PREV_RECOMMENDED_URL]]></Custom>',
+      '      <Custom Action="BwSetForcedChannel" After="BwSetRecommendedUrl"><![CDATA[NOT UPDATE_CHANNEL AND BW_PREV_FORCED_CHANNEL]]></Custom>',
+      '      <Custom Action="BwSetRecommendedChannel" After="BwSetForcedChannel"><![CDATA[NOT UPDATE_CHANNEL AND BW_PREV_RECOMMENDED_CHANNEL]]></Custom>',
+      `    </${sequence}>`,
+    ].join('\n')),
+    // An install that looks forced and isn't would be worse than none.
+    '    <Condition Message="FORCE_INSTANCE=1 needs INSTANCE_URL. Nothing was installed."><![CDATA[Installed OR NOT FORCE_INSTANCE = "1" OR INSTANCE_URL OR BW_PREV_FORCED_URL]]></Condition>',
+  ];
+  const components = COMPONENTS.map(({ id, guid, condition, key, other, name, value }) => [
+    `      <Component Id="${id}" Guid="{${guid}}">`,
+    `        <Condition><![CDATA[${condition}]]></Condition>`,
+    `        <RegistryValue Root="HKLM" Key="${key}" Name="${name}" Type="string" Value="${value}" KeyPath="yes"/>`,
+    `        <RemoveRegistryValue Root="HKLM" Key="${other}" Name="${name}"/>`,
+    '      </Component>',
+  ].join('\n'));
   const directory = ['    <DirectoryRef Id="TARGETDIR">', ...components, '    </DirectoryRef>'].join('\n');
-  const refs = VALUES.map(({ id }) => `      <ComponentRef Id="${id}"/>`).join('\n');
+  const refs = COMPONENTS.map(({ id }) => `      <ComponentRef Id="${id}"/>`).join('\n');
   return project
     .replace(/(<Feature Id="ProductFeature"[^>]*>)/, `$1\n${refs}`)
     .replace('</Product>', () => `${properties.join('\n')}\n${directory}\n  </Product>`);

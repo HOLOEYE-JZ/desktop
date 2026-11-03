@@ -9,6 +9,7 @@ const STRINGS = {
     urlLabel: 'Address of your Bulwark server',
     connect: 'Connect',
     invalid: 'Enter the full https address of your server.',
+    policy: "Your organisation doesn't allow this server.",
   },
   de: {
     title: 'Willkommen bei Bulwark',
@@ -20,6 +21,7 @@ const STRINGS = {
     urlLabel: 'Adresse Ihres Bulwark-Servers',
     connect: 'Verbinden',
     invalid: 'Geben Sie die vollständige https-Adresse Ihres Servers ein.',
+    policy: 'Ihre Organisation erlaubt diesen Server nicht.',
   },
 };
 
@@ -50,5 +52,5 @@ byId('form').addEventListener('submit', async (event) => {
   event.preventDefault();
   byId('error').textContent = '';
   const result = await window.bulwarkWelcome.choose({ mode: 'instance', url: byId('url').value });
-  if (!result.ok) byId('error').textContent = text.invalid;
+  if (!result.ok) byId('error').textContent = result.error === 'policy' ? text.policy : text.invalid;
 });

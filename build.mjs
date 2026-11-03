@@ -15,6 +15,9 @@ const common = { bundle: true, platform: 'node', target: 'node22', sourcemap: fa
 // scripts/after-pack.cjs fails on one. It has to be the build, not a run-time check,
 // since Electron decides app.isPackaged by the name of the exe, and anyone can rename it.
 const testBuild = process.argv.includes('--test');
+// Behaves as production, with its profile compiled in: a test of what production does
+// mustn't touch the real profile, and no switch may move it. See scripts/pack-test.mjs.
+const bakedProfile = process.argv.find((arg) => arg.startsWith('--baked-profile='))?.slice('--baked-profile='.length) ?? '';
 
 await build({
   ...common,
@@ -23,7 +26,7 @@ await build({
   format: 'esm',
   // A native module, loaded at run time from node_modules.
   external: ['electron', '@vscode/policy-watcher'],
-  define: { __BULWARK_TEST_BUILD__: String(testBuild) },
+  define: { __BULWARK_TEST_BUILD__: String(testBuild), __BULWARK_TEST_PROFILE__: JSON.stringify(bakedProfile) },
   // Takes out what's behind the false above, and the functions only it used.
   minifySyntax: true,
 });
@@ -40,3 +43,4 @@ const page = readFileSync('src/pages/welcome.html', 'utf8')
   .replace("script-src 'self'", `script-src 'sha256-${hash}'`)
   .replace('<script src="welcome.js"></script>', () => `<script>${script}</script>`);
 writeFileSync('dist/pages/welcome.html', page);
+if (testBuild || bakedProfile) writeFileSync('dist/test-build.json', JSON.stringify({ testBuild, bakedProfile }));

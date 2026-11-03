@@ -115,9 +115,32 @@ test.describe('the installer writes the same policies as the MSI', () => {
   });
 
   test('one switch at a time', () => {
-    spawnSync(harness, ['/UPDATE_CHANNEL=beta', '/FORCE_INSTANCE=1']);
-    expect(value('', 'UpdateChannel')).toBe('beta');
+    spawnSync(harness, ['/UPDATE_CHANNEL=beta']);
+    expect(value('\\Recommended', 'UpdateChannel')).toBe('beta');
+    expect(value('\\Recommended', 'InstanceUrl')).toBeNull();
+  });
+
+  test('forcing with no server writes nothing and says so', () => {
+    const run = spawnSync(harness, ['/S', '/FORCE_INSTANCE=1', '/UPDATE_CHANNEL=beta']);
+    expect(run.status).toBe(87);
+    expect(reg('query', `HKCU\\${KEY}`).status).toBe(1);
+  });
+
+  test('writing one takes the value out of the other', () => {
+    spawnSync(harness, ['/INSTANCE_URL=https://a.example', '/UPDATE_CHANNEL=beta']);
+    expect(value('\\Recommended', 'InstanceUrl')).toBe('https://a.example');
+    spawnSync(harness, ['/INSTANCE_URL=https://b.example', '/FORCE_INSTANCE=1', '/UPDATE_CHANNEL=stable']);
+    expect(value('', 'InstanceUrl')).toBe('https://b.example');
+    expect(value('\\Recommended', 'InstanceUrl')).toBeNull();
+    expect(value('\\Recommended', 'UpdateChannel')).toBeNull();
+    spawnSync(harness, ['/INSTANCE_URL=https://c.example']);
     expect(value('', 'InstanceUrl')).toBeNull();
+    expect(value('\\Recommended', 'InstanceUrl')).toBe('https://c.example');
+  });
+
+  test('quotes inside a value are stripped', () => {
+    spawnSync(harness, ['/INSTANCE_URL=https://a.ex"am"ple', '/UPDATE_CHANNEL="be"ta'], { windowsVerbatimArguments: true });
+    expect(value('\\Recommended', 'InstanceUrl')).toBe('https://a.example');
   });
 
   test('without the rights to write it says so with an exit code, and the real target is HKLM', () => {

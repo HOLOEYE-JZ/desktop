@@ -5,7 +5,7 @@
  */
 
 import type { Mode } from '../shared/bridge';
-import { parseInstanceUrl, type PolicySnapshot } from '../shared/policy-schema';
+import { jmapServerAllowed, parseInstanceUrl, type PolicySnapshot } from '../shared/policy-schema';
 
 export interface StartChoice {
   mode?: Mode;
@@ -26,7 +26,7 @@ export type StartDecision =
 /** Direct connections are on unless a policy says otherwise; a forced server turns them off by itself. */
 export function standaloneAllowed(snapshot: PolicySnapshot): boolean {
   const { AllowStandalone, InstanceUrl } = snapshot;
-  if (AllowStandalone.source !== 'default') return AllowStandalone.value;
+  if (AllowStandalone.locked) return AllowStandalone.value;
   return !(InstanceUrl.locked && InstanceUrl.value);
 }
 
@@ -38,7 +38,7 @@ export interface PolicySourceProblem {
 
 export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProblem | null, choice: StartChoice): StartDecision {
   if (problem) return { kind: 'policy-error', policy: problem.policy, reason: problem.reason, canSwitch: false };
-  const { InstanceUrl, AllowInsecureInstance } = snapshot;
+  const { InstanceUrl, AllowInsecureInstance, AllowedJmapServers } = snapshot;
   if (InstanceUrl.locked && InstanceUrl.invalid) {
     return { kind: 'policy-error', policy: 'InstanceUrl', reason: InstanceUrl.invalid, raw: InstanceUrl.raw, canSwitch: false };
   }
@@ -54,9 +54,10 @@ export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProbl
     return { kind: 'instance', url: forcedUrl, forced: true, canSwitch: allowStandalone };
   }
 
+  // A server anyone chose has to be on the list. A forced one is the admin's own word.
   const valid = (url: unknown) => {
     const parsed = parseInstanceUrl(url, AllowInsecureInstance.value);
-    return parsed.ok ? parsed.value : null;
+    return parsed.ok && jmapServerAllowed(AllowedJmapServers.value, parsed.value) ? parsed.value : null;
   };
   const devUrl = choice.devInstance ? valid(choice.devInstance) : null;
   if (devUrl) return { kind: 'instance', url: devUrl, forced: false, canSwitch: true };
@@ -65,8 +66,20 @@ export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProbl
     const url = valid(choice.instanceUrl);
     if (url) return { kind: 'instance', url, forced: false, canSwitch: true };
   }
-  if (InstanceUrl.value && !choice.askConnection) return { kind: 'instance', url: InstanceUrl.value, forced: false, canSwitch: true };
-  return { kind: 'welcome', allowStandalone, instanceUrl: InstanceUrl.value, urlLocked: false, canSwitch: false };
+  const recommended = valid(InstanceUrl.value);
+  if (recommended && !choice.askConnection) return { kind: 'instance', url: recommended, forced: false, canSwitch: true };
+  return { kind: 'welcome', allowStandalone, instanceUrl: recommended, urlLocked: false, canSwitch: false };
+}
+
+/**
+ * The app is somewhere a forced value no longer lets it be, so "Later" can't be the end of
+ * it: a new forced server, a bad forced value, or direct connections taken away. What a
+ * policy no longer asks for can wait for as long as the user likes.
+ */
+export function connectionMustChange(booted: StartDecision, next: StartDecision): boolean {
+  if (next.kind === 'policy-error') return booted.kind !== 'policy-error';
+  if (next.kind === 'instance' && next.forced) return booted.kind !== 'instance' || booted.url !== next.url;
+  return booted.kind === 'standalone' && next.kind !== 'standalone';
 }
 
 /** What makes a restart worth asking for: where the app is, and what Chromium only reads at start. */

@@ -45,11 +45,38 @@ export class ServerRegistry {
       state.data.approvedServers = cleanApproved;
       state.touch();
     }
-    cors.set(cleanCors);
+    cors.set(this.allowedByPolicy(cleanCors));
   }
 
+  private allowedByPolicy(origins: readonly string[]): string[] {
+    const allowed = this.options.isAllowedByPolicy;
+    return allowed ? origins.filter((origin) => allowed(origin)) : [...origins];
+  }
+
+  /**
+   * What a policy no longer allows stays stored, for when it's back, but goes out of the
+   * app's reach: the server stops forwarding to it, and it gets no CORS headers.
+   */
   trustedOrigins(): string[] {
-    return [...new Set([...this.options.state.data.approvedServers.map((server) => server.origin), ...this.pendingApproved])];
+    return this.allowedByPolicy([...new Set([...this.options.state.data.approvedServers.map((server) => server.origin), ...this.pendingApproved])]);
+  }
+
+  /** The policy changed. */
+  applyPolicy(): void {
+    const { state, cors, sendTrusted } = this.options;
+    cors.set(this.allowedByPolicy(state.data.corsOrigins));
+    sendTrusted(this.trustedOrigins());
+  }
+
+  /** For the request gate: a stored server the policy refuses gets nothing from a page. */
+  refusesRequest(url: string): boolean {
+    const allowed = this.options.isAllowedByPolicy;
+    if (!allowed) return false;
+    const origin = serverOrigin(url);
+    if (!origin) return false;
+    const { approvedServers, corsOrigins } = this.options.state.data;
+    const stored = corsOrigins.includes(origin) || approvedServers.some((server) => server.origin === origin);
+    return stored && !allowed(origin);
   }
 
   isApproved(origin: string): boolean {

@@ -424,103 +424,102 @@ test.describe('a live change', () => {
 
 test.describe('the wipe nonce', () => {
   const stateOf = (profile: string) => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8'));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 1500));
 
-  /** A page that wipes: counts the requests it gets. */
-  async function listen(window: Page, outcome: 'resolve' | 'reject' = 'resolve'): Promise<void> {
-    await window.evaluate((how) => {
-      const w = window as unknown as { __wipes: string[]; bulwarkDesktop: { policy: { onWipeOfflineData(h: (n: string) => Promise<unknown>): void } } };
-      w.__wipes = [];
-      w.bulwarkDesktop.policy.onWipeOfflineData(async (nonce) => {
-        w.__wipes.push(nonce);
-        if (how === 'reject') throw new Error('disk full');
+  /** Leaves a marker in a page's IndexedDB, OPFS and localStorage. */
+  const plant = (window: Page) =>
+    window.evaluate(async () => {
+      localStorage.setItem('wipe-marker', 'x');
+      const root = await navigator.storage.getDirectory();
+      const file = await root.getFileHandle('wipe-marker', { create: true });
+      const writable = await file.createWritable();
+      await writable.write('x');
+      await writable.close();
+      await new Promise<void>((resolve, reject) => {
+        const open = indexedDB.open('wipe-marker', 1);
+        open.onupgradeneeded = () => open.result.createObjectStore('s');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          open.result.close();
+          resolve();
+        };
       });
-    }, outcome);
-  }
-  const wipes = (window: Page) => window.evaluate(() => (window as unknown as { __wipes: string[] }).__wipes);
-  /** Long enough for a request that should not come to have arrived. */
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 1200));
+    });
 
-  test('fires exactly once per value, also across restarts, and a new value fires again', async () => {
+  const markers = (window: Page) =>
+    window.evaluate(async () => {
+      const root = await navigator.storage.getDirectory();
+      const opfs = await root.getFileHandle('wipe-marker').then(() => true, () => false);
+      const idb = (await indexedDB.databases()).some((db) => db.name === 'wipe-marker');
+      return { local: localStorage.getItem('wipe-marker') === 'x', opfs, idb };
+    });
+  const ALL = { local: true, opfs: true, idb: true };
+  const NONE = { local: false, opfs: false, idb: false };
+
+  test('deletes every partition, not only the open one, once per value, also across restarts', async () => {
     const root = freshRoot();
     const profile = tempProfile('policy');
-    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    setString(key(root, 'Machine'), 'WipeOfflineData', 'first');
 
+    // Data on two servers. A is what's forced when the wipe comes.
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     let started = await start(root, { profile });
-    await listen(started.page);
-    await expect.poll(() => wipes(started.page)).toEqual(['first']);
-    await expect.poll(() => stateOf(profile).policyWipes).toEqual(['first']);
-    await settle();
-    expect(await wipes(started.page)).toEqual(['first']);
+    await plant(started.page);
+    expect(await markers(started.page)).toEqual(ALL);
+    await stop(started, true);
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    started = await start(root, { profile });
+    await plant(started.page);
     await stop(started, true);
 
-    // After a restart: nothing.
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    setString(key(root, 'Machine'), 'WipeOfflineData', 'first');
     started = await start(root, { profile });
-    await listen(started.page);
-    await settle();
-    expect(await wipes(started.page)).toEqual([]);
+    expect(await markers(started.page)).toEqual(NONE);
+    expect(stateOf(profile).policyWipes).toEqual(['first']);
+    // Marked done: new data survives another start.
+    await plant(started.page);
+    await stop(started, true);
 
-    // A new value, live.
-    setString(key(root, 'Machine'), 'WipeOfflineData', 'second');
-    await expect.poll(() => wipes(started.page)).toEqual(['second']);
-    await settle();
-    expect(await wipes(started.page)).toEqual(['second']);
+    started = await start(root, { profile });
+    expect(await markers(started.page)).toEqual(ALL);
+    await stop(started, true);
+
+    // The other partition went too, though no page of it was open.
+    reg('delete', key(root, 'Machine'), '/v', 'WipeOfflineData', '/f');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    started = await start(root, { profile });
+    expect(await markers(started.page)).toEqual(NONE);
+    await stop(started, true);
+    removeProfile(profile);
+  });
+
+  test('a new value while running wipes with the window open, and brings it back', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root);
+    await plant(started.page);
+    setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
+    await expect.poll(() => (existsSync(path.join(started.profile, 'shell-state.json')) ? stateOf(started.profile).policyWipes : undefined)).toEqual(['live']);
+    await expect(started.page.locator('#stand-in')).toBeVisible();
+    expect(await markers(started.page)).toEqual(NONE);
 
     // An old value again: remembered per value.
-    setString(key(root, 'Machine'), 'WipeOfflineData', 'first');
+    await plant(started.page);
+    setString(key(root, 'Machine'), 'WipeOfflineData', 'next');
+    await expect.poll(() => stateOf(started.profile).policyWipes).toEqual(['live', 'next']);
+    await expect(started.page.locator('#stand-in')).toBeVisible();
+    await plant(started.page);
+    setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
     await settle();
-    expect(await wipes(started.page)).toEqual(['second']);
-    await stop(started, true);
-
-    expect(stateOf(profile).policyWipes).toEqual(['first', 'second']);
-    removeProfile(profile);
+    expect(await markers(started.page)).toEqual(ALL);
   });
 
-  test('a wipe that fails comes back at the next start, and only one window gets it', async () => {
+  test('the bridge has no way to take part: a page can\'t mark it done or put it off', async () => {
     const root = freshRoot();
-    const profile = tempProfile('policy');
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    setString(key(root, 'Machine'), 'WipeOfflineData', 'retry');
-
-    let started = await start(root, { profile });
-    await listen(started.page, 'reject');
-    await expect.poll(() => wipes(started.page)).toEqual(['retry']);
-    await settle();
-    expect(await wipes(started.page)).toEqual(['retry']);
-    await stop(started, true);
-    expect(stateOf(profile).policyWipes).toBeUndefined();
-
-    started = await start(root, { profile });
-    await listen(started.page);
-    await expect.poll(() => wipes(started.page)).toEqual(['retry']);
-    await expect.poll(() => stateOf(profile).policyWipes).toEqual(['retry']);
-    await stop(started, true);
-    removeProfile(profile);
-  });
-
-  test('waits until someone can act on it, and a reload mid-way asks again', async () => {
-    const root = freshRoot();
-    const profile = tempProfile('policy');
-    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    setString(key(root, 'Machine'), 'WipeOfflineData', 'waits');
-    const started = await start(root, { profile });
-    await settle();
-    // Nobody listened yet, so it isn't done.
-    expect(existsSync(path.join(profile, 'shell-state.json')) ? stateOf(profile).policyWipes : undefined).toBeUndefined();
-
-    await started.page.evaluate(() => {
-      const w = window as unknown as { bulwarkDesktop: { policy: { onWipeOfflineData(h: () => Promise<unknown>): void } } };
-      w.bulwarkDesktop.policy.onWipeOfflineData(() => new Promise(() => {}));
-    });
-    await settle();
-    expect(existsSync(path.join(profile, 'shell-state.json')) ? stateOf(profile).policyWipes : undefined).toBeUndefined();
-
-    await started.page.reload();
-    await listen(started.page);
-    await expect.poll(() => wipes(started.page)).toEqual(['waits']);
-    await expect.poll(() => stateOf(profile).policyWipes).toEqual(['waits']);
-    await stop(started, true);
-    removeProfile(profile);
+    const started = await start(root);
+    const members = await started.page.evaluate(() => Object.keys((window as unknown as { bulwarkDesktop: { policy: object } }).bulwarkDesktop.policy).sort());
+    expect(members).toEqual(['get', 'onChange']);
   });
 
   test('a recommended value does nothing', async () => {
@@ -528,17 +527,148 @@ test.describe('the wipe nonce', () => {
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     setString(key(root, 'Machine', 'Recommended'), 'WipeOfflineData', 'no');
     const started = await start(root);
-    await listen(started.page);
+    await plant(started.page);
     await settle();
-    expect(await wipes(started.page)).toEqual([]);
+    expect(await markers(started.page)).toEqual(ALL);
   });
 
-  test('main hears a clearly named event too', async () => {
+  test('OfflineEnabled forced off clears store files in the partitions no page has open, keeping the rest there', async () => {
+    const root = freshRoot();
+    const profile = tempProfile('policy');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    let started = await start(root, { profile });
+    await plant(started.page);
+    await stop(started, true);
+
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    setNumber(key(root, 'Machine'), 'OfflineEnabled', 0);
+    started = await start(root, { profile });
+    expect(stateOf(profile).offlineClearedForPolicy).toBe(true);
+    await stop(started, true);
+
+    reg('delete', key(root, 'Machine'), '/v', 'OfflineEnabled', '/f');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    started = await start(root, { profile });
+    expect(await markers(started.page)).toEqual({ local: true, opfs: false, idb: true });
+    expect(stateOf(profile).offlineClearedForPolicy).toBeUndefined();
+    await stop(started, true);
+    removeProfile(profile);
+  });
+});
+
+test.describe('"Later" on a forced change', () => {
+  test('asks again and then restarts by itself, saving first', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root, { args: ['--bulwark-test-policy-restart=400,2000'] });
+    const { app } = started;
+    const marker = path.join(started.profile, 'relaunched');
+    await app.evaluate(({ app: electronApp }, file) => {
+      electronApp.relaunch = (() => {
+        process.getBuiltinModule('node:fs').writeFileSync(file, 'yes');
+      }) as typeof electronApp.relaunch;
+    }, marker);
+    const closed = new Promise((resolve) => app.process().once('exit', resolve));
+    await fakeOsIntegration(app, 1);
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    await expect.poll(() => prompts(app).then((p) => p.length), { timeout: 1900 }).toBeGreaterThan(1);
+    await closed;
+    expect(readFileSync(marker, 'utf8')).toBe('yes');
+  });
+
+  test('a change back in time calls it off', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root, { args: ['--bulwark-test-policy-restart=300000,1500'] });
+    await fakeOsIntegration(started.app, 1);
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    await expect.poll(() => prompts(started.app).then((p) => p.length)).toBe(1);
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    expect(started.app.process().exitCode).toBeNull();
+    expect(started.page.isClosed()).toBe(false);
+  });
+});
+
+test.describe('a sign-in chain under a forced server', () => {
+  test('ends when a page in it fails to load', async () => {
     const root = freshRoot();
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     const started = await start(root);
-    expect(await started.page.evaluate(() => typeof (window as unknown as { bulwarkDesktop: { policy: { onWipeOfflineData: unknown } } }).bulwarkDesktop.policy.onWipeOfflineData)).toBe('function');
-    mkdirSync(started.profile, { recursive: true });
+    const { app, page: window } = started;
+    // An authorize request back to the instance, at an address that doesn't answer.
+    const dead = new URL('https://localhost:1/authorize');
+    dead.searchParams.set('redirect_uri', new URL('/cb', instanceA).toString());
+    await window.evaluate((url) => {
+      location.href = url;
+    }, dead.toString());
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    // No way back to the origin in between, which would end the chain anyway.
+    await app.evaluate(({ BrowserWindow }) => {
+      void BrowserWindow.getAllWindows()[0].webContents.executeJavaScript("location.href = 'https://example.com/after-failed-chain'").catch(() => {});
+    });
+    await expect.poll(() => opened(app)).toContain('https://example.com/after-failed-chain');
+  });
+});
+
+test.describe('AllowedJmapServers and a stored server', () => {
+  test('a stored instance off the list goes to the choice, and one chosen there is refused', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine', 'AllowedJmapServers'), '1', instanceA);
+    const started = await start(root, { state: { mode: 'instance', instanceUrl: instanceB } });
+    await expect(started.page.locator('#url')).toBeAttached();
+    const choose = (url: string) => started.page.evaluate((target) => (window as unknown as { bulwarkWelcome: { choose(c: object): Promise<unknown> } }).bulwarkWelcome.choose({ mode: 'instance', url: target }), url);
+    expect(await choose(instanceB)).toEqual({ ok: false, error: 'policy' });
+  });
+
+  test('a recommendation can\'t reach what only a forced value decides', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', insecure);
+    setNumber(key(root, 'Machine', 'Recommended'), 'AllowInsecureInstance', 1);
+    const started = await start(root);
+    expect(started.page.url()).toMatch(/^data:/);
+  });
+
+  test('a server off the list stops getting anything from the page, and is back when listed again', async () => {
+    const root = freshRoot();
+    const hits: string[] = [];
+    const counting = createHttpsServer({ key: certificate.keyPem, cert: certificate.certPem }, (req, res) => {
+      hits.push(req.url ?? '');
+      res.writeHead(200, { 'access-control-allow-origin': '*' });
+      res.end('{}');
+    });
+    await new Promise<void>((resolve) => counting.listen(0, '127.0.0.1', resolve));
+    servers.push(counting);
+    const origin = `https://localhost:${(counting.address() as AddressInfo).port}`;
+    setString(key(root, 'Machine', 'AllowedJmapServers'), '1', origin);
+    const started = await start(root, { state: { mode: 'standalone', corsOrigins: [origin] } });
+    const call = (name: string) => started.page.evaluate(async (url) => fetch(url, { mode: 'no-cors' }).then(() => 'reached', () => 'cancelled'), `${origin}/${name}`);
+
+    expect(await call('before')).toBe('reached');
+    expect(hits).toContain('/before');
+
+    setString(key(root, 'Machine', 'AllowedJmapServers'), '1', 'https://other.example');
+    // Polled, as the change takes a moment to arrive. Once one is cancelled, they all are.
+    await expect.poll(() => call('during')).toBe('cancelled');
+    expect(await call('still-off')).toBe('cancelled');
+    expect(hits).not.toContain('/still-off');
+
+    setString(key(root, 'Machine', 'AllowedJmapServers'), '1', origin);
+    await expect.poll(() => call('after')).toBe('reached');
+    expect(hits).toContain('/after');
+    // Nothing was forgotten.
+    expect(JSON.parse(readFileSync(path.join(started.profile, 'shell-state.json'), 'utf8')).corsOrigins).toEqual([origin]);
+  });
+
+  test('a bundle name that can\'t be decoded is refused, not a crash', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    setString(key(root, 'Machine'), 'PluginsMode', 'allowlist');
+    const started = await start(root);
+    const status = (name: string) => started.page.evaluate(async (url) => fetch(url).then((r) => r.status, () => 'cancelled'), new URL(`/api/admin/plugins/${name}/bundle`, instanceA).toString());
+    expect(await status('%E0')).toBe('cancelled');
+    expect(await status('refused')).toBe('cancelled');
+    expect(await started.app.evaluate(() => 'alive')).toBe('alive');
   });
 });
 
@@ -568,6 +698,10 @@ test.describe('plugins and mail servers in standalone mode', () => {
     const policyFile = path.join(started.profile, 'webmail', 'admin', 'policy.json');
     const features = () => JSON.parse(readFileSync(policyFile, 'utf8')).features as { pluginsEnabled: boolean; pluginsUploadEnabled: boolean };
     expect(features()).toMatchObject({ pluginsEnabled: true, pluginsUploadEnabled: true });
+
+    setString(key(root, 'Machine'), 'PluginsMode', 'allowlist');
+    await expect.poll(() => features().pluginsUploadEnabled).toBe(false);
+    expect(features().pluginsEnabled).toBe(true);
 
     setString(key(root, 'Machine'), 'PluginsMode', 'off');
     await expect.poll(() => features().pluginsEnabled).toBe(false);

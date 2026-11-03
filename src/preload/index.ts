@@ -48,12 +48,6 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
     policySnapshot = snapshot;
   });
-  const wipeHandlers = new Set<(nonce: string) => Promise<unknown>>();
-  ipcRenderer.on(CHANNEL.policyWipeRequest, (_event, nonce: string) => {
-    void Promise.allSettled([...wipeHandlers].map((handler) => handler(nonce))).then((results) => {
-      ipcRenderer.send(CHANNEL.policyWipeDone, nonce, wipeHandlers.size > 0 && results.every((result) => result.status === 'fulfilled'));
-    });
-  });
   const common = {
     version: BRIDGE_VERSION,
     platform,
@@ -80,13 +74,6 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     policy: {
       get: () => policySnapshot,
       onChange: (listener: (snapshot: PolicySnapshot) => void) => subscribe(CHANNEL.policyChanged, listener),
-      onWipeOfflineData: (handler: (nonce: string) => Promise<unknown>) => {
-        wipeHandlers.add(handler);
-        if (wipeHandlers.size === 1) ipcRenderer.send(CHANNEL.policyWipeListen);
-        return () => {
-          wipeHandlers.delete(handler);
-        };
-      },
     },
     lifecycle: {
       /**
