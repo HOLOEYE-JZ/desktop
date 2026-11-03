@@ -20,6 +20,14 @@ export interface ApprovedServer {
   approvedAt: number;
 }
 
+/** A window to bring back at the next start. */
+export interface SessionWindow {
+  type: WindowType;
+  url: string;
+  key?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+
 export interface ShellState {
   mode?: Mode;
   instanceUrl?: string;
@@ -31,6 +39,11 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** What was open at quit. Off by the setting in the webmail. */
+  session?: SessionWindow[];
+  restoreWindows?: boolean;
+  /** Chromium's zoom level: 0 is 100%. */
+  zoomLevel?: number;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

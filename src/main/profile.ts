@@ -53,6 +53,8 @@ function readJson(file: string): Record<string, unknown> {
 const SEEDED_CONFIG = {
   setupComplete: true,
   allowCustomJmapEndpoint: true,
+  // The app's name on the login page and in window titles, where a server has its own.
+  appName: 'Bulwark',
   // People bring tokens from their mail provider: it's their own client.
   loginShowTokenLogin: true,
 };

@@ -11,6 +11,11 @@ import type { Mode } from '../../shared/bridge';
 import type { StateFile } from '../state';
 import type { ThemeController } from '../theme';
 import type { WindowManager } from '../windows';
+import type { MenuController } from '../menu';
+import type { ZoomController } from '../zoom';
+import { contextMenuFeature } from './context-menu';
+import { dialogsFeature } from './dialogs';
+import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
 
@@ -21,6 +26,8 @@ export interface FeatureContext {
   state: StateFile;
   theme: ThemeController;
   windows: WindowManager;
+  menu: MenuController;
+  zoom: ZoomController;
   /** Standalone only. */
   servers?: ServerRegistry;
   localAdmin?: LocalAdmin;
@@ -36,7 +43,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [];
+export const FEATURES: Feature[] = [contextMenuFeature, windowInputFeature, dialogsFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

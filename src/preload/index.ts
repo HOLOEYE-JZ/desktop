@@ -15,7 +15,13 @@ import {
   BRIDGE_VERSION,
   CHANNEL,
   PRELOAD_ARG,
+  type ConfirmOptions,
+  type FlushAnswer,
+  type LanguagesUpdate,
+  type MenuBarEntry,
+  type MenuBarEvent,
   type MenuState,
+  type NativeMenuItem,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -40,7 +46,14 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
   const platform = process.platform as 'win32' | 'darwin' | 'linux';
   const flushHandlers = new Set<() => Promise<unknown>>();
   ipcRenderer.on(CHANNEL.lifecycleFlush, (_event, id: number) => {
-    void Promise.allSettled([...flushHandlers].map((handler) => handler())).then(() => ipcRenderer.send(CHANNEL.lifecycleFlushed, id));
+    void Promise.allSettled([...flushHandlers].map((handler) => handler())).then((settled) => {
+      const answers: FlushAnswer[] = settled.map((result) => {
+        if (result.status === 'rejected') return { failed: 1 };
+        const { failed, timedOut, unsent } = (result.value ?? {}) as FlushAnswer;
+        return { failed, timedOut, unsent };
+      });
+      ipcRenderer.send(CHANNEL.lifecycleFlushed, id, answers);
+    });
   });
   const common = {
     version: BRIDGE_VERSION,
@@ -54,16 +67,43 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       focus: (id?: number) => ipcRenderer.send(CHANNEL.windowsFocus, id),
       list: (): Promise<WindowInfo[]> => ipcRenderer.invoke(CHANNEL.windowsList),
       onChanged: (listener: (windows: WindowInfo[]) => void) => subscribe(CHANNEL.windowsChanged, listener),
+      closeSelf: () => ipcRenderer.send(CHANNEL.windowsCloseSelf),
+      setRestore: (urls: string[]) => ipcRenderer.send(CHANNEL.windowsSetRestore, urls),
+      setRestoreEnabled: (enabled: boolean) => ipcRenderer.send(CHANNEL.windowsSetRestoreEnabled, enabled),
+      sessionReady: () => ipcRenderer.send(CHANNEL.windowsSessionReady),
+      spare: {
+        ready: () => ipcRenderer.send(CHANNEL.windowsSpareReady),
+        taken: () => ipcRenderer.send(CHANNEL.windowsSpareTaken),
+        onActivate: (listener: (url: string) => void) => subscribe(CHANNEL.windowsSpareActivate, listener),
+      },
     },
     theme: {
       set: (theme: ThemeColours) => ipcRenderer.send(CHANNEL.themeSet, theme),
       onSystemChange: (listener: (system: SystemTheme) => void) => subscribe(CHANNEL.themeSystem, listener),
+      system: (): Promise<SystemTheme> => ipcRenderer.invoke(CHANNEL.themeGetSystem),
     },
     menu: {
       setState: (state: MenuState) => ipcRenderer.send(CHANNEL.menuSetState, state),
+      onCommand: (listener: (id: string) => void) => subscribe(CHANNEL.menuCommand, listener),
+      popup: (items: NativeMenuItem[], at: { x: number; y: number }): Promise<string | null> =>
+        ipcRenderer.invoke(CHANNEL.menuPopup, items, at),
+      bar: {
+        entries: (): Promise<MenuBarEntry[]> => ipcRenderer.invoke(CHANNEL.menuBarEntries),
+        open: (id: string, at: { x: number; y: number }) => ipcRenderer.send(CHANNEL.menuBarOpen, id, at),
+        onEvent: (listener: (event: MenuBarEvent) => void) => subscribe(CHANNEL.menuBarEvent, listener),
+      },
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
+      setLanguages: (languages: LanguagesUpdate) => ipcRenderer.send(CHANNEL.shellSetLanguages, languages),
+    },
+    dialogs: {
+      /** A native question. Answers with the index of the button chosen. */
+      confirm: (options: ConfirmOptions): Promise<number> => ipcRenderer.invoke(CHANNEL.dialogsConfirm, options),
+    },
+    clipboard: {
+      /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */
+      copyFile: (name: string, data: ArrayBuffer): Promise<boolean> => ipcRenderer.invoke(CHANNEL.clipboardCopyFile, name, data),
     },
     lifecycle: {
       /**

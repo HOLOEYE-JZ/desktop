@@ -5,44 +5,34 @@
  * already has the right background.
  */
 
-import { nativeTheme } from 'electron';
+import { nativeTheme, systemPreferences } from 'electron';
 import type { SystemTheme, ThemeColours } from '../shared/bridge';
 import type { StateFile } from './state';
+import { accentHex, highContrastColours, isDarkColour, toHex, type ChromeColours } from './chrome-colours';
+
+export type { ChromeColours } from './chrome-colours';
+export { isDarkColour, toHex } from './chrome-colours';
 
 const DEFAULTS = {
   dark: { background: '#17181b', symbol: '#f4f4f5' },
   light: { background: '#ffffff', symbol: '#18181b' },
 };
 
-export interface ChromeColours {
-  background: string;
-  symbol: string;
-  dark: boolean;
-}
-
-/** `#rgb`, `#rrggbb`, `rgb()` and `rgba()` to `#rrggbb`. Null for anything else. */
-export function toHex(colour: unknown): string | null {
-  if (typeof colour !== 'string') return null;
-  const text = colour.trim().toLowerCase();
-  let match = /^#([0-9a-f]{3})$/.exec(text);
-  if (match) return `#${[...match[1]].map((c) => c + c).join('')}`;
-  match = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/.exec(text);
-  if (match) return `#${match[1]}`;
-  match = /^rgba?\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})(?:[\s,/]+[\d.]+%?)?\s*\)$/.exec(text);
-  if (match) {
-    const parts = match.slice(1, 4).map(Number);
-    if (parts.some((n) => n > 255)) return null;
-    return `#${parts.map((n) => n.toString(16).padStart(2, '0')).join('')}`;
+function systemColour(name: 'window' | 'window-text'): string | null {
+  // On macOS and Windows only.
+  try {
+    return (systemPreferences as unknown as { getColor?: (name: string) => string }).getColor?.(name) ?? null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
-export function isDarkColour(hex: string): boolean {
-  const value = parseInt(hex.slice(1), 16);
-  const r = (value >> 16) & 0xff;
-  const g = (value >> 8) & 0xff;
-  const b = value & 0xff;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 128;
+function systemAccent(): string | null {
+  try {
+    return accentHex(systemPreferences.getAccentColor?.());
+  } catch {
+    return null;
+  }
 }
 
 export class ThemeController {
@@ -52,18 +42,28 @@ export class ThemeController {
   constructor(private readonly state: StateFile) {
     nativeTheme.themeSource = 'system';
     nativeTheme.on('updated', () => {
-      const system = this.system();
-      for (const listener of this.systemListeners) listener(system);
-      // Nothing from a page yet: the chrome follows the OS by itself.
-      if (!this.state.data.theme) this.emit();
+      this.emitSystem();
+      // Nothing from a page yet: the chrome follows the OS by itself. A contrast theme wins over a page.
+      if (!this.state.data.theme || nativeTheme.shouldUseHighContrastColors) this.emit();
     });
+    // Windows only; on macOS `nativeTheme` updated covers it.
+    (systemPreferences as unknown as NodeJS.EventEmitter).on?.('accent-color-changed', () => this.emitSystem());
+  }
+
+  private emitSystem(): void {
+    const system = this.system();
+    for (const listener of this.systemListeners) listener(system);
   }
 
   system(): SystemTheme {
-    return { dark: nativeTheme.shouldUseDarkColors, highContrast: nativeTheme.shouldUseHighContrastColors };
+    const accent = systemAccent();
+    return { dark: nativeTheme.shouldUseDarkColors, highContrast: nativeTheme.shouldUseHighContrastColors, ...(accent ? { accent } : {}) };
   }
 
   colours(): ChromeColours {
+    if (nativeTheme.shouldUseHighContrastColors) {
+      return highContrastColours(systemColour('window'), systemColour('window-text'), nativeTheme.shouldUseDarkColors);
+    }
     const stored = this.state.data.theme;
     if (stored) {
       return {

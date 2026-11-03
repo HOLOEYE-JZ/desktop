@@ -26,6 +26,7 @@ npm start
 - `src/server/` runs in a utilityProcess: a custom `next()` server on TLS, with a per-install certificate pinned by fingerprint, answering only requests with a per-launch secret that main adds. See `src/server/host.ts`.
 - `src/preload/` is the bridge, `window.bulwarkDesktop`. The webmail's side is `lib/desktop/`. `src/shared/bridge.ts` is a copy of the contract in `lib/desktop/types.ts`: change both together.
 - `src/main/windows.ts` is the window manager: all app windows go through it.
+- `src/main/menu.ts` is the app menu. Commands run in the page, through `menu.onCommand` and `lib/desktop/commands.ts` in the webmail. A feature adds its own lines with `menu.extend`. Native right-click menus are the webmail's HTML menus read back: `lib/desktop/native-menu.ts`.
 - `src/main/features/` is where tray, jump lists, toasts, context menus and policies plug in. See `features/index.ts`.
 
 ## Test
@@ -36,6 +37,8 @@ vw exec --env IT_ENT_PASSWORD="vault://Stalwart test – ent-* throwaway account
 ```
 
 `test/` drives the real app with Playwright's Electron support, on a real webmail build.
+
+`BULWARK_TEST_WEBMAIL=<dir>` runs the tests on another webmail build, made with `fetch-webmail.mjs --out <dir>`. `test/native-windows.spec.ts` needs one from the same branch. `test/native-timing.spec.ts` is for the bench rig only, and `test/native-screenshots.spec.ts` takes pictures from a real, unlocked desktop.
 
 ## Licence
 
