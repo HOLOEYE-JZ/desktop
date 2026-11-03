@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, powerMonitor } from 'electron';
+import { app, autoUpdater, BrowserWindow, powerMonitor } from 'electron';
 import { CHANNEL, type OsSummary, type OsTrayMessage } from '../../shared/bridge';
 import { strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
@@ -16,6 +16,7 @@ import { OsHub } from './os-hub';
 import { setupLaunch } from './os-launch';
 import { applyLoginItem, readLoginItem, setupLogin } from './os-login';
 import { setupPower } from './os-power';
+import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
 import { setupTray } from './os-tray';
@@ -62,15 +63,40 @@ function setup(ctx: FeatureContext): void {
     // Signing out of the OS must not stop at a window that wants to hide.
     window.on('session-end', () => windows.beginQuit());
   });
-  windows.setCloseToBackground(() => hub.settings().closeToTray);
   powerMonitor.on('shutdown', () => windows.beginQuit());
+  autoUpdater.on('before-quit-for-update', () => windows.beginQuit());
+
+  // Window titles carry subjects, and the Window menu and the taskbar show them.
+  windows.on('created', ({ window }) => {
+    window.webContents.on('page-title-updated', (event) => {
+      if (!hub.locked) return;
+      event.preventDefault();
+      window.setTitle('Bulwark');
+    });
+  });
+  hub.on('locked', (locked) => {
+    for (const { id } of windows.list()) {
+      const window = BrowserWindow.fromId(id);
+      if (!window || window.isDestroyed()) continue;
+      window.setTitle(locked ? 'Bulwark' : window.webContents.getTitle() || 'Bulwark');
+    }
+  });
 
   const taskbar = setupTaskbar(hub, ICONS);
   const toasts = setupToasts(hub, taskbar.attention);
   const tray = setupTray(hub, ICONS);
+  setupResilience(hub, toasts.showNotice);
+  // With no tray to come back from, closing to it would be hiding into nothing. The Dock stays.
+  windows.setCloseToBackground(() => hub.settings().closeToTray && (!!tray || process.platform === 'darwin'));
   const launch = setupLaunch(hub);
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));
+  hub.on('cleared', files.clear);
+  hub.on('locked', (locked) => {
+    if (locked && hub.lockIsReal) files.clear();
+  });
+  // Nothing of the account is left on the OS's surfaces once it's gone. No page answers then.
+  app.on('will-quit', () => hub.clearSurfaces());
   setupLogin(hub);
   const power = setupPower(hub);
 
@@ -93,7 +119,8 @@ function setup(ctx: FeatureContext): void {
   });
   ctx.on(CHANNEL.osSetSummary, (_event, _window, summary) => hub.setSummary(cleanSummary(summary)));
   ctx.on(CHANNEL.osSetProgress, (_event, _window, progress, mode) => taskbar.setProgress(progress, mode));
-  ctx.on(CHANNEL.osSetLocked, (_event, _window, locked) => hub.setLocked(locked === true));
+  ctx.on(CHANNEL.osSetLocked, (event, _window, locked) => hub.setLockedByPage(locked !== false, event.sender));
+  ctx.on(CHANNEL.osClearSurfaces, () => hub.clearSurfaces());
   ctx.handle(CHANNEL.osNotify, (_event, _window, notification) => toasts.notify(notification));
   ctx.handle(CHANNEL.osStartDrag, (event, _window, list) => files.startDrag(event.sender, list));
   ctx.handle(CHANNEL.osCopyFiles, (_event, _window, list) => files.copy(list));

@@ -33,6 +33,7 @@ import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
 import { strings } from './strings';
+import { leaveLaunchFolder } from './system-exe';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
 
@@ -54,6 +55,8 @@ function argValue(name: string): string | undefined {
 // A test or a second development copy points this elsewhere.
 const userDataArg = DEV ? argValue('bulwark-user-data') : undefined;
 if (userDataArg) app.setPath('userData', userDataArg);
+// Before anything can run a program: see system-exe.ts.
+leaveLaunchFolder(app.getPath('userData'));
 
 app.setName('Bulwark');
 if (process.platform === 'win32') {

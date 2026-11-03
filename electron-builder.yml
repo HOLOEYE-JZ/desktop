@@ -74,6 +74,10 @@ mac:
 linux:
   target: dir
   category: Network;Email
+  # Binary and .desktop file named alike: Unity's count and the window's app_id look at
+  # desktopName in package.json, and without these the file is bulwark-desktop.desktop.
+  executableName: bulwark
+  syncDesktopName: true
   # electron-builder adds %U to Exec and fills MimeType from these.
   mimeTypes:
     - x-scheme-handler/mailto

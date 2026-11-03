@@ -35,6 +35,8 @@ npm start
 
 Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu shortcut and a COM key. `test/os.spec.ts` takes them away again; on a hand run, look for `Bulwark Dev` under `Run`, `{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}` under `Software\Classes\CLSID` and `Electron.lnk` under Start Menu Programs.
 
+A file dragged or copied out of the app is a temporary copy in a private folder (`%LOCALAPPDATA%\Bulwark\os-files`, or under userData elsewhere), gone within minutes, at sign-out and at quit. Save it somewhere before working on it: a program opened straight on that copy loses its edits when the copy goes. Decrypted S/MIME and PGP attachments never go through that folder.
+
 ## Test
 
 ```sh

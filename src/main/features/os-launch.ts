@@ -10,16 +10,23 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
 import type { OsHub } from './os-hub';
-import { commandFromUrl, fileReason, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, type LaunchRequest } from './os-rules';
+import { launchFolder } from '../system-exe';
+import { commandFromUrl, fileReason, launchSkipPaths, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, type LaunchRequest } from './os-rules';
 
-const early: { urls: string[]; files: string[] } = { urls: [], files: [] };
+const early: { urls: string[]; files: string[]; launches: { argv: string[]; cwd: string }[] } = { urls: [], files: [], launches: [] };
 let liveHandler: ((request: LaunchRequest) => void) | null = null;
+let liveSecondLaunch: ((argv: string[], cwd: string) => void) | null = null;
 
 /**
  * macOS sends these before `ready`, and before anything else is set up, on a cold
  * start. Dropping a file on the dock comes in here too.
  */
 export function holdEarlyLaunches(): void {
+  // A second launch during the boot waits as well, and doesn't get lost.
+  app.on('second-instance', (_event, argv, cwd) => {
+    if (liveSecondLaunch) liveSecondLaunch(argv, cwd);
+    else early.launches.push({ argv, cwd });
+  });
   app.on('open-file', (event, file) => {
     event.preventDefault();
     if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false, toastUrls: [] });
@@ -65,7 +72,7 @@ export interface LaunchHandle {
 }
 
 export function setupLaunch(hub: OsHub): LaunchHandle {
-  const skip = [app.getAppPath(), process.argv[1] ?? ''].filter(Boolean);
+  const skip = launchSkipPaths(!!process.defaultApp, app.getAppPath(), process.argv[1]);
 
   /** What the toast URLs ask for. One that isn't ours is dropped. */
   const toastActions = (request: LaunchRequest) => request.toastUrls.flatMap((url) => parseToastUrl(url, hub.toastSecret()) ?? []);
@@ -86,13 +93,14 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
 
   const handle = (argv: string[], cwd: string) => run(parseArgv(argv, { cwd, skip }));
 
-  app.on('second-instance', (_event, argv, cwd) => {
+  liveSecondLaunch = (argv, cwd) => {
     const request = parseArgv(argv, { cwd, skip });
     if (!staysHidden(request)) hub.ctx.showMain();
     void run(request);
-  });
+  };
+  for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);
 
-  const first = parseArgv(process.argv, { cwd: process.cwd(), skip });
+  const first = parseArgv(process.argv, { cwd: launchFolder(), skip });
   const wasAtLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
   first.commands.push(...early.urls.flatMap((url) => commandFromUrl(url) ?? []));
   first.files.push(...early.files);
@@ -101,7 +109,8 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   if ((first.fromLogin || wasAtLogin) && hub.settings().startMinimized && first.commands.length === 0 && first.files.length === 0) {
     hub.ctx.windows.startMainHidden();
   }
-  if (staysHidden(first)) hub.ctx.windows.startMainHidden();
+  // With close to tray off the user has no reason to look there, so the window shows.
+  if (staysHidden(first) && hub.settings().closeToTray) hub.ctx.windows.startMainHidden();
   void run(first);
 
   return { handle };

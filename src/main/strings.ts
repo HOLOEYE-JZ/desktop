@@ -65,6 +65,10 @@ const en = {
   jumpContacts: 'Contacts',
   thumbNewMessage: 'New message',
   thumbInbox: 'Inbox',
+  replyLostTitle: 'Bulwark was not running',
+  replyLostBody: 'If you typed a reply on a notification, it could not be kept. Open the message and reply there.',
+  pageCrashedTitle: 'Bulwark stopped working',
+  pageCrashedBody: 'It stopped several times in a row, so new mail is not coming in. Quit Bulwark from the tray icon and start it again.',
   keystoreAllowSession: 'Allow for this session',
   keystoreAllowOnce: 'Allow once',
   keystoreDeny: 'Deny',
@@ -156,6 +160,10 @@ const de: typeof en = {
   jumpContacts: 'Kontakte',
   thumbNewMessage: 'Neue Nachricht',
   thumbInbox: 'Posteingang',
+  replyLostTitle: 'Bulwark lief nicht',
+  replyLostBody: 'Falls Sie in einer Benachrichtigung eine Antwort eingegeben haben, konnte sie nicht übernommen werden. Öffnen Sie die Nachricht und antworten Sie dort.',
+  pageCrashedTitle: 'Bulwark funktioniert nicht mehr',
+  pageCrashedBody: 'Es wurde mehrmals hintereinander beendet, daher kommen keine neuen E-Mails an. Beenden Sie Bulwark über das Symbol im Infobereich und starten Sie es neu.',
 };
 
 export function strings(): typeof en {

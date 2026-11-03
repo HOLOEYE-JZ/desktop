@@ -37,8 +37,6 @@ export interface ShellState {
   osPausedUntil?: number | null;
   /** The first close to the tray said so. */
   osCloseNoticeShown?: boolean;
-  /** The path the mail app's registry keys point at. */
-  osRegisteredExe?: string;
   /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
   osToastSecret?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */

@@ -158,8 +158,9 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
 
   hub.on('badge', setBadge);
   hub.on('summary', scheduleJumpList);
-  // Subjects leave the jump list at once when the app locks.
+  // Subjects leave the jump list at once when the app locks, signs out or quits.
   hub.on('locked', () => applyJumpList());
+  hub.on('cleared', () => applyJumpList());
   applyJumpList();
 
   if (process.platform === 'darwin' && app.dock) {

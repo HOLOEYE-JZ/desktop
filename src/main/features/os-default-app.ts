@@ -11,14 +11,15 @@
 import { execFile } from 'node:child_process';
 import { app, shell } from 'electron';
 import type { OsDefaultAppStatus } from '../../shared/bridge';
+import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
-import { WINDOWS_APP_NAME, WINDOWS_URLS, windowsRegistration, windowsRegistrationKeys, type RegistryValue } from './os-rules';
+import { needsRegistration, WINDOWS_APP_NAME, WINDOWS_URLS, windowsRegistration, windowsRegistrationKeys, type RegistryValue } from './os-rules';
 
 export const DEFAULT_APP_SETTINGS_URL = `ms-settings:defaultapps?registeredAppUser=${WINDOWS_APP_NAME}`;
 
 function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
-    execFile('reg.exe', args, { windowsHide: true, timeout: 10_000 }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout) }));
+    execFile(systemExe('reg.exe'), args, { windowsHide: true, timeout: 10_000 }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout) }));
   });
 }
 
@@ -46,7 +47,7 @@ async function isChosenOnWindows(scheme: string): Promise<boolean> {
   return ok && stdout.includes(WINDOWS_URLS[scheme]);
 }
 
-const LINUX_TYPES = ['x-scheme-handler/mailto', 'x-scheme-handler/webcal', 'message/rfc822', 'text/calendar', 'text/vcard'];
+const LINUX_TYPES = ['x-scheme-handler/webcals', 'x-scheme-handler/mailto', 'x-scheme-handler/webcal', 'message/rfc822', 'text/calendar', 'text/vcard'];
 
 function linuxMakeDefault(): Promise<void> {
   return new Promise((resolve) => {
@@ -90,12 +91,12 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
     return status();
   };
 
-  // Follows the path of an update. A development run writes nothing unless asked.
-  if (win32 && app.isPackaged && hub.ctx.state.data.osRegisteredExe !== process.execPath) {
-    void register().then((ok) => {
-      if (!ok) return;
-      hub.ctx.state.data.osRegisteredExe = process.execPath;
-      hub.ctx.state.touch();
+  // Follows the path of an update, and comes back after an uninstall and a reinstall to the
+  // same path, so this asks the registry rather than remember. A development run writes
+  // nothing unless asked.
+  if (win32 && app.isPackaged) {
+    void reg(['query', 'HKCU\\Software\\Classes\\bulwark\\shell\\open\\command', '/ve']).then((query) => {
+      if (needsRegistration(query, process.execPath)) void register();
     });
   }
   if (app.isPackaged && !win32) app.setAsDefaultProtocolClient('bulwark');

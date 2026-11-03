@@ -1,9 +1,17 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { inflateSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 import { encodePng, overlayPng, overlayText, withUnreadDot } from '../src/main/features/os-icons';
+import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  isRetryableLoadError,
+  launchSkipPaths,
+  needsRegistration,
+  reloadDelayMs,
+  safeDragFileName,
   commandFromUrl,
   defaultSettings,
   fileReason,
@@ -79,6 +87,33 @@ test.describe('what a command line asks for', () => {
     expect(request.files).toEqual([]);
   });
 
+  test('a packaged app has no script on its command line: the first file is a file', () => {
+    expect(launchSkipPaths(false, 'C:\\app\\app.asar', 'C:\\mail\\first.eml')).toEqual([]);
+    expect(launchSkipPaths(true, 'C:\\dev', 'C:\\dev\\dist\\main.mjs')).toEqual(['C:\\dev', 'C:\\dev\\dist\\main.mjs']);
+    expect(parseArgv(['Bulwark.exe', 'C:\\mail\\first.eml'], { cwd: 'C:\\work', skip: launchSkipPaths(false, 'x', 'C:\\mail\\first.eml') }).files).toEqual(['C:\\mail\\first.eml']);
+  });
+
+  test('a URL stands alone: nothing next to it attaches a local file, and a second URL is dropped', () => {
+    const broken = parseArgv(['bulwark.exe', '--', 'mailto:a@example.org', 'C:\\Users\\me\\secret.txt', 'webcal://x/y'], ARGV_OPTIONS);
+    expect(broken.commands).toEqual([{ type: 'mailto', url: 'mailto:a@example.org' }]);
+    expect(broken.files).toEqual([]);
+    const before = parseArgv(['bulwark.exe', 'C:\\Users\\me\\secret.txt', 'mailto:a@example.org'], ARGV_OPTIONS);
+    expect(before.files).toEqual([]);
+    const unknown = parseArgv(['bulwark.exe', 'javascript:x', 'C:\\Users\\me\\secret.txt'], ARGV_OPTIONS);
+    expect(unknown.files).toEqual([]);
+  });
+
+  test('several files together still open', () => {
+    expect(parseArgv(['bulwark.exe', 'a.eml', 'b.eml'], ARGV_OPTIONS).files.length).toBe(2);
+  });
+
+  test('a Linux file manager\'s file: URL is a file; elsewhere it is nothing', () => {
+    const linux = parseArgv(['bulwark', 'file:///home/me/a%20b.eml'], { cwd: '/home/me', skip: [], platform: 'linux' });
+    expect(linux.files).toEqual(['/home/me/a b.eml']);
+    expect(parseArgv(['bulwark', 'file://evil/share/a.eml'], { cwd: '/home/me', skip: [], platform: 'linux' }).files).toEqual([]);
+    expect(parseArgv(['bulwark.exe', 'file:///c:/a.eml'], { ...ARGV_OPTIONS, platform: 'win32' }).files).toEqual([]);
+  });
+
   test('unknown schemes do nothing', () => {
     const request = parseArgv(['bulwark.exe', 'javascript:alert(1)', 'file:///c:/x', 'https://example.org/'], ARGV_OPTIONS);
     expect(request.commands).toEqual([]);
@@ -92,6 +127,7 @@ test.describe('bulwark: links only show things', () => {
     expect(commandFromUrl('bulwark://calendar')).toEqual({ type: 'navigate', target: 'calendar' });
     expect(commandFromUrl('bulwark://message/acc%2F1/id-2')).toEqual({ type: 'open-message', accountId: 'acc/1', emailId: 'id-2' });
     expect(commandFromUrl('bulwark://mailbox/inbox-1')).toEqual({ type: 'open-mailbox', mailboxId: 'inbox-1' });
+    expect(commandFromUrl('bulwark://folder/inbox')).toEqual({ type: 'open-mailbox', mailboxId: 'inbox' });
   });
 
   test('nothing that changes mail, and nothing unknown', () => {
@@ -163,6 +199,16 @@ test.describe('file names', () => {
     expect(safeFileName('a:b*c?.txt')).toBe('a_b_c_.txt');
   });
 
+  test('files that run something by being opened are made inert', () => {
+    for (const name of ['evil.lnk', 'evil.URL', 'evil.scf', 'evil.library-ms']) expect(safeDragFileName(name)).toBe(`${name}.txt`);
+    expect(safeDragFileName('report.pdf')).toBe('report.pdf');
+  });
+
+  test('every spelling Windows reserves', () => {
+    for (const name of ['CONIN$', 'conout$.txt', 'COM\u00b9', 'lpt\u00b2.log', 'con .txt', 'com0']) expect(safeFileName(name).startsWith('_'), name).toBe(true);
+    expect(safeFileName('console.txt')).toBe('console.txt');
+  });
+
   test('reserved names and trailing dots', () => {
     expect(safeFileName('con.txt')).toBe('_con.txt');
     expect(safeFileName('report. . ')).toBe('report');
@@ -200,14 +246,26 @@ test.describe('toast', () => {
   };
 
   test('nothing from a mail breaks out of the XML', () => {
-    const xml = buildToastXml(toast, SECRET);
+    const xml = buildToastXml(toast, SECRET, true);
     expect(xml).not.toContain('<b>');
     expect(xml).not.toContain('Alice <alice');
     expect(xml).toContain('&#60;b&#62;');
   });
 
+  test('a cut-off subject with half an emoji stays valid XML', () => {
+    const xml = buildToastXml({ ...toast, body: 'Cut \ud83d' }, SECRET, true);
+    expect((xml as string & { isWellFormed(): boolean }).isWellFormed()).toBe(true);
+  });
+
+  test('where the activator isn\'t known to answer, Reply opens the composer: no field to lose text in', () => {
+    const xml = buildToastXml(toast, SECRET, false);
+    expect(xml).not.toContain('<input');
+    expect(xml).not.toContain('hint-inputId');
+    expect(xml).toMatch(/content="Reply" activationType="protocol" arguments="bulwark:\/\/toast\/reply/);
+  });
+
   test('has every button and the reply field, and stays silent', () => {
-    const xml = buildToastXml(toast, SECRET);
+    const xml = buildToastXml(toast, SECRET, true);
     for (const label of ['Archive', 'Mark read', 'Delete', 'Reply']) expect(xml).toContain(`content="${label}"`);
     expect(xml).toContain('<input id="reply" type="text"');
     expect(xml).toContain('hint-inputId="reply"');
@@ -215,7 +273,7 @@ test.describe('toast', () => {
   });
 
   test('buttons and the click work with the app closed; only the reply needs the activator', () => {
-    const xml = buildToastXml(toast, SECRET);
+    const xml = buildToastXml(toast, SECRET, true);
     expect(xml).toMatch(/<toast launch="bulwark:\/\/toast\/open[^"]*" activationType="protocol">/);
     expect(xml).toMatch(/content="Archive" activationType="protocol" arguments="bulwark:\/\/toast\/archive/);
     expect(xml).toMatch(/content="Reply" hint-inputId="reply" activationType="foreground" arguments="bulwark:reply:/);
@@ -240,7 +298,7 @@ test.describe('toast', () => {
   });
 
   test('a locked toast is only what it was given', () => {
-    const xml = buildToastXml({ title: 'Bulwark', body: 'You have new mail', silent: true, context: '', actions: [] }, SECRET);
+    const xml = buildToastXml({ title: 'Bulwark', body: 'You have new mail', silent: true, context: '', actions: [] }, SECRET, true);
     expect(xml).not.toContain('<actions>');
     expect(xml).not.toContain('<input');
   });
@@ -262,12 +320,49 @@ test.describe('registry', () => {
     expect(find('Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command')?.data).toBe('"C:\\Apps\\Bulwark\\Bulwark.exe" -- "%1"');
   });
 
+  test('webcals: is offered too, and taking it away asks for the key once', () => {
+    expect(find('Software\\Bulwark\\Capabilities\\UrlAssociations', 'webcals')?.data).toBe('Bulwark.Url.webcal');
+    const { keys } = windowsRegistrationKeys();
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  test('an uninstall and a reinstall to the same path registers again: the registry decides', () => {
+    const exe = 'C:\\Apps\\Bulwark.exe';
+    expect(needsRegistration({ ok: false, stdout: '' }, exe)).toBe(true);
+    expect(needsRegistration({ ok: true, stdout: 'REG_SZ "C:\\Old\\Bulwark.exe" -- "%1"' }, exe)).toBe(true);
+    expect(needsRegistration({ ok: true, stdout: 'REG_SZ "c:\\apps\\bulwark.exe" -- "%1"' }, exe)).toBe(false);
+  });
+
   test('taking it away removes only what is ours', () => {
     const { keys, values: removed } = windowsRegistrationKeys();
     expect(keys).toContain('Software\\Bulwark');
     expect(keys).toContain('Software\\Classes\\Bulwark.Url.mailto');
     expect(keys.some((key) => /\\\.eml$/.test(key))).toBe(false);
     expect(removed).toContainEqual({ key: 'Software\\Classes\\.eml\\OpenWithProgids', name: 'Bulwark.File.eml' });
+  });
+});
+
+test.describe('programs and retries', () => {
+  test('no source file runs a Windows tool by its bare name', () => {
+    const dir = path.resolve(import.meta.dirname, '..', 'src', 'main');
+    const files = readdirSync(dir, { recursive: true, encoding: 'utf8' }).filter((name) => name.endsWith('.ts'));
+    expect(files.length).toBeGreaterThan(10);
+    for (const name of files) {
+      const source = readFileSync(path.join(dir, name), 'utf8');
+      expect(source, name).not.toMatch(/(execFile|spawn|exec|execFileSync|spawnSync)\(\s*['"`](reg|powershell|cmd|where|osascript|gsettings)(\.exe)?['"`]/i);
+    }
+  });
+
+  test('Windows tools go by full path, never looked for next to a file', () => {
+    expect(systemExe('reg.exe', 'C:\\Windows')).toBe('C:\\Windows\\System32\\reg.exe');
+    expect(systemExe('powershell.exe', 'C:\\Windows')).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+  });
+
+  test('a failed load backs off, up to a minute, and only for network errors', () => {
+    expect([0, 1, 2, 3, 4, 9].map(reloadDelayMs)).toEqual([2000, 5000, 15000, 30000, 60000, 60000]);
+    expect(isRetryableLoadError(-106)).toBe(true);
+    expect(isRetryableLoadError(-3)).toBe(false);
+    expect(isRetryableLoadError(-202)).toBe(false);
   });
 });
 

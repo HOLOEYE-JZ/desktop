@@ -17,5 +17,7 @@
     DeleteRegKey HKCU "Software\Classes\CLSID\{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Bulwark"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Bulwark"
+    RMDir /r "$LOCALAPPDATA\Bulwark\os-files"
+    RMDir "$LOCALAPPDATA\Bulwark"
   ${endIf}
 !macroend

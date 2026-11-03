@@ -6,6 +6,7 @@
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { OsCommand, OsSettings } from '../../shared/bridge';
 
 export const DEFAULT_SHOW_SHORTCUT = 'CommandOrControl+Shift+B';
@@ -123,6 +124,7 @@ export function commandFromUrl(raw: string): OsCommand | null {
     case 'message':
       return decoded.length === 2 && ids(decoded[0], decoded[1]) ? { type: 'open-message', accountId: decoded[0], emailId: decoded[1] } : null;
     case 'mailbox':
+    case 'folder':
       return decoded.length === 1 && ids(decoded[0]) ? { type: 'open-mailbox', mailboxId: decoded[0] } : null;
     default:
       return null;
@@ -145,15 +147,30 @@ export function fileReason(file: string): 'open' | 'attach' {
   return OPENABLE.has(path.extname(file).toLowerCase()) ? 'open' : 'attach';
 }
 
+/** Only a development run has its script on the command line. There, argv[1] may be a user's file. */
+export function launchSkipPaths(defaultApp: boolean, appPath: string, argv1: string | undefined): string[] {
+  return defaultApp ? [appPath, argv1 ?? ''].filter(Boolean) : [];
+}
+
 /**
  * What a command line asks for. Chromium's and our own switches, the program and its
  * script are not requests. Past a bare `--` nothing is a switch, which is how the
  * registered handlers pass a URL.
+ *
+ * A URL stands alone. A handler gets one, so anything next to it came from a link broken
+ * up on its spaces, and must not attach a local file. File managers on Linux hand over
+ * file: URLs, which are files.
  */
-export function parseArgv(argv: readonly string[], options: { cwd: string; skip: readonly string[] }): LaunchRequest {
+export function parseArgv(
+  argv: readonly string[],
+  options: { cwd: string; skip: readonly string[]; platform?: NodeJS.Platform },
+): LaunchRequest {
   const request: LaunchRequest = { commands: [], files: [], fromLogin: false, toastUrls: [] };
   const skipped = new Set(options.skip.map((entry) => path.resolve(options.cwd, entry).toLowerCase()));
+  const platform = options.platform ?? process.platform;
   let positional = false;
+  let urlFound = false;
+  const files: string[] = [];
   for (const arg of argv.slice(1)) {
     if (!positional && arg === '--') {
       positional = true;
@@ -165,7 +182,18 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
     }
     if (!positional && arg.startsWith('-')) continue;
     if (!arg) continue;
+    if (platform === 'linux' && /^file:\/\//i.test(arg)) {
+      try {
+        const file = fileURLToPath(arg, { windows: false });
+        if (!skipped.has(file.toLowerCase())) files.push(file);
+      } catch {
+        // A file: URL naming another host: no local file.
+      }
+      continue;
+    }
     if (/^[a-z][a-z0-9+.-]+:/i.test(arg) && !/^[a-z]:[\\/]/i.test(arg)) {
+      if (urlFound) continue;
+      urlFound = true;
       if (arg.toLowerCase().startsWith(TOAST_URL_PREFIX)) {
         request.toastUrls.push(arg);
         continue;
@@ -175,14 +203,16 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
       continue;
     }
     const resolved = path.resolve(options.cwd, arg);
-    if (!skipped.has(resolved.toLowerCase())) request.files.push(resolved);
+    if (!skipped.has(resolved.toLowerCase())) files.push(resolved);
   }
+  if (!urlFound) request.files = files;
   return request;
 }
 
 export const LOGIN_FLAG = '--bulwark-from-login';
 
-const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+// Windows reserves these with any extension, and with spaces before it: "con .txt".
+const RESERVED_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])\s*(\..*)?$/i;
 
 /** A name that's safe to create on every OS. Never a path. */
 export function safeFileName(name: unknown, fallback = 'file'): string {
@@ -199,9 +229,22 @@ export function safeFileName(name: unknown, fallback = 'file'): string {
   return clean;
 }
 
-function xml(text: string): string {
+/**
+ * A file that runs something by being opened, and that Windows doesn't warn about the way it
+ * does for an executable from the internet. Kept readable, not active.
+ */
+const RISKY_EXTENSIONS = new Set(['.lnk', '.url', '.scf', '.library-ms', '.search-ms', '.searchconnector-ms', '.appref-ms', '.website', '.desktop']);
+
+export function safeDragFileName(name: unknown): string {
+  const clean = safeFileName(name);
+  return RISKY_EXTENSIONS.has(path.extname(clean).toLowerCase()) ? `${clean}.txt` : clean;
+}
+
+function xml(raw: string): string {
+  // A lone surrogate from a cut-off subject would make the whole toast invalid XML.
+  const text = (raw as string & { toWellFormed(): string }).toWellFormed();
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  return text.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').replace(/[&<>"']/g, (c: string) => `&#${c.charCodeAt(0)};`);
 }
 
 export const REPLY_INPUT = 'reply';
@@ -275,13 +318,19 @@ export interface ToastContent {
  *
  * Click and buttons are protocol activations, because that also works when the app isn't
  * running: Electron's activator only answers once this process has shown a toast, and
- * COM gave up on a cold start here (decisions, OS integration). The reply goes through the
- * activator all the same, because only that carries typed text.
+ * COM gave up on a cold start here (decisions, OS integration).
+ *
+ * Typed text only travels through the activator, so the field is only there when that's
+ * known to answer: `inlineReply`, after this process has shown a toast. Otherwise Reply is a
+ * button that opens the composer, so nothing typed can be lost.
  */
-export function buildToastXml(toast: ToastContent, secret: string): string {
-  const reply = toast.reply
-    ? `<input id="${REPLY_INPUT}" type="text" placeHolderContent="${xml(toast.reply.placeholder)}"/><action content="${xml(toast.reply.label)}" hint-inputId="${REPLY_INPUT}" activationType="foreground" arguments="${xml(toastArguments('reply', toast.context))}"/>`
-    : '';
+export function buildToastXml(toast: ToastContent, secret: string, inlineReply: boolean): string {
+  let reply = '';
+  if (toast.reply && inlineReply) {
+    reply = `<input id="${REPLY_INPUT}" type="text" placeHolderContent="${xml(toast.reply.placeholder)}"/><action content="${xml(toast.reply.label)}" hint-inputId="${REPLY_INPUT}" activationType="foreground" arguments="${xml(toastArguments('reply', toast.context))}"/>`;
+  } else if (toast.reply) {
+    reply = `<action content="${xml(toast.reply.label)}" activationType="protocol" arguments="${xml(toastUrl('reply', toast.context, secret))}"/>`;
+  }
   const buttons = toast.actions
     .slice(0, toast.reply ? 4 : 5)
     .map((action) => `<action content="${xml(action.label)}" activationType="protocol" arguments="${xml(toastUrl(action.id, toast.context, secret))}"/>`)
@@ -315,7 +364,7 @@ function progId(id: string, description: string, exe: string, url: boolean): Reg
   ];
 }
 
-export const WINDOWS_URLS: Record<string, string> = { mailto: 'Bulwark.Url.mailto', webcal: 'Bulwark.Url.webcal' };
+export const WINDOWS_URLS: Record<string, string> = { mailto: 'Bulwark.Url.mailto', webcal: 'Bulwark.Url.webcal', webcals: 'Bulwark.Url.webcal' };
 export const WINDOWS_FILES: Record<string, string> = { '.eml': 'Bulwark.File.eml', '.ics': 'Bulwark.File.ics', '.vcf': 'Bulwark.File.vcf' };
 
 /**
@@ -342,10 +391,25 @@ export function windowsRegistration(exe: string): RegistryValue[] {
   ];
 }
 
+/** An uninstall takes the keys, and a reinstall to the same path must still put them back. */
+export function needsRegistration(handlerQuery: { ok: boolean; stdout: string }, exe: string): boolean {
+  return !handlerQuery.ok || !handlerQuery.stdout.toLowerCase().includes(`"${exe.toLowerCase()}"`);
+}
+
+/** How long a failed main window waits before it tries again. */
+export function reloadDelayMs(attempt: number): number {
+  return [2000, 5000, 15_000, 30_000, 60_000][Math.min(attempt, 4)];
+}
+
+/** Network errors: worth another try. -3 is a navigation that was replaced; -200 and on are certificates. */
+export function isRetryableLoadError(code: number): boolean {
+  return code !== -3 && code < 0 && code > -200;
+}
+
 /** Keys taken away again, deepest first. The `.eml` keys belong to everyone: only our value goes. */
 export function windowsRegistrationKeys(): { keys: string[]; values: { key: string; name: string }[] } {
   return {
-    keys: [...Object.values(WINDOWS_URLS), ...Object.values(WINDOWS_FILES), 'bulwark'].map((id) => `${CLASSES}\\${id}`).concat('Software\\Bulwark'),
+    keys: [...new Set(Object.values(WINDOWS_URLS)), ...Object.values(WINDOWS_FILES), 'bulwark'].map((id) => `${CLASSES}\\${id}`).concat('Software\\Bulwark'),
     values: [
       { key: 'Software\\RegisteredApplications', name: WINDOWS_APP_NAME },
       ...Object.entries(WINDOWS_FILES).map(([ext, id]) => ({ key: `${CLASSES}\\${ext}\\OpenWithProgids`, name: id })),
