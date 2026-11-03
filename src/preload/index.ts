@@ -19,6 +19,8 @@ import {
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
+  type UpdateChannel,
+  type UpdateState,
   type WindowInfo,
 } from '../shared/bridge';
 
@@ -64,6 +66,15 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
+    },
+    updates: {
+      state: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesState),
+      check: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesCheck),
+      setChannel: (channel: UpdateChannel): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesSetChannel, channel),
+      installOlder: (): Promise<UpdateState> => ipcRenderer.invoke(CHANNEL.updatesInstallOlder),
+      restart: () => ipcRenderer.send(CHANNEL.updatesRestart),
+      openDownload: () => ipcRenderer.send(CHANNEL.updatesOpenDownload),
+      onChanged: (listener: (state: UpdateState) => void) => subscribe(CHANNEL.updatesChanged, listener),
     },
     lifecycle: {
       /**

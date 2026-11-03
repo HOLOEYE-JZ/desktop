@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Mode, ThemeColours, WindowType } from '../shared/bridge';
+import type { Mode, ThemeColours, UpdateChannel, WindowType } from '../shared/bridge';
 
 export interface StoredBounds {
   x: number;
@@ -31,6 +31,10 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** The user's own channel. A policy goes first (update-rules.ts). */
+  updateChannel?: UpdateChannel;
+  /** The last version a notification was shown for. */
+  updateNotified?: string;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

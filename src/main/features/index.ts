@@ -13,6 +13,7 @@ import type { ThemeController } from '../theme';
 import type { WindowManager } from '../windows';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
+import { updaterFeature } from './updater';
 
 export interface FeatureContext {
   mode: Mode;
@@ -36,7 +37,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [];
+export const FEATURES: Feature[] = [updaterFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

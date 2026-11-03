@@ -40,6 +40,32 @@ export interface SystemTheme {
   highContrast: boolean;
 }
 
+export type UpdateChannel = 'stable' | 'beta';
+
+/** `install`: replaces itself. `notify`: an MSI, deb, rpm or unsigned macOS, says a version exists. `none`: a development run. */
+export type UpdateAbility = 'install' | 'notify' | 'none';
+
+export interface UpdateState {
+  /** The running version. */
+  version: string;
+  channel: UpdateChannel;
+  /** Set by the `UpdateChannel` policy. */
+  channelLocked: boolean;
+  /** False when the `AutoUpdate` policy turned updates off. */
+  allowed: boolean;
+  ability: UpdateAbility;
+  /** Windows, and not the per-user installer: an MSI, whose updates come the way it did. */
+  perMachine: boolean;
+  /**
+   * `available`: a newer version, for `notify` installs. `older-available`: on stable, with
+   * a beta running, and the newest stable is older than it. `off`: the policy.
+   */
+  status: 'idle' | 'checking' | 'up-to-date' | 'downloading' | 'ready' | 'available' | 'older-available' | 'error' | 'off';
+  /** The version the status is about. */
+  target?: string;
+  percent?: number;
+}
+
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
 
 export interface SessionUrls {
@@ -72,6 +98,13 @@ export const CHANNEL = {
   authCancel: 'bulwark:auth.cancel',
   pluginsInstall: 'bulwark:plugins.install',
   welcomeChoose: 'bulwark:welcome.choose',
+  updatesState: 'bulwark:updates.state',
+  updatesCheck: 'bulwark:updates.check',
+  updatesSetChannel: 'bulwark:updates.setChannel',
+  updatesRestart: 'bulwark:updates.restart',
+  updatesOpenDownload: 'bulwark:updates.openDownload',
+  updatesInstallOlder: 'bulwark:updates.installOlder',
+  updatesChanged: 'bulwark:updates.changed',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */

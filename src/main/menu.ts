@@ -15,6 +15,15 @@ export interface MenuHooks {
   devTools: boolean;
 }
 
+/** The updater's item: a quiet "Restart to update" once there's one. Set by features/updater.ts. */
+let updateItems: MenuItemConstructorOptions[] = [];
+let installedHooks: MenuHooks | null = null;
+
+export function setUpdateMenu(items: MenuItemConstructorOptions[]): void {
+  updateItems = items;
+  if (installedHooks) installMenu(installedHooks);
+}
+
 function buildTemplate(hooks: MenuHooks): MenuItemConstructorOptions[] {
   const text = strings();
   const mac = process.platform === 'darwin';
@@ -23,6 +32,8 @@ function buildTemplate(hooks: MenuHooks): MenuItemConstructorOptions[] {
     {
       label: text.menuFile,
       submenu: [
+        ...updateItems,
+        ...(updateItems.length ? [{ type: 'separator' } as MenuItemConstructorOptions] : []),
         { label: text.menuSwitchMode, click: hooks.switchMode },
         { type: 'separator' },
         { role: 'close' },
@@ -47,6 +58,7 @@ function buildTemplate(hooks: MenuHooks): MenuItemConstructorOptions[] {
 }
 
 export function installMenu(hooks: MenuHooks): void {
+  installedHooks = hooks;
   Menu.setApplicationMenu(Menu.buildFromTemplate(buildTemplate(hooks)));
 }
 
