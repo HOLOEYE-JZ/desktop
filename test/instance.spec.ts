@@ -46,7 +46,7 @@ test('the bridge is there on the instance, but without the standalone parts', as
   expect(await bridgeType()).toBe('object');
   const keys = await page.evaluate(() => Object.keys((window as unknown as { bulwarkDesktop: object }).bulwarkDesktop).sort());
   // `keystore` is only there where the native helper loaded: the next test.
-  expect(keys.filter((key) => key !== 'keystore')).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'policy', 'privacy', 'shell', 'theme', 'version', 'windows']);
+  expect(keys.filter((key) => key !== 'keystore')).toEqual(['clipboard', 'dialogs', 'lifecycle', 'menu', 'mode', 'platform', 'policy', 'privacy', 'shell', 'spellcheck', 'theme', 'version', 'windows']);
 });
 
 test.describe('the OS keystore on an instance', () => {
@@ -166,8 +166,8 @@ test('other links open in the system browser, and the SSO chain stays in the win
   expect(new URL(page.url()).origin).toBe(INSTANCE);
 });
 
-test('an instance that predates the title bar row gets a native frame, remembered', async () => {
-  const knows = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--titlebar-inset') !== '');
+test('an instance that predates the integrated chrome gets a native frame, remembered', async () => {
+  const knows = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--titlebar-right-inset') !== '');
   const remembered = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'));
   const { readFileSync } = await import('node:fs');
   await expect.poll(() => JSON.parse(readFileSync(path.join(remembered, 'shell-state.json'), 'utf8')).overlayByOrigin?.[INSTANCE]).toBe(knows);

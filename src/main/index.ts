@@ -25,11 +25,11 @@ import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
 import { durableWrite, holdsAppLockRecords, KEY_CHECK_FOLDER, KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
-import { notePartition } from './features/local-wipe';
+import { addWipeStep, notePartition } from './features/local-wipe';
 import { native } from './native';
 import { LocalAdmin } from './local-admin';
 import { requestGate } from './request-gate';
-import { installMenu } from './menu';
+import { MenuController } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
 import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
@@ -40,9 +40,14 @@ import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
-import { strings } from './strings';
+import { strings, unsentDetail } from './strings';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
+import { ZoomController } from './zoom';
+import { printWindow, saveWindowAsPdf } from './print';
+import { navigateHistory } from './features/window-input';
+import { appPathOfDeepLink, deepLinkFromArgv, deepLinkWindowKey, LinkRateLimit, parseDeepLink, DEEP_LINK_SCHEME, type DeepLink } from './deep-link';
+import { closeDictionaryDownloads } from './spellcheck';
 
 // Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
 // anyone can rename it.
@@ -84,6 +89,7 @@ if (userDataArg) app.setPath('userData', userDataArg);
 if (__BULWARK_TEST_PROFILE__) app.setPath('userData', __BULWARK_TEST_PROFILE__);
 
 app.setName('Bulwark');
+app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: 'AGPL-3.0-only', website: 'https://bulwarkmail.org' });
 if (process.platform === 'win32') app.setAppUserModelId('org.bulwarkmail.desktop');
 
 /** A free port on 127.0.0.1, asked of the OS: Windows' excluded ranges made random picks hang. */
@@ -142,6 +148,12 @@ app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
+let menu: MenuController | null = null;
+const zoom = new ZoomController(stateFile);
+/** A bulwark:// link from before anyone was signed in: a pop-out borrows the main window's session. */
+let pendingDeepLink: DeepLink | null = null;
+let sessionReady = false;
+const linkLimit = new LinkRateLimit();
 
 function serverDirectory(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, 'server');
@@ -197,12 +209,21 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     mode,
     preloadPath: PRELOAD,
     devTools,
+    spare: !(DEV && process.argv.includes('--bulwark-no-spare')),
+    spareIdleMs: DEV && argValue('bulwark-test-spare-idle') ? Number(argValue('bulwark-test-spare-idle')) : undefined,
     attachGuards: (window) => attachWindowGuards(window, guard),
   });
+  zoom.attach(windowManager);
+  menu!.attach(windowManager);
+  addWipeStep(async () => windowManager?.forgetSession());
+  windowManager.on('sessionReady', onSessionReady);
+  // A development switch for the test of the tray's hook, until the tray exists.
+  if (DEV && process.argv.includes('--bulwark-test-close-to-background')) windowManager.setCloseToBackground(() => true);
   appStartUrl = startUrl;
   windowManager.on('stayed', () => {
     switching = false;
     quitFlushed = false;
+    windowManager?.cancelQuit();
   });
   return windowManager;
 }
@@ -374,6 +395,8 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     state: stateFile,
     theme,
     windows,
+    menu: menu!,
+    zoom,
     servers,
     localAdmin,
     ...createChannels(APP_ORIGIN),
@@ -423,9 +446,10 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const session = electronSession.fromPartition(partition);
   keepSignInsOnDisk(session);
   notePartition(stateFile, partition);
+  closeDictionaryDownloads(session);
   applyPermissionPolicy(session, origin);
   const windows = createWindowManager('instance', origin, session, theme, instanceUrl);
-  const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, ...createChannels(origin) };
+  const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, menu: menu!, zoom, ...createChannels(origin) };
   registerBridge(ctx, { origin });
   setupFeatures(ctx);
   windows.open({ type: 'main', url: instanceUrl });
@@ -524,7 +548,7 @@ async function boot(theme: ThemeController): Promise<void> {
   const decision = startDecision();
   bootedKey = restartKey(decision, policies.snapshot);
   bootedDecision = decision;
-  installMenu({ switchMode: decision.canSwitch ? switchMode : undefined, devTools });
+  menu?.allowSwitchingMode(decision.canSwitch ? switchMode : undefined);
   if (decision.kind === 'policy-error') await showPolicyError(decision);
   else if (decision.kind === 'welcome') showWelcome(theme, decision);
   else if (!(await keySafeOnDisk(decision.kind === 'instance'))) await showErrorPage(strings().errorKeyNotSavedTitle, strings().errorKeyNotSavedBody);
@@ -601,6 +625,61 @@ function finishSwitch(): void {
 
 let quitFlushed = false;
 
+function openDeepLink(link: DeepLink): void {
+  if (!linkLimit.allow(Date.now())) return;
+  const windows = windowManager;
+  if (!windows || !sessionReady) {
+    pendingDeepLink = link;
+    if (windows?.mainWindow()) windows.focus();
+    return;
+  }
+  const target = `${windows.originUrl()}${appPathOfDeepLink(link)}`;
+  if (link.kind === 'message') {
+    windows.open({ type: 'message', url: target, key: deepLinkWindowKey(link.emailId) });
+    return;
+  }
+  const main = windows.mainWindow();
+  if (!main) {
+    windows.open({ type: 'main', url: target });
+    return;
+  }
+  // Without a load: there may be a draft on that page. The webmail's router takes it.
+  windows.focusWindow(main);
+  main.webContents.send(CHANNEL.menuCommand, `link.folder:${link.folder}`);
+}
+
+/** A window can lend its session now. Links and windows from last time were waiting for that. */
+function onSessionReady(): void {
+  sessionReady = true;
+  windowManager?.restoreSession();
+  flushDeepLink();
+}
+
+function flushDeepLink(): void {
+  if (!pendingDeepLink) return;
+  const link = pendingDeepLink;
+  pendingDeepLink = null;
+  openDeepLink(link);
+}
+
+function buildMenu(): MenuController {
+  return new MenuController({
+    devTools,
+    newWindow: () => {
+      // Unique across runs: one restored from last time may hold a low number.
+      windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
+    },
+    openSettings: () => {
+      const windows = windowManager;
+      if (windows) windows.open({ type: 'settings', url: `${windows.originUrl()}/settings`, key: 'settings' });
+    },
+    zoom: (step) => zoom.step(step),
+    print: (window) => printWindow(window, menu?.commandState(window)),
+    saveAsPdf: (window) => void saveWindowAsPdf(window, menu?.commandState(window)),
+    back: (window, direction) => navigateHistory(window, direction),
+  });
+}
+
 if (gotLock) {
   // Nothing may attach a webview or open a window behind the window manager's back.
   app.on('web-contents-created', (_event, contents) => {
@@ -614,7 +693,23 @@ if (gotLock) {
     else windowManager.open({ type: 'main', url: appStartUrl });
   };
 
-  app.on('second-instance', showMain);
+  app.on('second-instance', (_event, argv) => {
+    const link = deepLinkFromArgv(argv);
+    if (link) openDeepLink(link);
+    else showMain();
+  });
+
+  // macOS sends links here, and also the one that started the app.
+  app.on('open-url', (event, url) => {
+    event.preventDefault();
+    const link = parseDeepLink(url);
+    if (link) openDeepLink(link);
+  });
+
+  // The link that started this launch.
+  pendingDeepLink = deepLinkFromArgv(process.argv);
+  // Unpackaged, the shell isn't what the OS should start for these.
+  if (app.isPackaged) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   app.on('window-all-closed', () => {
     // Step 6 keeps the app running here when close-to-tray is on.
@@ -622,7 +717,7 @@ if (gotLock) {
   });
 
   app.on('activate', () => {
-    if (windowManager && windowManager.isEmpty()) showMain();
+    if (windowManager && windowManager.noneVisible()) showMain();
   });
 
   // Pages save first, within limits, and then the quit goes on. A preventDefault in a
@@ -633,7 +728,32 @@ if (gotLock) {
     if (quitFlushed || !windowManager) return;
     event.preventDefault();
     quitFlushed = true;
-    void windowManager.flushAll().finally(() => app.quit());
+    const windows = windowManager;
+    void windows.flushAll().then((summary) => {
+      if (summary.failed > 0 || summary.unsent > 0) {
+        const text = strings();
+        const parent = windows.focusedManaged()?.window ?? windows.mainWindow();
+        const options: Electron.MessageBoxSyncOptions = {
+          type: 'warning',
+          title: 'Bulwark',
+          message: summary.failed > 0 ? text.unsavedTitle : text.unsentTitle,
+          detail: summary.failed > 0 ? text.unsavedDetail : unsentDetail(text, summary.unsent),
+          buttons: [summary.failed > 0 ? text.closeAnyway : text.closeNow, text.stay],
+          defaultId: 1,
+          cancelId: 1,
+          noLink: true,
+        };
+        const choice = parent ? dialog.showMessageBoxSync(parent, options) : dialog.showMessageBoxSync(options);
+        if (choice !== 0) {
+          quitFlushed = false;
+          switching = false;
+          windows.cancelQuit();
+          return;
+        }
+      }
+      windows.beginQuit();
+      app.quit();
+    });
   });
 
   app.on('will-quit', () => {
@@ -641,6 +761,8 @@ if (gotLock) {
   });
 
   app.whenReady().then(async () => {
+    menu = buildMenu();
+    menu.rebuild();
     const theme = new ThemeController(stateFile);
     await boot(theme);
     policies.watch();

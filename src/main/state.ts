@@ -20,6 +20,15 @@ export interface ApprovedServer {
   approvedAt: number;
 }
 
+/** A window to bring back at the next start. */
+export interface SessionWindow {
+  type: WindowType;
+  url: string;
+  key?: string;
+  bounds?: { x: number; y: number; width: number; height: number };
+  maximized?: boolean;
+}
+
 /** Telemetry and crash report consent. Absent means nobody said yes: off. See features/privacy.ts. */
 export interface PrivacyChoices {
   /** The first run asked, or the user answered in settings. */
@@ -43,6 +52,15 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** What was open at quit. Off by the setting in the webmail. */
+  session?: SessionWindow[];
+  restoreWindows?: boolean;
+  /** Starts in a row that began restoring and didn't get far. */
+  restoreAttempts?: number;
+  /** When a pop-out last opened: whether a warm spare is worth its memory. */
+  lastPopoutAt?: number;
+  /** Chromium's zoom level: 0 is 100%. */
+  zoomLevel?: number;
   privacy?: PrivacyChoices;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;

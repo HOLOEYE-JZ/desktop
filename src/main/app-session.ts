@@ -6,6 +6,7 @@
 
 import { session as electronSession, type Session } from 'electron';
 import { APP_HOST, LAUNCH_HEADER } from '../server/protocol';
+import { closeDictionaryDownloads } from './spellcheck';
 
 export const APP_PARTITION = 'persist:bulwark';
 
@@ -16,6 +17,7 @@ const VERIFY_DEFAULT = -3;
 
 export function setupAppSession(fingerprint: string, launchSecret: string, onPinFailure: () => void): Session {
   const session = electronSession.fromPartition(APP_PARTITION);
+  closeDictionaryDownloads(session);
   session.setCertificateVerifyProc((request, callback) => {
     if (request.hostname !== APP_HOST) {
       callback(VERIFY_DEFAULT);

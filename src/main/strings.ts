@@ -7,6 +7,80 @@
 import { app } from 'electron';
 
 const en = {
+  unsavedTitle: 'A draft could not be saved',
+  unsavedDetail: 'If you close now, what you wrote since the last save is lost.',
+  closeAnyway: 'Close anyway',
+  unsentTitle: 'Some mail has not been sent yet',
+  unsentOne: 'One message is waiting to be sent. It goes out the next time you open Bulwark.',
+  unsentMany: '{count} messages are waiting to be sent. They go out the next time you open Bulwark.',
+  closeNow: 'Quit',
+  menuNewMessage: 'New message',
+  menuNewWindow: 'New window',
+  menuPrint: 'Print…',
+  menuSavePdf: 'Save as PDF…',
+  menuClose: 'Close',
+  menuQuit: 'Quit',
+  menuUndo: 'Undo',
+  menuRedo: 'Redo',
+  menuCut: 'Cut',
+  menuCopy: 'Copy',
+  menuPaste: 'Paste',
+  menuSelectAll: 'Select all',
+  menuSearch: 'Search mail',
+  menuView: '&View',
+  menuRefresh: 'Check for new mail',
+  menuReadingPane: 'Reading pane',
+  menuPaneRight: 'On the right',
+  menuPaneBelow: 'Below the list',
+  menuPaneOff: 'Off',
+  menuZoomIn: 'Zoom in',
+  menuZoomOut: 'Zoom out',
+  menuZoomReset: 'Actual size',
+  menuFullScreen: 'Full screen',
+  menuMessage: '&Message',
+  menuReply: 'Reply',
+  menuReplyAll: 'Reply all',
+  menuForward: 'Forward',
+  menuMarkRead: 'Mark as read',
+  menuMarkUnread: 'Mark as unread',
+  menuStar: 'Star',
+  menuMove: 'Move to…',
+  menuArchive: 'Archive',
+  menuSpam: 'Mark as spam',
+  menuDelete: 'Delete',
+  menuOpenInWindow: 'Open in new window',
+  menuGo: '&Go',
+  menuGoInbox: 'Inbox',
+  menuGoSent: 'Sent',
+  menuGoDrafts: 'Drafts',
+  menuGoNext: 'Next message',
+  menuGoPrevious: 'Previous message',
+  menuGoNextUnread: 'Next unread message',
+  menuGoMail: 'Mail',
+  menuGoCalendar: 'Calendar',
+  menuGoContacts: 'Contacts',
+  menuGoFiles: 'Files',
+  menuGoBack: 'Back',
+  menuGoForward: 'Forward',
+  menuMinimize: 'Minimize',
+  menuCycle: 'Next window',
+  menuHelp: '&Help',
+  menuShortcuts: 'Keyboard shortcuts',
+  menuDocs: 'Documentation',
+  menuSettings: 'Settings…',
+  menuAbout: 'About Bulwark',
+  windowNames: { main: 'Bulwark', message: 'Message', composer: 'New message', settings: 'Settings' } as Record<'main' | 'message' | 'composer' | 'settings', string>,
+  contextCut: 'Cut',
+  contextCopy: 'Copy',
+  contextPaste: 'Paste',
+  contextSelectAll: 'Select all',
+  contextAddToDictionary: 'Add "{word}" to dictionary',
+  contextNoSuggestions: 'No suggestions',
+  contextOpenLink: 'Open link',
+  contextCopyLink: 'Copy link',
+  contextCopyAddress: 'Copy address',
+  contextSaveImage: 'Save image…',
+  contextCopyImage: 'Copy image',
   telemetryAskTitle: 'Send usage info?',
   telemetryAskDetail: "Once a day, Bulwark sends a random ID, the app version, the Node version, your operating system, how long the app has been running and how it connects. With your own mail server, also which features are on, a rough number of accounts and how many plugins and themes you have. Never mail, addresses or server names. You can turn this off at any time.",
   telemetryAskYes: 'Send usage info',
@@ -82,10 +156,10 @@ const en = {
   policyLater: 'Later',
   signInDone: 'You are signed in. You can close this window and go back to Bulwark.',
   signInFailed: 'Signing in did not work. Go back to Bulwark and try again.',
-  menuFile: 'File',
-  menuEdit: 'Edit',
-  menuWindow: 'Window',
-  menuSwitchMode: 'Change Connection…',
+  menuFile: '&File',
+  menuEdit: '&Edit',
+  menuWindow: '&Window',
+  menuSwitchMode: 'Change connection…',
   keystoreAllowSession: 'Allow for this session',
   keystoreAllowOnce: 'Allow once',
   keystoreDeny: 'Deny',
@@ -104,6 +178,80 @@ const en = {
 };
 
 const de: typeof en = {
+  unsavedTitle: 'Ein Entwurf konnte nicht gespeichert werden',
+  unsavedDetail: 'Wenn Sie jetzt schließen, geht verloren, was Sie seit dem letzten Speichern geschrieben haben.',
+  closeAnyway: 'Trotzdem schließen',
+  unsentTitle: 'Einige E-Mails wurden noch nicht gesendet',
+  unsentOne: 'Eine Nachricht wartet auf den Versand. Sie wird gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
+  unsentMany: '{count} Nachrichten warten auf den Versand. Sie werden gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
+  closeNow: 'Beenden',
+  menuNewMessage: 'Neue Nachricht',
+  menuNewWindow: 'Neues Fenster',
+  menuPrint: 'Drucken…',
+  menuSavePdf: 'Als PDF speichern…',
+  menuClose: 'Schließen',
+  menuQuit: 'Beenden',
+  menuUndo: 'Rückgängig',
+  menuRedo: 'Wiederholen',
+  menuCut: 'Ausschneiden',
+  menuCopy: 'Kopieren',
+  menuPaste: 'Einfügen',
+  menuSelectAll: 'Alles auswählen',
+  menuSearch: 'E-Mails suchen',
+  menuView: '&Ansicht',
+  menuRefresh: 'Nach neuen E-Mails suchen',
+  menuReadingPane: 'Lesebereich',
+  menuPaneRight: 'Rechts',
+  menuPaneBelow: 'Unter der Liste',
+  menuPaneOff: 'Aus',
+  menuZoomIn: 'Vergrößern',
+  menuZoomOut: 'Verkleinern',
+  menuZoomReset: 'Originalgröße',
+  menuFullScreen: 'Vollbild',
+  menuMessage: '&Nachricht',
+  menuReply: 'Antworten',
+  menuReplyAll: 'Allen antworten',
+  menuForward: 'Weiterleiten',
+  menuMarkRead: 'Als gelesen markieren',
+  menuMarkUnread: 'Als ungelesen markieren',
+  menuStar: 'Markieren',
+  menuMove: 'Verschieben nach…',
+  menuArchive: 'Archivieren',
+  menuSpam: 'Als Spam markieren',
+  menuDelete: 'Löschen',
+  menuOpenInWindow: 'In neuem Fenster öffnen',
+  menuGo: '&Gehe zu',
+  menuGoInbox: 'Posteingang',
+  menuGoSent: 'Gesendet',
+  menuGoDrafts: 'Entwürfe',
+  menuGoNext: 'Nächste Nachricht',
+  menuGoPrevious: 'Vorherige Nachricht',
+  menuGoNextUnread: 'Nächste ungelesene Nachricht',
+  menuGoMail: 'E-Mail',
+  menuGoCalendar: 'Kalender',
+  menuGoContacts: 'Kontakte',
+  menuGoFiles: 'Dateien',
+  menuGoBack: 'Zurück',
+  menuGoForward: 'Vorwärts',
+  menuMinimize: 'Minimieren',
+  menuCycle: 'Nächstes Fenster',
+  menuHelp: '&Hilfe',
+  menuShortcuts: 'Tastenkürzel',
+  menuDocs: 'Dokumentation',
+  menuSettings: 'Einstellungen…',
+  menuAbout: 'Über Bulwark',
+  windowNames: { main: 'Bulwark', message: 'Nachricht', composer: 'Neue Nachricht', settings: 'Einstellungen' },
+  contextCut: 'Ausschneiden',
+  contextCopy: 'Kopieren',
+  contextPaste: 'Einfügen',
+  contextSelectAll: 'Alles auswählen',
+  contextAddToDictionary: '„{word}“ zum Wörterbuch hinzufügen',
+  contextNoSuggestions: 'Keine Vorschläge',
+  contextOpenLink: 'Link öffnen',
+  contextCopyLink: 'Link kopieren',
+  contextCopyAddress: 'Adresse kopieren',
+  contextSaveImage: 'Bild speichern…',
+  contextCopyImage: 'Bild kopieren',
   keystoreAllowSession: 'Für diese Sitzung zulassen',
   keystoreAllowOnce: 'Einmal zulassen',
   keystoreDeny: 'Ablehnen',
@@ -194,12 +342,45 @@ const de: typeof en = {
   policyLater: 'Später',
   signInDone: 'Sie sind angemeldet. Sie können dieses Fenster schließen und zu Bulwark zurückkehren.',
   signInFailed: 'Die Anmeldung hat nicht geklappt. Gehen Sie zurück zu Bulwark und versuchen Sie es noch einmal.',
-  menuFile: 'Datei',
-  menuEdit: 'Bearbeiten',
-  menuWindow: 'Fenster',
+  menuFile: '&Datei',
+  menuEdit: '&Bearbeiten',
+  menuWindow: '&Fenster',
   menuSwitchMode: 'Verbindung ändern…',
 };
 
+let uiLanguage: string | null = null;
+let labels: Partial<typeof en> = {};
+
+/** Plain text keys the webmail may translate, so the menus speak all its languages. */
+const LABEL_KEY = /^(menu|context|leave|stay|closeAnyway|closeNow|unsaved|unsent)/;
+
+/** Keeps what fits: a known key with text, of a sane length, and no function replaced. */
+export function cleanLabels(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!LABEL_KEY.test(key) || typeof value !== 'string' || !value.trim() || value.length > 300) continue;
+    if (typeof (en as Record<string, unknown>)[key] === 'string') out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The webmail's language, once it has said, with its translations of the menus and
+ * dialogs. Until then the OS's language, for what shows in early start-up: English
+ * or German, built in.
+ */
+export function setUiLanguage(language: string, translated?: unknown): void {
+  uiLanguage = language;
+  labels = cleanLabels(translated) as Partial<typeof en>;
+}
+
+/** The line about mail waiting at quit. */
+export function unsentDetail(text: Pick<typeof en, 'unsentOne' | 'unsentMany'>, count: number): string {
+  return count === 1 ? text.unsentOne : text.unsentMany.replaceAll('{count}', String(count));
+}
+
 export function strings(): typeof en {
-  return app.getLocale().toLowerCase().startsWith('de') ? de : en;
+  const built = (uiLanguage ?? app.getLocale()).toLowerCase().startsWith('de') ? de : en;
+  return { ...built, ...labels };
 }
