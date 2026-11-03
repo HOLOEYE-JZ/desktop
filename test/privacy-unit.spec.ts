@@ -1,15 +1,15 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { buildSync } from 'esbuild';
 import { expect, test } from '@playwright/test';
-import { buildCrashUpload, listCrashFiles, removeAllCrashFiles, scrubMinidump, sweepCrashFiles, validUploadUrl } from '../src/main/crash-files';
+import { buildCrashUpload, listCrashFiles, removeAllCrashFiles, scrubMinidump, sweepCrashFiles, validUploadUrl, type ScrubNames } from '../src/main/crash-files';
 import { MainErrorCounter, fingerprintOfMainError, mainErrorName } from '../src/main/main-errors';
+import { serverEnv, profilePaths, telemetryOffInEnv } from '../src/main/profile';
 import { normalizeStack } from '../src/server/protocol';
+import { hasCollector, loadCollectorValidator } from './collector';
 import { buildDesktopErrorBatch } from '../src/shared/desktop-telemetry';
-
-const DASHBOARD = process.env.BULWARK_DASHBOARD_DIR ?? 'C:/Users/info/Downloads/jmap-webmail/repos/dashboard';
-const VALIDATE = path.join(DASHBOARD, 'telemetry-collector/src/validate.ts');
 
 function folder(): string {
   return mkdtempSync(path.join(tmpdir(), 'bw-crash-'));
@@ -144,6 +144,181 @@ test.describe('scrubbing a minidump', () => {
   });
 });
 
+test.describe('scrubbing names in any script', () => {
+  const forms = (text: string) => [Buffer.from(text, 'utf8'), Buffer.from(text, 'utf16le')];
+  const scrubbed = (body: Buffer, names: Partial<ScrubNames>) => scrubMinidump(body, { home: '', username: '', hostname: '', ...names });
+
+  const NAMES: [string, string, Partial<ScrubNames>][] = [
+    ['Cyrillic', 'C:\\Users\\Иван\\AppData\\Roaming\\Bulwark', { home: 'C:\\Users\\Иван', username: 'Иван' }],
+    ['German', 'C:\\Users\\Jürgen\\AppData\\Roaming\\Bulwark', { home: 'C:\\Users\\Jürgen', username: 'Jürgen' }],
+    ['Chinese, two letters', 'C:\\Users\\李明\\AppData', { home: 'C:\\Users\\李明', username: '李明' }],
+    ['POSIX', '/home/иван/.config/Bulwark', { home: '/home/иван', username: 'иван' }],
+  ];
+  for (const [label, text, names] of NAMES) {
+    for (const [encoding, bytes] of [['UTF-8', Buffer.from(text, 'utf8')], ['UTF-16', Buffer.from(text, 'utf16le')]] as const) {
+      test(`${label} in ${encoding}`, () => {
+        const body = Buffer.concat([Buffer.from([1, 2, 0]), bytes, Buffer.from([0, 0, 9])]);
+        const after = scrubbed(body, names);
+        expect(after.length).toBe(body.length);
+        for (const form of forms(names.username!)) expect(after.includes(form), `${label} ${encoding}`).toBe(false);
+        expect(after[0]).toBe(1);
+        expect(after[after.length - 1]).toBe(9);
+      });
+    }
+  }
+
+  test('with the name on its own, in another case', () => {
+    for (const [text, username] of [['ИВАН сказал', 'Иван'], ['иван сказал', 'Иван'], ['JÜRGEN war hier', 'Jürgen']]) {
+      for (const form of forms(text)) {
+        const after = scrubbed(form, { username });
+        for (const name of forms(text.split(' ')[0])) expect(after.includes(name), text).toBe(false);
+      }
+    }
+  });
+
+  test('in the one-byte code page Windows uses for names like Jürgen', () => {
+    const after = scrubbed(Buffer.from('C:\\Daten\\Jürgen\\x', 'latin1'), { username: 'Jürgen' });
+    expect(after.includes(Buffer.from('Jürgen', 'latin1'))).toBe(false);
+  });
+
+  const SHORT_PATHS = ['C:\\Users\\IVAN~1\\AppData\\Local\\Temp', 'C:\\Users\\JRGEN~1\\AppData', 'c:/users/LINUSR~1/x', 'D:\\Users\\ivan\\x', '/home/ivan/x', '/Users/ivan/Library/x', 'C:\\\\Users\\\\IVAN~1\\\\AppData'];
+  for (const path of SHORT_PATHS) {
+    test(`a user folder goes whatever it's called: ${path}`, () => {
+      for (const form of forms(path)) {
+        const after = scrubbed(form, { home: 'C:\\Users\\Someone Else', username: 'someone' });
+        expect(after.length).toBe(form.length);
+        const folder = path.split(/[\\/]+/)[2].toLowerCase() === 'users' ? path.split(/[\\/]+/)[3] : path.split(/[\\/]+/)[2];
+        for (const name of forms(folder)) expect(after.includes(name), path).toBe(false);
+      }
+    });
+  }
+
+  test('the words after the user folder stay, so a path is still worth reading', () => {
+    const after = scrubbed(Buffer.from('C:\\Users\\IVAN~1\\AppData\\Local\\Bulwark\\app.exe', 'utf8'), {}).toString('latin1');
+    expect(after).toContain('AppData\\Local\\Bulwark\\app.exe');
+  });
+
+  test('the configured servers go, as an address and as a host, in both encodings', () => {
+    const servers = ['https://mail.acme-corp.example:8443', 'https://почта.example'];
+    for (const text of ['https://mail.acme-corp.example:8443/jmap/', 'connected to mail.acme-corp.example now', 'https://почта.example/x', 'host почта.example here']) {
+      for (const form of forms(text)) {
+        const after = scrubbed(form, { servers });
+        for (const name of ['mail.acme-corp.example', 'почта.example']) {
+          for (const needle of forms(name)) expect(after.includes(needle), text).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+test.describe('scrubbing mail out of a dump', () => {
+  const forms = (text: string) => [Buffer.from(text, 'utf8'), Buffer.from(text, 'utf16le')];
+  const NAMES = { home: 'C:\\Users\\Nobody', username: 'nobody', hostname: 'NOHOST' };
+
+  const SUBJECTS = ['Merger plans for Acme', 'Слияние с компанией', '合併計画について', 'مذكرة الاندماج'];
+  for (const subject of SUBJECTS) {
+    for (const template of ['"subject":"%"', '"subject" : "%"', '\\"subject\\":\\"%\\"', '\\\\\\"subject\\\\\\":\\\\\\"%\\\\\\"', 'Subject: %\r\n']) {
+      const text = template.replace('%', subject);
+      test(`${text}`, () => {
+        for (const form of forms(`before ${text} after`)) {
+          const after = scrubMinidump(form, NAMES);
+          expect(after.length).toBe(form.length);
+          for (const word of forms(subject)) expect(after.includes(word), form.toString('latin1').slice(0, 40)).toBe(false);
+          // Only that field: the bytes around it stay.
+          expect(after.includes(forms('after')[form.includes(Buffer.from('after', 'utf8')) ? 0 : 1])).toBe(true);
+        }
+      });
+    }
+  }
+
+  for (const key of ['subject', 'preview', 'value', 'name', 'email', 'htmlBody', 'textBody', 'bodyValues', 'password', 'token', 'accessToken', 'refreshToken']) {
+    test(`the key "${key}" goes, plain and escaped, in both encodings`, () => {
+      for (const template of [`"${key}":"Wert-Секрет"`, `\\"${key}\\":\\"Wert-Секрет\\"`]) {
+        for (const form of forms(template)) {
+          const after = scrubMinidump(form, NAMES);
+          for (const word of forms('Секрет')) expect(after.includes(word), `${key} ${template}`).toBe(false);
+        }
+      }
+    });
+  }
+
+  test('an escaped quote inside a value doesn\'t end it', () => {
+    for (const form of forms('"subject":"Re: \\"Секрет\\" more Секрет"')) {
+      const after = scrubMinidump(form, NAMES);
+      for (const word of forms('Секрет')) expect(after.includes(word)).toBe(false);
+    }
+  });
+
+  test('a password in escaped JSON goes', () => {
+    for (const form of forms('{\\"password\\":\\"hunter2-Пароль\\"}')) {
+      const after = scrubMinidump(form, NAMES);
+      for (const word of forms('hunter2')) expect(after.includes(word)).toBe(false);
+    }
+  });
+
+  /** In a process of its own, as what hung ran for ever and a test can't time out sync code. */
+  function timed(build: string, seconds: number): { status: number | null; ms: number } {
+    const bundle = path.join(mkdtempSync(path.join(tmpdir(), 'bw-scrub-')), 'crash-files.cjs');
+    buildSync({ entryPoints: [path.join(import.meta.dirname, '..', 'src/main/crash-files.ts')], bundle: true, platform: 'node', format: 'cjs', outfile: bundle, logLevel: 'silent' });
+    const script = `
+      const { scrubMinidump } = require(${JSON.stringify(bundle)});
+      const input = (${build})();
+      const after = scrubMinidump(input, { home: '', username: '', hostname: '' });
+      if (after.length !== input.length) process.exit(3);
+    `;
+    const started = Date.now();
+    const run = spawnSync(process.execPath, ['-e', script], { timeout: seconds * 1000, encoding: 'utf8' });
+    return { status: run.status, ms: Date.now() - started };
+  }
+
+  const WIDE_OPEN = `Buffer.from('"subject":"', 'utf16le')`;
+
+  test('the input that used to hang: a wide subject with no closing quote', () => {
+    const result = timed(`() => Buffer.concat([${WIDE_OPEN}, Buffer.from('a'.repeat(200), 'utf16le')])`, 15);
+    expect(result.status).toBe(0);
+    expect(result.ms).toBeLessThan(10_000);
+  });
+
+  test('the same at length, and many of them, stays linear', () => {
+    const result = timed(`() => Buffer.concat(Array.from({ length: 2000 }, () => Buffer.concat([${WIDE_OPEN}, Buffer.from('a'.repeat(4000), 'utf16le')])))`, 60);
+    expect(result.status).toBe(0);
+    expect(result.ms).toBeLessThan(45_000);
+  });
+
+  test('a dump of binary noise the size of the cap gets through', () => {
+    const result = timed(`() => { const b = require('node:crypto').randomBytes(64 * 1024 * 1024); return b; }`, 90);
+    expect(result.status).toBe(0);
+    expect(result.ms).toBeLessThan(75_000);
+  });
+});
+
+test.describe('BULWARK_TELEMETRY=off in the app\'s environment', () => {
+  const paths = profilePaths('C:\\profile');
+
+  test('reaches the embedded server, which gets nothing else from it', () => {
+    expect(serverEnv(paths, { BULWARK_TELEMETRY: 'off' }, 'win32').BULWARK_TELEMETRY).toBe('off');
+    expect(serverEnv(paths, { BULWARK_TELEMETRY_DISABLED: '1' }, 'win32').BULWARK_TELEMETRY).toBe('off');
+    expect(serverEnv(paths, {}, 'win32').BULWARK_TELEMETRY).toBeUndefined();
+    // Nothing but a no: a yes is the user's to give.
+    expect(serverEnv(paths, { BULWARK_TELEMETRY: 'on' }, 'win32').BULWARK_TELEMETRY).toBeUndefined();
+  });
+
+  const OFF: [Record<string, string>, boolean][] = [
+    [{ BULWARK_TELEMETRY: 'off' }, true],
+    [{ BULWARK_TELEMETRY: 'OFF' }, true],
+    [{ BULWARK_TELEMETRY: 'false' }, true],
+    [{ BULWARK_TELEMETRY: '0' }, true],
+    [{ BULWARK_TELEMETRY: 'no' }, true],
+    [{ BULWARK_TELEMETRY_DISABLED: 'true' }, true],
+    [{ BULWARK_TELEMETRY: 'on' }, false],
+    [{ BULWARK_TELEMETRY_DISABLED: '0' }, false],
+    [{}, false],
+  ];
+  for (const [env, expected] of OFF) {
+    test(`${JSON.stringify(env)} is ${expected ? 'off' : 'nothing'}`, () => expect(telemetryOffInEnv(env)).toBe(expected));
+  }
+});
+
 test.describe('where a crash file may go', () => {
   const allowed: [string, string][] = [
     ['https://crash.example.org/upload', 'https://crash.example.org/upload'],
@@ -235,8 +410,8 @@ test.describe('counting main\'s errors, for instance mode', () => {
   });
 
   test('the collector\'s real validator takes the batch, with no message or path in it', async () => {
-    test.skip(!existsSync(VALIDATE), 'the dashboard repo isn\'t here');
-    const { validateErrorBatch } = await import(pathToFileURL(VALIDATE).href) as { validateErrorBatch(input: unknown, now?: number): { errors: unknown[] } | null };
+    test.skip(!hasCollector, 'the dashboard repo isn\'t here');
+    const { validateErrorBatch } = await loadCollectorValidator();
     const counter = new MainErrorCounter('0.3.0');
     const at = Date.now();
     counter.note(error('TypeError', '1:2'), at);
@@ -244,6 +419,16 @@ test.describe('counting main\'s errors, for instance mode', () => {
     expect(validateErrorBatch(batch, at)).not.toBeNull();
     expect(JSON.stringify(batch)).not.toContain('Merger');
     expect(JSON.stringify(batch)).not.toContain('linus');
+  });
+
+  test('a beta\'s version with the tag is what the patched collector takes', async () => {
+    test.skip(!hasCollector, 'the dashboard repo isn\'t here');
+    const { validateErrorBatch } = await loadCollectorValidator();
+    const counter = new MainErrorCounter('0.3.0-beta.1');
+    const at = Date.now();
+    counter.note(error('TypeError', '1:2'), at);
+    const batch = buildDesktopErrorBatch('f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b', at, counter.unsent(at));
+    expect(validateErrorBatch(batch, at)?.errors[0].version).toBe('0.3.0-beta.1+desktop');
   });
 });
 

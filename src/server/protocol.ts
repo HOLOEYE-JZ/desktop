@@ -22,7 +22,7 @@ export function normalizeStack(stack: string, dir: string): string {
 
 export interface PrivacyMessage {
   type: 'privacy';
-  privacy: { telemetry: boolean; crashReports: boolean; appVersion: string; build: string };
+  privacy: { telemetry: boolean; crashReports: boolean; appVersion: string; build: string; endpoint?: string };
 }
 
 export interface MainErrorMessage {

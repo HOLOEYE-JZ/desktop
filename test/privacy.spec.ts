@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { userInfo } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hasCollector, loadCollectorValidator } from './collector';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
 import { APP_ORIGIN, ENT_PASSWORD, fakeOsIntegration, launch, prompts, removeProfile, SCREENSHOTS, shownPage, signIn, STALWARTS, tempProfile } from './helpers';
@@ -16,8 +17,6 @@ import { APP_ORIGIN, ENT_PASSWORD, fakeOsIntegration, launch, prompts, removePro
  * `node build.mjs --test`. Standalone with a rebuilt webmail: BULWARK_TEST_SERVER_DIR.
  */
 
-const DASHBOARD = process.env.BULWARK_DASHBOARD_DIR ?? 'C:/Users/info/Downloads/jmap-webmail/repos/dashboard';
-const VALIDATE = path.join(DASHBOARD, 'telemetry-collector/src/validate.ts');
 const REG_BASE = 'HKCU\\Software\\BulwarkTest';
 const REG_ROOT = `${REG_BASE}\\Policies\\privacy${process.pid}`;
 
@@ -31,6 +30,7 @@ let collector: Server;
 let collectorUrl = '';
 let hits: Hit[] = [];
 let redirecting = false;
+let refusing = false;
 let instance: Server;
 let instanceUrl = '';
 let instanceHits: Hit[] = [];
@@ -44,6 +44,11 @@ test.beforeAll(async () => {
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', () => {
       hits.push({ method: req.method ?? '', path: req.url ?? '', body: Buffer.concat(chunks) });
+      if (refusing) {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end('{"ok":false}');
+        return;
+      }
       if (redirecting && req.url === '/v1/heartbeat') {
         res.writeHead(302, { location: `${collectorUrl}/followed` });
         res.end();
@@ -79,6 +84,7 @@ test.beforeEach(() => {
   hits = [];
   instanceHits = [];
   redirecting = false;
+  refusing = false;
 });
 
 test.afterEach(async () => {
@@ -148,11 +154,8 @@ function storedPrivacy(profile: string): Record<string, unknown> {
 }
 
 async function realValidator() {
-  test.skip(!existsSync(VALIDATE), 'the dashboard repo isn\'t here');
-  return await import(pathToFileURL(VALIDATE).href) as {
-    validate(input: unknown): Record<string, unknown> | null;
-    validateErrorBatch(input: unknown): { errors: Record<string, unknown>[] } | null;
-  };
+  test.skip(!hasCollector, 'the dashboard repo isn\'t here');
+  return loadCollectorValidator();
 }
 
 test.describe('nothing before consent', () => {
@@ -196,7 +199,7 @@ test.describe('the shell\'s own heartbeat in instance mode', () => {
     expect(clean.schema).toBe('1');
     expect(clean.build).toBe('desktop.instance.stable');
     expect(body.platform).toBe('desktop');
-    expect(['unknown', 'desktop']).toContain(clean.platform);
+    expect(clean.platform).toBe('desktop');
     expect(clean.os_family).toBe(process.platform === 'win32' ? 'windows' : process.platform);
     // Any extra key would make schema 2 refuse it.
     expect(collectorCode.validate({ ...body, schema: '2', errors: [] })).not.toBeNull();
@@ -236,16 +239,100 @@ test.describe('the shell\'s own heartbeat in instance mode', () => {
     expect(storedPrivacy(profile).lastPingAt).toBeUndefined();
   });
 
-  test('due after a restart, it goes within the catch-up time, not an hour', async () => {
+  test('due after a restart, it goes after the catch-up wait, not an hour', async () => {
     const threeDaysAgo = Date.now() - 3 * 86_400_000;
-    await startInstance({ privacy: { asked: true, telemetry: true, lastPingAt: threeDaysAgo }, args: [] });
-    await expect.poll(() => heartbeats().length, { timeout: 45_000, intervals: [1000] }).toBeGreaterThan(0);
+    await startInstance({ privacy: { asked: true, telemetry: true, lastPingAt: threeDaysAgo }, args: ['--bulwark-test-catch-up=300'] });
+    await expect.poll(() => heartbeats().length, { timeout: 15_000 }).toBeGreaterThan(0);
   });
 
-  test('sent recently, a restart doesn\'t send again', async () => {
-    await startInstance({ privacy: { asked: true, telemetry: true, lastPingAt: Date.now() - 3_600_000 }, args: [] });
+  test('with no test switch it waits at least 30 s, so a start isn\'t readable from it', async () => {
+    await startInstance({ privacy: { asked: true, telemetry: true, lastPingAt: Date.now() - 3 * 86_400_000 }, args: [] });
+    await sleep(25_000);
+    expect(hits).toEqual([]);
+  });
+
+  test('sent recently, a restart doesn\'t send again, even with the catch-up at nothing', async () => {
+    await startInstance({ privacy: { asked: true, telemetry: true, lastPingAt: Date.now() - 3_600_000 }, args: ['--bulwark-test-catch-up=100'] });
     await sleep(3000);
     expect(hits).toEqual([]);
+  });
+
+  test('a collector that refuses it isn\'t asked again until tomorrow', async () => {
+    refusing = true;
+    const { profile } = await startInstance({ privacy: { asked: true, telemetry: true }, args: ['--bulwark-test-catch-up=100', '--bulwark-test-ping-retry=100'] });
+    await expect.poll(() => heartbeats().length, { timeout: 15_000 }).toBeGreaterThan(0);
+    await sleep(2000);
+    expect(heartbeats()).toHaveLength(1);
+    expect(storedPrivacy(profile).lastPingAt).toEqual(expect.any(Number));
+  });
+});
+
+test.describe('the random ID', () => {
+  test('goes when both consents go, and a yes after that makes a new one', async () => {
+    const { page, profile } = await startInstance({ privacy: { asked: true, telemetry: true, crashReports: true }, args: ['--bulwark-test-catch-up=100'] });
+    await expect.poll(() => storedPrivacy(profile).id, { timeout: 15_000 }).toEqual(expect.any(String));
+    const first = storedPrivacy(profile).id;
+
+    await bridge(page, (privacy) => privacy.setTelemetry(false));
+    // One consent is left, and with it the ID.
+    expect(storedPrivacy(profile).id).toBe(first);
+
+    await bridge(page, (privacy) => privacy.setCrashReports(false));
+    expect(storedPrivacy(profile).id).toBeUndefined();
+    expect(storedPrivacy(profile).lastPingAt).toBeUndefined();
+
+    hits = [];
+    await bridge(page, (privacy) => privacy.setTelemetry(true));
+    await expect.poll(() => heartbeats().length, { timeout: 15_000 }).toBeGreaterThan(0);
+    const body = JSON.parse(heartbeats()[0].body.toString('utf8')) as { instance_id: string };
+    expect(body.instance_id).not.toBe(first);
+    expect(body.instance_id).toBe(storedPrivacy(profile).id);
+  });
+
+  test('goes at a start with both off, also the server\'s', async () => {
+    const profile = tempProfile('privacy');
+    const telemetry = path.join(profile, 'webmail', 'telemetry');
+    mkdirSync(telemetry, { recursive: true });
+    writeFileSync(path.join(telemetry, '.telemetry-id'), 'f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b');
+    await startInstance({ profile, privacy: { asked: true, telemetry: false, crashReports: false, id: 'f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b' } });
+    await expect.poll(() => storedPrivacy(profile).id).toBeUndefined();
+    expect(existsSync(path.join(telemetry, '.telemetry-id'))).toBe(false);
+  });
+
+  test('goes in a wipe, with consent still on', async () => {
+    test.skip(process.platform !== 'win32', 'the test root is a registry key');
+    const profile = tempProfile('privacy');
+    const telemetry = path.join(profile, 'webmail', 'telemetry');
+    mkdirSync(telemetry, { recursive: true });
+    writeFileSync(path.join(telemetry, '.telemetry-id'), 'f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b');
+    mkdirSync(path.join(profile, 'crash-reports', 'reports'), { recursive: true });
+    const planted = path.join(profile, 'crash-reports', 'reports', 'old.dmp');
+    writeFileSync(planted, 'MDMP');
+    const result = spawnSync('reg.exe', ['add', `${REG_ROOT}\\Machine`, '/v', 'WipeOfflineData', '/t', 'REG_SZ', '/d', `wipe-${Date.now()}`, '/f'], { encoding: 'utf8', windowsHide: true });
+    expect(result.status).toBe(0);
+    await startInstance({ profile, privacy: { asked: true, crashReports: true, id: 'f0c1a2b3-c4d5-4e6f-8a9b-0c1d2e3f4a5b' }, args: ['--bulwark-test-errors-tick=60000'] });
+    await expect.poll(() => storedPrivacy(profile).id, { timeout: 30_000 }).toBeUndefined();
+    expect(existsSync(path.join(telemetry, '.telemetry-id'))).toBe(false);
+    expect(existsSync(planted)).toBe(false);
+  });
+});
+
+test.describe('BULWARK_TELEMETRY=off in the environment', () => {
+  test('beats a stored yes in main too, and the bridge says it can\'t be changed', async () => {
+    process.env.BULWARK_TELEMETRY = 'off';
+    try {
+      const { page, app } = await startInstance({ privacy: { asked: true, telemetry: true, crashReports: true }, args: ['--bulwark-test-catch-up=100', '--bulwark-test-errors-tick=200'] });
+      await app.evaluate(() => {
+        void Promise.reject(new TypeError('x'));
+      });
+      await sleep(1500);
+      expect(hits).toEqual([]);
+      const state = await bridge(page, (privacy) => privacy.get());
+      expect(state.telemetry).toEqual({ on: false, forcedOff: true });
+      expect(state.crashReports).toMatchObject({ on: false, forcedOff: true });
+    } finally {
+      delete process.env.BULWARK_TELEMETRY;
+    }
   });
 });
 
@@ -324,8 +411,12 @@ test.describe('the first run', () => {
     await page.locator('#privacy.open').waitFor();
     await expect(page.locator('#telemetry')).not.toBeChecked();
     await expect(page.locator('#crash')).not.toBeChecked();
-    // It says what a crash file holds, before anyone agrees.
-    await expect(page.locator('#crash-text')).toContainText('open mail');
+    // It says what goes, in plain words, before anyone agrees.
+    await expect(page.locator('#crash-text')).toContainText('a random ID');
+    await expect(page.locator('#crash-text')).toContainText('text of your mail');
+    for (const words of ['a random ID', 'Node version', 'how long the app has been running', 'how many plugins and themes']) {
+      await expect(page.locator('#telemetry-text')).toContainText(words);
+    }
     await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-telemetry-first-run.png') });
     await sleep(1000);
     expect(hits).toEqual([]);
@@ -424,12 +515,23 @@ test.describe('crash files', () => {
     expect(hits).toEqual([]);
     const asked = await prompts(app);
     expect(asked[0].message).toContain(new URL(url).host);
-    expect(asked[0].detail).toContain('open mail');
+    expect(asked[0].detail).toContain('text of your mail');
 
     await fakeOsIntegration(app, 0);
+    await app.evaluate(({ utilityProcess }) => {
+      const g = globalThis as unknown as { __forks: string[] };
+      g.__forks = [];
+      const fork = utilityProcess.fork;
+      utilityProcess.fork = ((script: string, ...rest: unknown[]) => {
+        g.__forks.push(script);
+        return (fork as (...a: unknown[]) => unknown).call(utilityProcess, script, ...rest);
+      }) as typeof utilityProcess.fork;
+    });
     expect(await bridge(page, (privacy, id) => privacy.sendCrash(id), list[0].id)).toEqual({ ok: true });
     const uploads = hits.filter((hit) => hit.path === '/upload');
     expect(uploads).toHaveLength(1);
+    // Off the main thread: a big dump mustn't freeze the app.
+    expect(await app.evaluate(() => (globalThis as unknown as { __forks: string[] }).__forks)).toEqual([expect.stringContaining('crash-scrub-host')]);
     const body = uploads[0].body;
     expect(body.includes(Buffer.from('name="upload_file_minidump"'))).toBe(true);
     expect(body.includes(Buffer.from('MDMP'))).toBe(true);
@@ -458,6 +560,38 @@ test.describe('crash files', () => {
     const { page, app } = await startInstance({ profile, privacy: { asked: true, crashReports: true } });
     expect(await bridge(page, (privacy, id) => privacy.sendCrash(id), 'abc')).toEqual({ ok: false, reason: 'no-url' });
     expect(await prompts(app)).toEqual([]);
+    expect(hits).toEqual([]);
+  });
+
+  test('what\'s planted in a dump doesn\'t get out: names, servers, mail, whatever the script', async () => {
+    const profile = tempProfile('privacy');
+    const dir = path.join(profile, 'crash-reports', 'reports');
+    mkdirSync(dir, { recursive: true });
+    const secrets = [userInfo().username, new URL(instanceUrl).host, 'Слияние с компанией', 'ceo.private@acme-corp.example'];
+    const text = `C:\\Users\\IVAN~1\\x ${instanceUrl} "subject":"Слияние с компанией" \\"password\\":\\"hunter2-Пароль\\" ceo.private@acme-corp.example ${userInfo().username}`;
+    writeFileSync(path.join(dir, 'planted.dmp'), Buffer.concat([Buffer.from('MDMP\0\0'), Buffer.from(text, 'utf8'), Buffer.from([0, 0]), Buffer.from(text, 'utf16le')]));
+    const { page, app } = await startInstance({ profile, privacy: { asked: true, crashReports: true, crashUploadUrl: `${collectorUrl}/upload`, instanceUrl } });
+    await app.evaluate(({ app: electronApp }) => electronApp.getVersion());
+    expect(await bridge(page, (privacy, id) => privacy.sendCrash(id), 'planted')).toEqual({ ok: true });
+    const body = hits.find((hit) => hit.path === '/upload')!.body;
+    for (const secret of [...secrets, 'IVAN~1', 'hunter2']) {
+      expect(body.includes(Buffer.from(secret, 'utf8')), secret).toBe(false);
+      expect(body.includes(Buffer.from(secret, 'utf16le')), secret).toBe(false);
+    }
+    expect(body.includes(Buffer.from('MDMP'))).toBe(true);
+  });
+
+  test('a scrub that can\'t finish sends nothing, rather than the raw file', async () => {
+    const profile = tempProfile('privacy');
+    mkdirSync(path.join(profile, 'crash-reports', 'reports'), { recursive: true });
+    writeFileSync(path.join(profile, 'crash-reports', 'reports', 'abc.dmp'), 'MDMP');
+    const { page, app } = await startInstance({ profile, privacy: { asked: true, crashReports: true, crashUploadUrl: `${collectorUrl}/upload` } });
+    await app.evaluate(({ utilityProcess }) => {
+      utilityProcess.fork = (() => {
+        throw new Error('no process today');
+      }) as typeof utilityProcess.fork;
+    });
+    expect(await bridge(page, (privacy, id) => privacy.sendCrash(id), 'abc')).toEqual({ ok: false, reason: 'failed' });
     expect(hits).toEqual([]);
   });
 
@@ -511,7 +645,7 @@ test.describe('crash files', () => {
     const state = await bridge(page, (privacy) => privacy.setCrashReports(true));
     expect(state.crashReports.on).toBe(true);
     const asked = await prompts(app);
-    expect(asked[0].detail).toContain('open mail');
+    expect(asked[0].detail).toContain('text of your mail');
     expect(await app.evaluate(({ crashReporter }) => crashReporter.getUploadToServer())).toBe(false);
     // Separate from telemetry: this one is still off, and sends nothing.
     expect((await bridge(page, (privacy) => privacy.get())).telemetry.on).toBe(false);
@@ -541,6 +675,15 @@ test.describe('errors in the main process, in instance mode', () => {
     expect(heartbeats()).toEqual([]);
   });
 
+  test('a collector that refuses the batch isn\'t asked again every tick', async () => {
+    refusing = true;
+    const { app } = await startInstance({ privacy: { asked: true, crashReports: true } });
+    await reject(app);
+    await expect.poll(() => hits.filter((hit) => hit.path === '/v1/errors').length, { timeout: 15_000 }).toBeGreaterThan(0);
+    await sleep(1500);
+    expect(hits.filter((hit) => hit.path === '/v1/errors')).toHaveLength(1);
+  });
+
   test('without consent, nothing', async () => {
     const { app } = await startInstance({ privacy: { asked: true, telemetry: false, crashReports: false } });
     await reject(app);
@@ -567,7 +710,7 @@ test.describe('standalone, on a webmail built with this', () => {
     seed(profile, options.privacy);
     const telemetryDir = path.join(profile, 'webmail', 'telemetry');
     mkdirSync(telemetryDir, { recursive: true });
-    writeFileSync(path.join(telemetryDir, 'state.json'), JSON.stringify({ consent: 'off', endpoint: `${collectorUrl}/v1/heartbeat`, consentedAt: null, lastSentAt: null, nextScheduledAt: null, ...options.state }));
+    writeFileSync(path.join(telemetryDir, 'state.json'), JSON.stringify({ consent: 'off', endpoint: 'http://127.0.0.1:1/ignored', consentedAt: null, lastSentAt: null, nextScheduledAt: null, ...options.state }));
     process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE = '1';
     const app = await launch(profile, '--standalone', `--bulwark-server-dir=${SERVER_DIR}`, collectorArg(), ...POLICY_ARGS, ...FAST);
     delete process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE;
@@ -578,15 +721,17 @@ test.describe('standalone, on a webmail built with this', () => {
   }
 
   test('without consent nothing leaves, whatever the server\'s own file says', async () => {
-    await startStandalone({ state: { consent: 'on', nextScheduledAt: new Date(Date.now() - 86_400_000).toISOString() } });
+    await startStandalone({ state: { consent: 'on', endpoint: `${collectorUrl}/v1/heartbeat`, nextScheduledAt: new Date(Date.now() + 5_000).toISOString() } });
     await sleep(40_000);
     expect(hits).toEqual([]);
   });
 
   test('with consent one heartbeat goes, from the server and not also from main, and the real collector takes it', async () => {
     const collectorCode = await realValidator();
-    await startStandalone({ privacy: { asked: true, telemetry: true }, state: { nextScheduledAt: new Date(Date.now() - 86_400_000).toISOString() } });
-    await expect.poll(() => heartbeats().length, { timeout: 60_000, intervals: [1000] }).toBeGreaterThan(0);
+    test.setTimeout(300_000);
+    // A slot just ahead: the catch-up wait is up to 10 minutes, and a unit test has that.
+    await startStandalone({ privacy: { asked: true, telemetry: true }, state: { nextScheduledAt: new Date(Date.now() + 90_000).toISOString() } });
+    await expect.poll(() => heartbeats().length, { timeout: 180_000, intervals: [1000] }).toBeGreaterThan(0);
     await sleep(3000);
     expect(heartbeats()).toHaveLength(1);
     const body = JSON.parse(heartbeats()[0].body.toString('utf8')) as Record<string, unknown>;
@@ -595,13 +740,18 @@ test.describe('standalone, on a webmail built with this', () => {
     expect(collectorCode.validate({ ...body, schema: '2', errors: [] })).not.toBeNull();
   });
 
-  test('turning it on in a running app starts the heartbeat, without a restart', async () => {
-    const { page } = await startStandalone({});
+  test('turning it on in a running app starts the heartbeat, and turning it off drops the ID', async () => {
+    test.setTimeout(300_000);
+    const { page, profile } = await startStandalone({ state: { nextScheduledAt: new Date(Date.now() + 90_000).toISOString() } });
     await sleep(2000);
     expect(hits).toEqual([]);
     const state = await bridge(page, (privacy) => privacy.setTelemetry(true));
     expect(state.telemetry.on).toBe(true);
-    await expect.poll(() => heartbeats().length, { timeout: 60_000, intervals: [1000] }).toBe(1);
+    await expect.poll(() => heartbeats().length, { timeout: 180_000, intervals: [1000] }).toBe(1);
+    const id = path.join(profile, 'webmail', 'telemetry', '.telemetry-id');
+    expect(existsSync(id)).toBe(true);
+    await bridge(page, (privacy) => privacy.setTelemetry(false));
+    expect(existsSync(id)).toBe(false);
   });
 
   test('an error in main reaches the server\'s counts with its frames, and the batch the real collector takes', async () => {

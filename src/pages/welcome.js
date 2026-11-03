@@ -13,9 +13,9 @@ const STRINGS = {
     privacyTitle: 'Help improve Bulwark?',
     privacyIntro: "Both are off unless you tick them. You can change this later in Settings.",
     telemetryLabel: 'Send usage info',
-    telemetryText: 'Once a day: the app version, your operating system and how the app connects. With your own mail server, also which features are on and a rough number of accounts. Never mail, addresses or server names.',
+    telemetryText: 'Once a day: a random ID, the app version, the Node version, your operating system, how long the app has been running and how it connects. With your own mail server, also which features are on, a rough number of accounts and how many plugins and themes you have. Never mail, addresses or server names.',
     crashLabel: 'Send crash reports',
-    crashText: "Errors in the app go out with file names from the app's own code and short, cleaned-up messages. If the app itself crashes, a crash file stays on this computer. It's a copy of part of the app's memory, so it can contain parts of open mail. A crash file only leaves when you send it.",
+    crashText: "Errors in the app go out with a random ID, file names from the app's own code and short, cleaned-up messages. If the app itself crashes, a crash file stays on this computer. It's a copy of part of the app's memory, so it can contain the text of your mail. A crash file only leaves when you send it.",
     continueLabel: 'Continue',
   },
   de: {
@@ -32,9 +32,9 @@ const STRINGS = {
     privacyTitle: 'Möchten Sie helfen, Bulwark zu verbessern?',
     privacyIntro: 'Beides bleibt aus, wenn Sie nichts ankreuzen. Sie können das später in den Einstellungen ändern.',
     telemetryLabel: 'Nutzungsdaten senden',
-    telemetryText: 'Einmal am Tag: die App-Version, Ihr Betriebssystem und die Art der Verbindung. Bei einem eigenen Mailserver auch, welche Funktionen aktiv sind, und eine ungefähre Zahl der Konten. Niemals E-Mails, Adressen oder Servernamen.',
+    telemetryText: 'Einmal am Tag: eine zufällige ID, die App-Version, die Node-Version, Ihr Betriebssystem, wie lange die App schon läuft und die Art der Verbindung. Bei einem eigenen Mailserver auch, welche Funktionen aktiv sind, eine ungefähre Zahl der Konten und wie viele Plugins und Designs Sie haben. Niemals E-Mails, Adressen oder Servernamen.',
     crashLabel: 'Absturzberichte senden',
-    crashText: 'Fehler in der App werden mit Dateinamen aus dem eigenen Code der App und kurzen, bereinigten Meldungen gesendet. Stürzt die App selbst ab, bleibt eine Absturzdatei auf diesem Computer. Sie ist eine Kopie eines Teils des Arbeitsspeichers der App und kann daher Teile geöffneter E-Mails enthalten. Eine Absturzdatei verlässt den Computer nur, wenn Sie sie senden.',
+    crashText: 'Fehler in der App werden mit einer zufälligen ID, Dateinamen aus dem eigenen Code der App und kurzen, bereinigten Meldungen gesendet. Stürzt die App selbst ab, bleibt eine Absturzdatei auf diesem Computer. Sie ist eine Kopie eines Teils des Arbeitsspeichers der App und kann daher den Text Ihrer E-Mails enthalten. Eine Absturzdatei verlässt den Computer nur, wenn Sie sie senden.',
     continueLabel: 'Weiter',
   },
 };

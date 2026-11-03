@@ -105,6 +105,17 @@ const PASS_THROUGH: Record<NodeJS.Platform | string, string[]> = {
   linux: ['HOME', 'TMPDIR', 'USER', 'LANG', 'LC_ALL', 'PATH', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'],
 };
 
+/**
+ * `BULWARK_TELEMETRY=off` on this machine, as an admin would set it for any Bulwark. It beats
+ * the user's yes for usage info and crash reports alike. A yes is never read from here.
+ */
+export function telemetryOffInEnv(env: Record<string, string | undefined>): boolean {
+  const value = (env.BULWARK_TELEMETRY ?? '').toLowerCase();
+  if (value === 'off' || value === 'false' || value === '0' || value === 'no') return true;
+  const disabled = (env.BULWARK_TELEMETRY_DISABLED ?? '').toLowerCase();
+  return disabled === '1' || disabled === 'true' || disabled === 'yes';
+}
+
 /** Allowlist only. Secrets don't go here: they arrive by message (protocol.ts). */
 export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platform: NodeJS.Platform): Record<string, string> {
   const env: Record<string, string> = {};
@@ -118,7 +129,8 @@ export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platfo
     NEXT_TELEMETRY_DISABLED: '1',
     COOKIE_SECURE: 'true',
     BULWARK_UPDATE_CHECK: 'off',
-    BULWARK_TELEMETRY: 'off',
+    // The user's two switches decide, by message. Only an off gets past this allowlist.
+    ...(telemetryOffInEnv(source) ? { BULWARK_TELEMETRY: 'off' } : {}),
     LOG_LEVEL: 'warn',
     ADMIN_CONFIG_DIR: paths.adminConfig,
     ADMIN_STATE_DIR: paths.adminState,

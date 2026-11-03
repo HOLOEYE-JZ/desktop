@@ -5,6 +5,7 @@
  * A minidump is part of the app's memory at the moment of the crash, so it can hold open
  * mail. The consent text says that. `scrubMinidump` takes out what it can find, in place
  * and at the same length, so the file's structure still holds. It can't promise more.
+ * It runs in a process of its own, as a file can be 64 MB.
  */
 
 import { readdirSync, rmSync, statSync } from 'node:fs';
@@ -108,54 +109,143 @@ export function validUploadUrl(value: unknown): string | null {
   }
 }
 
-/** Over bytes as Latin-1, one character a byte, so a replacement can't move anything. */
+/*
+ * Everything below works on the bytes read as Latin-1, one character a byte, so a replacement
+ * can't move anything and a pattern can name any byte. So text in a pattern has to be the
+ * bytes it really has on disk: UTF-8, UTF-16LE, or the one-byte code page.
+ *
+ * Every value pattern ends in an optional closing quote and has one way through each unit,
+ * so it never backtracks: time grows with the size of the file, whatever is in it.
+ */
+
+/** Keeps the zero bytes, so what's left of UTF-16 text still reads as UTF-16. */
 const blank = (match: string) => match.replace(/[^\0]/g, 'x');
 
 function escapeForRegex(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  return text.replace(/[\s\S]/g, (char) => {
+    const code = char.charCodeAt(0);
+    return /[A-Za-z0-9]/.test(char) ? char : `\\x${code.toString(16).padStart(2, '0')}`;
+  });
 }
 
-/** A pattern as it looks in UTF-16LE: a zero byte after each character. */
+const latin1 = (bytes: Buffer) => bytes.toString('latin1');
+
+/** A pattern as it looks in UTF-16LE: a zero byte after each character. For ASCII patterns. */
 function wide(source: string): string {
-  // \\x00, as a digit after \\0 would read as an octal escape.
   return [...source].map((char) => `${escapeForRegex(char)}\\x00`).join('');
 }
 
+/** What a piece of text can look like in a dump, as Latin-1 strings of its bytes. */
+function byteForms(text: string): string[] {
+  const forms = new Set<string>();
+  for (const variant of [text, text.toLowerCase(), text.toUpperCase()]) {
+    forms.add(latin1(Buffer.from(variant, 'utf8')));
+    forms.add(latin1(Buffer.from(variant, 'utf16le')));
+    // eslint-disable-next-line no-control-regex
+    if (/^[\u0000-\u00ff]*$/.test(variant)) forms.add(variant);
+  }
+  return [...forms];
+}
+
+/** Names of a few letters would blank half the file, and tell nobody anything. */
+const longEnough = (text: string | undefined): text is string => !!text && Buffer.byteLength(text, 'utf8') >= 3;
+
+function needlePattern(needles: readonly string[]): RegExp | null {
+  const alternatives = [...new Set(needles.filter(longEnough).flatMap(byteForms))]
+    .filter((form) => form.length >= 3)
+    .sort((a, b) => b.length - a.length)
+    .map(escapeForRegex);
+  return alternatives.length ? new RegExp(alternatives.join('|'), 'gi') : null;
+}
+
+const SLASH = '[\\\\/]';
+const WIDE_SLASH = '[\\\\/]\\x00';
+
+/**
+ * Whoever's folder it is, under whatever name: `C:\Users\IVAN~1`, a short name nothing here
+ * knows, or another account's. The rest of the path stays, to be read.
+ */
+const USER_FOLDER = new RegExp(`(?:[A-Za-z]:${SLASH}{1,2}Users${SLASH}{1,2}|${SLASH}home${SLASH}|${SLASH}Users${SLASH})[^\\\\/\\0"'<>|:*?\\r\\n]{1,128}`, 'gi');
+const USER_FOLDER_WIDE = new RegExp(
+  `(?:[A-Za-z]\\x00:\\x00(?:${WIDE_SLASH}){1,2}${wide('Users')}(?:${WIDE_SLASH}){1,2}|${WIDE_SLASH}${wide('home')}${WIDE_SLASH}|${WIDE_SLASH}${wide('Users')}${WIDE_SLASH})(?:(?!${WIDE_SLASH}|"\\x00|:\\x00|\\x00\\x00)[\\s\\S]{2}){1,128}`,
+  'gi',
+);
+
+const MAIL_KEYS = ['subject', 'preview', 'value', 'name', 'email', 'htmlBody', 'textBody', 'bodyValues', 'password', 'token', 'accessToken', 'refreshToken'];
+const KEYS = MAIL_KEYS.join('|');
+const KEYS_WIDE = MAIL_KEYS.map(wide).join('|');
+const MAX_VALUE = 8192;
+
+const MAIL_JSON = new RegExp(`"(?:${KEYS})"\\s*:\\s*"(?:\\\\[\\s\\S]|[^"\\\\\\0]){0,${MAX_VALUE}}"?`, 'g');
+/** JSON inside JSON: `\"subject\":\"…\"`, with however many backslashes. */
+const MAIL_JSON_ESCAPED = new RegExp(`\\\\+"(?:${KEYS})\\\\+"\\s*:\\s*\\\\+"(?:(?!\\\\+")[^\\0]){0,${MAX_VALUE}}(?:\\\\+")?`, 'g');
+const WIDE_SPACE = '(?:\\s\\x00)*';
+const MAIL_JSON_WIDE = new RegExp(
+  `"\\x00(?:${KEYS_WIDE})"\\x00${WIDE_SPACE}:\\x00${WIDE_SPACE}"\\x00(?:\\\\\\x00[\\s\\S]{2}|(?!"\\x00|\\x00\\x00)[\\s\\S]{2}){0,${MAX_VALUE}}(?:"\\x00)?`,
+  'g',
+);
+const WIDE_BACKSLASHES = '(?:\\\\\\x00)+';
+const MAIL_JSON_WIDE_ESCAPED = new RegExp(
+  `${WIDE_BACKSLASHES}"\\x00(?:${KEYS_WIDE})${WIDE_BACKSLASHES}"\\x00${WIDE_SPACE}:\\x00${WIDE_SPACE}${WIDE_BACKSLASHES}"\\x00(?:(?!${WIDE_BACKSLASHES}"\\x00|\\x00\\x00)[\\s\\S]{2}){0,${MAX_VALUE}}(?:${WIDE_BACKSLASHES}"\\x00)?`,
+  'g',
+);
+
+const HEADERS = ['Subject', 'From', 'To', 'Cc', 'Bcc', 'Reply-To', 'Authorization', 'Cookie', 'Set-Cookie'];
+/** Raw mail and HTTP, as far as they sit in memory in one piece. */
+const MAIL_HEADER = new RegExp(`\\b(?:${HEADERS.join('|')}):[^\\r\\n\\0]{1,2000}`, 'gi');
+const MAIL_HEADER_WIDE = new RegExp(`(?:${HEADERS.map(wide).join('|')}):\\x00(?:(?!\\r\\x00|\\n\\x00|\\x00\\x00)[\\s\\S]{2}){1,2000}`, 'gi');
+
 const EMAIL = /[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63})+/g;
-const EMAIL_WIDE = /(?:[\w.+-]\0){1,64}@\0(?:[\w-]\0){1,63}(?:\.\0(?:[\w-]\0){1,63})+/g;
+const EMAIL_WIDE = /(?:[\w.+-]\x00){1,64}@\x00(?:[\w-]\x00){1,63}(?:\.\x00(?:[\w-]\x00){1,63})+/g;
 const AUTH = /\b(?:Bearer|Basic|Token)\s[^\s\0,;"']{4,}/gi;
 const AUTH_WIDE = new RegExp(`(?:${['Bearer', 'Basic', 'Token'].map(wide).join('|')})\\s\\x00(?:[^\\s\\0,;"']\\x00){4,}`, 'gi');
 const LONG_RUN = /[A-Za-z0-9+/_=-]{32,}/g;
-const LONG_RUN_WIDE = /(?:[A-Za-z0-9+/_=-]\0){32,}/g;
-/** Raw mail, and JMAP's fields as JSON, as far as they sit in memory in one piece. */
-const MAIL_HEADER = /\b(?:Subject|From|To|Cc|Bcc|Reply-To|Authorization|Cookie|Set-Cookie):[^\r\n\0]{1,2000}/gi;
-const MAIL_HEADER_WIDE = new RegExp(`(?:${['Subject', 'From', 'To', 'Cc', 'Bcc', 'Reply-To', 'Authorization', 'Cookie', 'Set-Cookie'].map(wide).join('|')}):\\x00(?:[^\\r\\n\\0]\\x00){1,2000}`, 'gi');
-const MAIL_JSON = /"(?:subject|preview|value|name|email|htmlBody|textBody|bodyValues|password|token|accessToken|refreshToken)"\s*:\s*"(?:[^"\\\0]|\\.){0,8192}"/g;
-const MAIL_JSON_WIDE = /"\0(?:s\0u\0b\0j\0e\0c\0t\0|p\0r\0e\0v\0i\0e\0w\0|v\0a\0l\0u\0e\0|e\0m\0a\0i\0l\0)"\0\s?\0?:\0\s?\0?"\0(?:[^"]\0|[^\0]\0){0,8192}"\0/g;
+const LONG_RUN_WIDE = /(?:[A-Za-z0-9+/_=-]\x00){32,}/g;
+
+const PATTERNS = [
+  USER_FOLDER, USER_FOLDER_WIDE,
+  MAIL_HEADER, MAIL_HEADER_WIDE,
+  MAIL_JSON_ESCAPED, MAIL_JSON_WIDE_ESCAPED, MAIL_JSON, MAIL_JSON_WIDE,
+  AUTH, AUTH_WIDE, EMAIL, EMAIL_WIDE, LONG_RUN, LONG_RUN_WIDE,
+];
 
 export interface ScrubNames {
   home: string;
   username: string;
   hostname: string;
+  /** The mail and Bulwark servers this app is set up with, as addresses. */
+  servers?: readonly string[];
+}
+
+function hostsOf(address: string): string[] {
+  try {
+    const url = new URL(address);
+    // A URL holds a non-ASCII host in punycode, and memory holds both.
+    const unicode = /^[a-z]+:\/\/([^/:]+)/i.exec(address)?.[1];
+    return [url.origin, url.host, url.hostname, ...(unicode ? [unicode] : [])];
+  } catch {
+    return [address];
+  }
 }
 
 /**
- * Takes the user's name and home folder, the computer's name, addresses, tokens and
- * anything that looks like mail out of a crash file's bytes. Same length, so offsets in
- * the file stay right. Only a copy changes: `bytes` is left as it is.
+ * Takes the user's name and home folder, the computer's name, the configured servers,
+ * addresses, tokens and anything that looks like mail out of a crash file's bytes, in any
+ * script. Same length, so offsets in the file stay right. Only a copy changes: `bytes` is left
+ * as it is. A dump can still hold the text of mail after this, and the consent text says so.
  */
 export function scrubMinidump(bytes: Buffer, names: ScrubNames): Buffer {
-  let text = bytes.toString('latin1');
-  const needles = [names.home, names.home.replace(/\\/g, '/'), names.home.replace(/\\/g, '\\\\'), names.username, names.hostname];
-  for (const needle of needles) {
-    // A two-letter name would blank half the file, and tell nobody anything.
-    if (!needle || needle.length < 3) continue;
-    const pattern = `${escapeForRegex(needle)}|${wide(needle)}`;
-    text = text.replace(new RegExp(pattern, 'gi'), blank);
-  }
-  for (const pattern of [MAIL_HEADER, MAIL_HEADER_WIDE, MAIL_JSON, MAIL_JSON_WIDE, AUTH, AUTH_WIDE, EMAIL, EMAIL_WIDE, LONG_RUN, LONG_RUN_WIDE]) {
-    text = text.replace(pattern, blank);
-  }
+  let text = latin1(bytes);
+  const needles = needlePattern([
+    names.home,
+    names.home.replace(/\\/g, '/'),
+    names.home.replace(/\\/g, '\\\\'),
+    names.username,
+    names.hostname,
+    ...(names.servers ?? []).flatMap(hostsOf),
+  ]);
+  if (needles) text = text.replace(needles, blank);
+  for (const pattern of PATTERNS) text = text.replace(pattern, blank);
   return Buffer.from(text, 'latin1');
 }
 
