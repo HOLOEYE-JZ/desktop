@@ -107,9 +107,10 @@ const unescapeXml = (text: string) => text.replace(/&#(\d+);/g, (_all, code) => 
 
 /** What the toast's button hands back, read off the toast itself: the same as Windows would pass. */
 function toastContext(toast: Toast): string {
-  const match = /launch="bulwark:open:([^"]*)"/.exec(toast.toastXml);
-  if (!match) throw new Error(`No launch in ${toast.toastXml}`);
-  return decodeURIComponent(unescapeXml(match[1]));
+  const match = /launch="([^"]*)"/.exec(toast.toastXml);
+  const context = match && new URL(unescapeXml(match[1])).searchParams.get('c');
+  if (!context) throw new Error(`No launch in ${toast.toastXml}`);
+  return context;
 }
 
 const press = (app: ElectronApplication, command: unknown, show: boolean) =>

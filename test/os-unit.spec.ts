@@ -12,8 +12,10 @@ import {
   parseArgv,
   parseFocusAssist,
   parseToastArguments,
+  parseToastUrl,
   safeFileName,
   toastArguments,
+  toastUrl,
   windowsRegistration,
   windowsRegistrationKeys,
 } from '../src/main/features/os-rules';
@@ -64,11 +66,17 @@ test.describe('what a command line asks for', () => {
     expect(parseArgv(['bulwark.exe'], ARGV_OPTIONS).fromLogin).toBe(false);
   });
 
-  test('COM starting us for a toast is noticed, also in its own spelling, and is no file', () => {
+  test('COM starting us is a switch, not a file', () => {
     const request = parseArgv(['bulwark.exe', '-Embedding'], ARGV_OPTIONS);
-    expect(request.startedByToast).toBe(true);
     expect(request.files).toEqual([]);
-    expect(parseArgv(['bulwark.exe', '--', '-Embedding'], ARGV_OPTIONS).startedByToast).toBe(false);
+    expect(request.commands).toEqual([]);
+  });
+
+  test('a toast URL is kept apart, unread, for its signature to be checked', () => {
+    const request = parseArgv(['bulwark.exe', '--', 'bulwark://toast/archive?c=x&s=y'], ARGV_OPTIONS);
+    expect(request.toastUrls).toEqual(['bulwark://toast/archive?c=x&s=y']);
+    expect(request.commands).toEqual([]);
+    expect(request.files).toEqual([]);
   });
 
   test('unknown schemes do nothing', () => {
@@ -87,7 +95,7 @@ test.describe('bulwark: links only show things', () => {
   });
 
   test('nothing that changes mail, and nothing unknown', () => {
-    for (const url of ['bulwark://archive/a/b', 'bulwark://delete/a/b', 'bulwark://notification/archive', 'bulwark://message/only-one', 'bulwark://message/%E0%A4%A/x']) {
+    for (const url of ['bulwark://toast/archive?c=x&s=y', 'bulwark://archive/a/b', 'bulwark://delete/a/b', 'bulwark://notification/archive', 'bulwark://message/only-one', 'bulwark://message/%E0%A4%A/x']) {
       expect(commandFromUrl(url), url).toBeNull();
     }
   });
@@ -179,6 +187,8 @@ test.describe('file names', () => {
   });
 });
 
+const SECRET = 'a key of this install';
+
 test.describe('toast', () => {
   const toast = {
     title: 'Alice <alice@example.org> & co',
@@ -190,29 +200,47 @@ test.describe('toast', () => {
   };
 
   test('nothing from a mail breaks out of the XML', () => {
-    const xml = buildToastXml(toast);
+    const xml = buildToastXml(toast, SECRET);
     expect(xml).not.toContain('<b>');
     expect(xml).not.toContain('Alice <alice');
     expect(xml).toContain('&#60;b&#62;');
   });
 
   test('has every button and the reply field, and stays silent', () => {
-    const xml = buildToastXml(toast);
+    const xml = buildToastXml(toast, SECRET);
     for (const label of ['Archive', 'Mark read', 'Delete', 'Reply']) expect(xml).toContain(`content="${label}"`);
     expect(xml).toContain('<input id="reply" type="text"');
     expect(xml).toContain('hint-inputId="reply"');
     expect(xml).toContain('<audio silent="true"/>');
   });
 
-  test('what comes back says which button for which message', () => {
-    const args = toastArguments('archive', toast.context);
-    expect(parseToastArguments(args)).toEqual({ action: 'archive', context: toast.context });
+  test('buttons and the click work with the app closed; only the reply needs the activator', () => {
+    const xml = buildToastXml(toast, SECRET);
+    expect(xml).toMatch(/<toast launch="bulwark:\/\/toast\/open[^"]*" activationType="protocol">/);
+    expect(xml).toMatch(/content="Archive" activationType="protocol" arguments="bulwark:\/\/toast\/archive/);
+    expect(xml).toMatch(/content="Reply" hint-inputId="reply" activationType="foreground" arguments="bulwark:reply:/);
+  });
+
+  test('a page can link to a toast URL, and it does nothing without this install\'s key', () => {
+    const url = toastUrl('archive', toast.context, SECRET);
+    expect(parseToastUrl(url, SECRET)).toEqual({ action: 'archive', context: toast.context });
+    expect(parseToastUrl(url, 'another install')).toBeNull();
+    expect(parseToastUrl(url.replace('/archive?', '/delete?'), SECRET)).toBeNull();
+    expect(parseToastUrl(url.replace(/c=[^&]*/, 'c=%7B%7D'), SECRET)).toBeNull();
+    expect(parseToastUrl('bulwark://toast/archive?c=x', SECRET)).toBeNull();
+    expect(parseToastUrl('bulwark://toast/archive?c=x&s=', SECRET)).toBeNull();
+    expect(parseToastUrl('bulwark://new', SECRET)).toBeNull();
+  });
+
+  test('what the activator hands back says which button for which message', () => {
+    const args = toastArguments('reply', toast.context);
+    expect(parseToastArguments(args)).toEqual({ action: 'reply', context: toast.context });
     expect(parseToastArguments('type=click&tag=abc')).toBeNull();
     expect(parseToastArguments('bulwark:')).toBeNull();
   });
 
   test('a locked toast is only what it was given', () => {
-    const xml = buildToastXml({ title: 'Bulwark', body: 'You have new mail', silent: true, context: '', actions: [] });
+    const xml = buildToastXml({ title: 'Bulwark', body: 'You have new mail', silent: true, context: '', actions: [] }, SECRET);
     expect(xml).not.toContain('<actions>');
     expect(xml).not.toContain('<input');
   });

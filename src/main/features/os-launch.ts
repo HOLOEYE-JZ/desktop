@@ -10,7 +10,7 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
 import type { OsHub } from './os-hub';
-import { commandFromUrl, fileReason, MAX_LAUNCH_FILE_BYTES, parseArgv, type LaunchRequest } from './os-rules';
+import { commandFromUrl, fileReason, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, type LaunchRequest } from './os-rules';
 
 const early: { urls: string[]; files: string[] } = { urls: [], files: [] };
 let liveHandler: ((request: LaunchRequest) => void) | null = null;
@@ -22,14 +22,14 @@ let liveHandler: ((request: LaunchRequest) => void) | null = null;
 export function holdEarlyLaunches(): void {
   app.on('open-file', (event, file) => {
     event.preventDefault();
-    if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false, startedByToast: false });
+    if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false, toastUrls: [] });
     else early.files.push(file);
   });
   app.on('open-url', (event, url) => {
     event.preventDefault();
     const command = commandFromUrl(url);
     if (!command) return;
-    if (liveHandler) liveHandler({ commands: [command], files: [], fromLogin: false, startedByToast: false });
+    if (liveHandler) liveHandler({ commands: [command], files: [], fromLogin: false, toastUrls: [] });
     else early.urls.push(url);
   });
 }
@@ -67,18 +67,29 @@ export interface LaunchHandle {
 export function setupLaunch(hub: OsHub): LaunchHandle {
   const skip = [app.getAppPath(), process.argv[1] ?? ''].filter(Boolean);
 
+  /** What the toast URLs ask for. One that isn't ours is dropped. */
+  const toastActions = (request: LaunchRequest) => request.toastUrls.flatMap((url) => parseToastUrl(url, hub.toastSecret()) ?? []);
+
   const run = async (request: LaunchRequest): Promise<number> => {
     const commands = [...request.commands, ...(await readFiles(request.files))];
     for (const command of commands) hub.dispatch(command);
-    return commands.length;
+    const actions = toastActions(request);
+    for (const { action, context } of actions) hub.toastAction(action, context);
+    return commands.length + actions.length;
   };
+
+  /** Pressing Archive shows nothing. Any other launch means "show me the app". */
+  const staysHidden = (request: LaunchRequest) =>
+    request.commands.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
   liveHandler = (request) => void run(request);
 
   const handle = (argv: string[], cwd: string) => run(parseArgv(argv, { cwd, skip }));
 
   app.on('second-instance', (_event, argv, cwd) => {
-    void handle(argv, cwd);
+    const request = parseArgv(argv, { cwd, skip });
+    if (!staysHidden(request)) hub.ctx.showMain();
+    void run(request);
   });
 
   const first = parseArgv(process.argv, { cwd: process.cwd(), skip });
@@ -90,8 +101,7 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   if ((first.fromLogin || wasAtLogin) && hub.settings().startMinimized && first.commands.length === 0 && first.files.length === 0) {
     hub.ctx.windows.startMainHidden();
   }
-  // COM started us for a toast that outlived the app. Its activation says whether to show anything.
-  if (first.startedByToast) hub.ctx.windows.startMainHidden();
+  if (staysHidden(first)) hub.ctx.windows.startMainHidden();
   void run(first);
 
   return { handle };

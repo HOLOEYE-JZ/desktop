@@ -295,21 +295,32 @@ test.describe('OS integration', () => {
     }, { timeout: 15_000 }).toContain('Bulwark test');
     for (const label of ['Archive', 'Mark read', 'Delete', 'Reply']) expect(xml).toContain(`content="${label}"`);
 
-    const activate = path.join(ROOT, 'test', 'support', 'toast-activate.ps1');
-    const fire = (action: string, reply = '') => {
-      const args = `bulwark:${encodeURIComponent(action)}:${encodeURIComponent(context)}`;
-      return execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', 'org.bulwarkmail.desktop', '-Arguments', args, '-Reply', reply], { encoding: 'utf8', windowsHide: true });
-    };
-    expect(fire('archive')).toContain('activated');
-    await expect.poll(() => commands(page)).toEqual([{ type: 'notification', action: 'archive', context }]);
-    // A button leaves the window where it is.
-    expect(await mainVisible(app)).toBe(true);
+    // A button is a protocol launch: a second instance with the URL off the toast itself.
+    const buttons = [...xml.matchAll(/content="([^"]+)" activationType="protocol" arguments="([^"]+)"/g)].map((match) => [match[1], match[2].replace(/&amp;/g, '&')]);
+    const url = (label: string) => buttons.find(([name]) => name === label)![1];
+    const require = createRequire(import.meta.url);
+    const env = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const launchWith = (target: string) => new Promise<void>((resolve) => {
+      spawn(require('electron') as unknown as string, [MAIN, `--bulwark-user-data=${profile}`, '--', target], { env, stdio: 'ignore' }).once('exit', () => resolve());
+    });
+
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
-    expect(fire('mark-read')).toContain('activated');
-    await expect.poll(async () => (await commands(page)).length).toBe(2);
+    await launchWith(url('Archive'));
+    await expect.poll(() => commands(page), { timeout: 30_000 }).toEqual([{ type: 'notification', action: 'archive', context }]);
+    // It leaves the window where it is.
     expect(await mainVisible(app)).toBe(false);
-    // A typed reply and a click bring it up.
-    expect(fire('reply', 'On my way')).toContain('activated');
+
+    // Anyone can link to one. Without this install's key it does nothing, and shows the app as any launch does.
+    await launchWith(url('Delete').replace(/s=[^&]*$/, 's=forged'));
+    await expect.poll(() => mainVisible(app), { timeout: 30_000 }).toBe(true);
+    expect((await commands(page)).length).toBe(1);
+
+    // A typed reply goes through the activator, and brings the window up.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+    const activate = path.join(ROOT, 'test', 'support', 'toast-activate.ps1');
+    const args = `bulwark:reply:${encodeURIComponent(context)}`;
+    expect(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', 'org.bulwarkmail.desktop', '-Arguments', args, '-Reply', 'On my way'], { encoding: 'utf8', windowsHide: true })).toContain('activated');
     await expect.poll(async () => (await commands(page)).at(-1)).toEqual({ type: 'notification', action: 'reply', context, reply: 'On my way' });
     await expect.poll(() => mainVisible(app)).toBe(true);
 
@@ -405,7 +416,8 @@ test.describe('OS integration', () => {
     const env = { ...process.env };
     delete env.ELECTRON_RUN_AS_NODE;
     const second = spawn(require('electron') as unknown as string, [MAIN, `--bulwark-user-data=${profile}`, '--', 'webcal://example.org/cal.ics'], { env, stdio: 'ignore' });
-    await expect.poll(async () => (await commands(page)).at(-1), { timeout: 30_000 }).toEqual({ type: 'webcal', url: 'webcal://example.org/cal.ics' });
+    // The page takes it and goes to the calendar, which on a login page means a reload.
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-webcal')).catch(() => null), { timeout: 30_000 }).toContain('example.org/cal.ics');
     second.kill();
   });
 

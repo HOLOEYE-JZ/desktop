@@ -363,7 +363,8 @@ async function boot(theme: ThemeController): Promise<void> {
   showWelcome(theme);
 }
 
-// Another launch means "show me the app". With only a pop-out left open, that's a new main window.
+// "Show me the app". With only a pop-out left open, that's a new main window. A second launch
+// comes here through features/os-launch.ts, which knows the ones that show nothing.
 function showMain(): void {
   // Until the server is up, the boot opens it: a window now would load an error page.
   if (!windowManager || !mainWindowAllowed) return;
@@ -397,8 +398,6 @@ if (gotLock) {
 
   // Registered here: macOS sends a launch's file or link before `ready`.
   holdEarlyLaunches();
-
-  app.on('second-instance', showMain);
 
   app.on('window-all-closed', () => {
     // Closing to the tray hides the main window, so this means there's nothing left.

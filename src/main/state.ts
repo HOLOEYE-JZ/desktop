@@ -39,6 +39,8 @@ export interface ShellState {
   osCloseNoticeShown?: boolean;
   /** The path the mail app's registry keys point at. */
   osRegisteredExe?: string;
+  /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
+  osToastSecret?: string;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

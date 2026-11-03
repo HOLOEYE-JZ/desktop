@@ -2,11 +2,12 @@
  * Native notifications.
  *
  * Windows, as tried on an unsigned, uninstalled build: Electron's own toast activator
- * needs nothing from us beyond a stable CLSID. On the first toast it writes a Start Menu
- * shortcut and HKCU\Software\Classes\CLSID\{...}\LocalServer32 itself, buttons and a
- * typed reply reach Notification.handleActivation, and a toast still in the Action
- * Center keeps working after a restart. So no `activationType="protocol"` detour. Left
- * to itself the CLSID changes every run, and each run would leave another key behind.
+ * needs nothing from us beyond a stable CLSID. It writes a Start Menu shortcut and
+ * HKCU\Software\Classes\CLSID\{...}\LocalServer32 itself, and once this process has
+ * shown a toast it answers COM: a typed reply reaches Notification.handleActivation.
+ * Started by COM for a toast from before, it never answered, so click and buttons go by
+ * protocol (buildToastXml). Left to itself the CLSID changes every run, and each run
+ * would leave another key behind.
  */
 
 import { execFile } from 'node:child_process';
@@ -122,11 +123,7 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     return focusRunning;
   };
 
-  const onActivation = (action: string, context: string, reply?: string) => {
-    if (action === 'open' || action === 'reply') hub.dispatch({ type: 'notification', action, context, reply });
-    // A button shouldn't throw a window in the user's face; the page opens the message if it can't.
-    else hub.dispatch({ type: 'notification', action, context }, { show: false });
-  };
+  const onActivation = (action: string, context: string, reply?: string) => hub.toastAction(action, context, reply);
 
   if (win32) {
     Notification.handleActivation((details) => {
@@ -153,7 +150,7 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     let notification: Notification;
     if (win32) {
       // The page plays the sound the user picked, so the toast never adds Windows' own.
-      notification = new Notification({ id, groupId, toastXml: buildToastXml({ ...toast, silent: true }) });
+      notification = new Notification({ id, groupId, toastXml: buildToastXml({ ...toast, silent: true }, hub.toastSecret()) });
     } else {
       const mac = process.platform === 'darwin';
       notification = new Notification({

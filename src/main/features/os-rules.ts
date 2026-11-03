@@ -4,6 +4,7 @@
  * what a toast says, what goes in the registry.
  */
 
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import type { OsCommand, OsSettings } from '../../shared/bridge';
 
@@ -134,8 +135,8 @@ export interface LaunchRequest {
   files: string[];
   /** The login item's flag. */
   fromLogin: boolean;
-  /** COM's flag for a server it started: a button on a toast of an app that wasn't running. */
-  startedByToast: boolean;
+  /** A toast's button or click, as handed to us. Checked before anything is done with it. */
+  toastUrls: string[];
 }
 
 const OPENABLE = new Set(['.eml', '.ics', '.vcf']);
@@ -150,7 +151,7 @@ export function fileReason(file: string): 'open' | 'attach' {
  * registered handlers pass a URL.
  */
 export function parseArgv(argv: readonly string[], options: { cwd: string; skip: readonly string[] }): LaunchRequest {
-  const request: LaunchRequest = { commands: [], files: [], fromLogin: false, startedByToast: false };
+  const request: LaunchRequest = { commands: [], files: [], fromLogin: false, toastUrls: [] };
   const skipped = new Set(options.skip.map((entry) => path.resolve(options.cwd, entry).toLowerCase()));
   let positional = false;
   for (const arg of argv.slice(1)) {
@@ -162,13 +163,13 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
       request.fromLogin = true;
       continue;
     }
-    if (!positional && arg.toLowerCase() === COM_FLAG) {
-      request.startedByToast = true;
-      continue;
-    }
     if (!positional && arg.startsWith('-')) continue;
     if (!arg) continue;
     if (/^[a-z][a-z0-9+.-]+:/i.test(arg) && !/^[a-z]:[\\/]/i.test(arg)) {
+      if (arg.toLowerCase().startsWith(TOAST_URL_PREFIX)) {
+        request.toastUrls.push(arg);
+        continue;
+      }
       const command = commandFromUrl(arg);
       if (command) request.commands.push(command);
       continue;
@@ -180,7 +181,6 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
 }
 
 export const LOGIN_FLAG = '--bulwark-from-login';
-const COM_FLAG = '-embedding';
 
 const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
@@ -206,8 +206,44 @@ function xml(text: string): string {
 
 export const REPLY_INPUT = 'reply';
 const TOAST_ARGS_PREFIX = 'bulwark:';
+const TOAST_URL_PREFIX = 'bulwark://toast/';
 
-/** What a toast hands back when pressed: survives a restart of the app, so it's all in here. */
+function toastSignature(action: string, context: string, secret: string): string {
+  return createHmac('sha256', secret).update(`${action}\n${context}`).digest('base64url');
+}
+
+/**
+ * A toast's click or button as a URL Windows opens for us, app running or not. Unlike every
+ * other bulwark: link this one does something to mail, and a web page can link to it too,
+ * so it's signed with a key of this install that no page ever sees.
+ */
+export function toastUrl(action: string, context: string, secret: string): string {
+  return `${TOAST_URL_PREFIX}${encodeURIComponent(action)}?c=${encodeURIComponent(context)}&s=${toastSignature(action, context, secret)}`;
+}
+
+export function parseToastUrl(raw: string, secret: string): { action: string; context: string } | null {
+  if (raw.length > MAX_URL_LENGTH) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'bulwark:' || url.hostname !== 'toast') return null;
+  let action: string;
+  try {
+    action = decodeURIComponent(url.pathname.slice(1));
+  } catch {
+    return null;
+  }
+  const context = url.searchParams.get('c') ?? '';
+  const given = Buffer.from(url.searchParams.get('s') ?? '');
+  const wanted = Buffer.from(toastSignature(action, context, secret));
+  if (!action || given.length !== wanted.length || !timingSafeEqual(given, wanted)) return null;
+  return { action, context };
+}
+
+/** A typed reply: only Windows' activator can carry the text. Survives a restart, so it's all in here. */
 export function toastArguments(action: string, context: string): string {
   return `${TOAST_ARGS_PREFIX}${encodeURIComponent(action)}:${encodeURIComponent(context)}`;
 }
@@ -235,22 +271,25 @@ export interface ToastContent {
 
 /**
  * The Windows toast. Electron's own `actions` only know a button's index, which is
- * nothing to go on after a restart; `arguments` here reach Notification.handleActivation
- * as they are, for a toast still in the Action Center too. `foreground` is what Electron's
- * activator is tried with, and handing the app focus stays its choice.
+ * nothing to go on after a restart.
+ *
+ * Click and buttons are protocol activations, because that also works when the app isn't
+ * running: Electron's activator only answers once this process has shown a toast, and
+ * COM gave up on a cold start here (decisions, OS integration). The reply goes through the
+ * activator all the same, because only that carries typed text.
  */
-export function buildToastXml(toast: ToastContent): string {
+export function buildToastXml(toast: ToastContent, secret: string): string {
   const reply = toast.reply
     ? `<input id="${REPLY_INPUT}" type="text" placeHolderContent="${xml(toast.reply.placeholder)}"/><action content="${xml(toast.reply.label)}" hint-inputId="${REPLY_INPUT}" activationType="foreground" arguments="${xml(toastArguments('reply', toast.context))}"/>`
     : '';
   const buttons = toast.actions
     .slice(0, toast.reply ? 4 : 5)
-    .map((action) => `<action content="${xml(action.label)}" activationType="foreground" arguments="${xml(toastArguments(action.id, toast.context))}"/>`)
+    .map((action) => `<action content="${xml(action.label)}" activationType="protocol" arguments="${xml(toastUrl(action.id, toast.context, secret))}"/>`)
     .join('');
   const actions = reply || buttons ? `<actions>${reply}${buttons}</actions>` : '';
   const audio = toast.silent ? '<audio silent="true"/>' : '';
   const body = toast.body ? `<text>${xml(toast.body)}</text>` : '';
-  return `<toast launch="${xml(toastArguments('open', toast.context))}" activationType="foreground"><visual><binding template="ToastGeneric"><text>${xml(toast.title)}</text>${body}</binding></visual>${actions}${audio}</toast>`;
+  return `<toast launch="${xml(toastUrl('open', toast.context, secret))}" activationType="protocol"><visual><binding template="ToastGeneric"><text>${xml(toast.title)}</text>${body}</binding></visual>${actions}${audio}</toast>`;
 }
 
 export const WINDOWS_APP_NAME = 'Bulwark';

@@ -4,6 +4,7 @@
  * file double-clicked before the app is up isn't lost.
  */
 
+import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { WebContents } from 'electron';
 import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary } from '../../shared/bridge';
@@ -107,6 +108,22 @@ export class OsHub extends EventEmitter<{
     if (count === this.badgeNow) return;
     this.badgeNow = count;
     this.emit('badge', count);
+  }
+
+  /** Signs what a toast's buttons hand back: toastUrl in os-rules.ts. */
+  toastSecret(): string {
+    const { state } = this.ctx;
+    if (!state.data.osToastSecret) {
+      state.data.osToastSecret = randomBytes(32).toString('base64url');
+      state.save();
+    }
+    return state.data.osToastSecret;
+  }
+
+  /** A button shouldn't throw a window in the user's face; the page opens the message if it can't. */
+  toastAction(action: string, context: string, reply?: string): void {
+    if (action === 'open' || action === 'reply') this.dispatch({ type: 'notification', action, context, reply });
+    else this.dispatch({ type: 'notification', action, context }, { show: false });
   }
 
   /** The main window's page says it listens. Only that page: pop-outs don't act on these. */
