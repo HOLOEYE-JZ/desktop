@@ -35,6 +35,8 @@ export interface ShellState {
   updateChannel?: UpdateChannel;
   /** The last version a notification was shown for. */
   updateNotified?: string;
+  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
+  keystoreOrigins?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

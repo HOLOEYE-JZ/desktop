@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { fakeOsIntegration, launch, opened, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
+import { fakeOsIntegration, launch, opened, prompts, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
 
 const INSTANCE = 'https://bulwark.internal.bulwarkmail.org';
 
@@ -45,7 +45,7 @@ test('it shows the instance, in a session of its own, with no embedded server', 
 test('the bridge is there on the instance, but without the standalone parts', async () => {
   expect(await bridgeType()).toBe('object');
   const keys = await page.evaluate(() => Object.keys((window as unknown as { bulwarkDesktop: object }).bulwarkDesktop).sort());
-  expect(keys).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'updates', 'version', 'windows']);
+  expect(keys).toEqual(['accessState', 'done', 'keystore', 'lifecycle', 'list', 'listed', 'menu', 'mode', 'off', 'platform', 'revokeAccess', 'shell', 'stored', 'theme', 'updates', 'userData', 'version', 'windows']);
 });
 
 test('the same preload on a foreign origin exposes no bridge', async () => {

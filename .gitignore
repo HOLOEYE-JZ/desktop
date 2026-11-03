@@ -4,6 +4,9 @@ release/
 release-test/
 # The webmail build, from scripts/fetch-webmail.mjs. Never committed.
 webmail/
+# The native helper's build. Made by scripts/build-native.mjs, never committed.
+native/target/
+native/dist/
 test-results/
 playwright-report/
 *.log

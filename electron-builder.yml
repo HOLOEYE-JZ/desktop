@@ -16,6 +16,11 @@ asarUnpack:
 files:
   - dist/**/*
   - package.json
+  # The native helper, per architecture. Missing means the app runs without it.
+  - from: native/dist/${platform}-${arch}
+    to: native
+    filter:
+      - bulwark-native.node
 # The webmail server stays unpacked: it needs a real cwd, and Next reads its own files.
 extraResources:
   - from: webmail
