@@ -11,7 +11,7 @@ import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
 import type { OsHub } from './os-hub';
 import { launchFolder } from '../system-exe';
-import { commandFromUrl, fileReason, launchSkipPaths, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, type LaunchRequest } from './os-rules';
+import { fileReason, launchSkipPaths, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, requestFromUrl, type LaunchRequest } from './os-rules';
 
 const early: { urls: string[]; files: string[]; launches: { argv: string[]; cwd: string }[] } = { urls: [], files: [], launches: [] };
 let liveHandler: ((request: LaunchRequest) => void) | null = null;
@@ -29,14 +29,14 @@ export function holdEarlyLaunches(): void {
   });
   app.on('open-file', (event, file) => {
     event.preventDefault();
-    if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false, toastUrls: [] });
+    if (liveHandler) liveHandler({ commands: [], links: [], files: [file], fromLogin: false, toastUrls: [] });
     else early.files.push(file);
   });
   app.on('open-url', (event, url) => {
     event.preventDefault();
-    const command = commandFromUrl(url);
-    if (!command) return;
-    if (liveHandler) liveHandler({ commands: [command], files: [], fromLogin: false, toastUrls: [] });
+    const asked = requestFromUrl(url);
+    if (asked.commands.length + asked.links.length === 0) return;
+    if (liveHandler) liveHandler({ ...asked, files: [], fromLogin: false, toastUrls: [] });
     else early.urls.push(url);
   });
 }
@@ -80,14 +80,15 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   const run = async (request: LaunchRequest): Promise<number> => {
     const commands = [...request.commands, ...(await readFiles(request.files))];
     for (const command of commands) hub.dispatch(command);
+    for (const link of request.links) hub.ctx.openLink(link);
     const actions = toastActions(request);
     for (const { action, context } of actions) hub.toastAction(action, context);
-    return commands.length + actions.length;
+    return commands.length + request.links.length + actions.length;
   };
 
   /** Pressing Archive shows nothing. Any other launch means "show me the app". */
   const staysHidden = (request: LaunchRequest) =>
-    request.commands.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
+    request.commands.length === 0 && request.links.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
   liveHandler = (request) => void run(request);
 
@@ -95,18 +96,23 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
 
   liveSecondLaunch = (argv, cwd) => {
     const request = parseArgv(argv, { cwd, skip });
-    if (!staysHidden(request)) hub.ctx.showMain();
+    // A link brings up its own window.
+    if (!staysHidden(request) && request.links.length === 0) hub.ctx.showMain();
     void run(request);
   };
   for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);
 
   const first = parseArgv(process.argv, { cwd: launchFolder(), skip });
   const wasAtLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
-  first.commands.push(...early.urls.flatMap((url) => commandFromUrl(url) ?? []));
+  for (const url of early.urls) {
+    const asked = requestFromUrl(url);
+    first.commands.push(...asked.commands);
+    first.links.push(...asked.links);
+  }
   first.files.push(...early.files);
   early.urls.length = 0;
   early.files.length = 0;
-  if ((first.fromLogin || wasAtLogin) && hub.settings().startMinimized && first.commands.length === 0 && first.files.length === 0) {
+  if ((first.fromLogin || wasAtLogin) && hub.settings().startMinimized && first.commands.length === 0 && first.links.length === 0 && first.files.length === 0) {
     hub.ctx.windows.startMainHidden();
   }
   // With close to tray off the user has no reason to look there, so the window shows.

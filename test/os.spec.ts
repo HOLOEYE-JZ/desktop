@@ -16,10 +16,18 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const MAIN = path.join(ROOT, 'dist', 'main.mjs');
 const DEV_CLSID = '{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}';
 const SHOW_SHORTCUT = 'CommandOrControl+Alt+Shift+F11';
+/** The app is done in under a second. The process going away can take far longer on a busy machine. */
+const CLOSE_WAIT = { timeout: 120_000 };
 
 function reg(...args: string[]): { ok: boolean; out: string } {
   const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
   return { ok: result.status === 0, out: result.stdout ?? '' };
+}
+
+/** A separate Windows desktop, which test runs may use, has no taskbar. */
+function hasTaskbar(): boolean {
+  const script = `(Add-Type -PassThru -Name W -MemberDefinition '[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string c, string t);')::FindWindow('Shell_TrayWnd', $null) -ne [IntPtr]::Zero`;
+  return execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8', windowsHide: true }).trim() === 'True';
 }
 
 interface Recorded {
@@ -58,6 +66,22 @@ async function listen(page: Page): Promise<void> {
 
 const commands = (page: Page) => page.evaluate(() => (window as unknown as { __cmds: { type: string }[] }).__cmds);
 const os = (page: Page, call: string) => page.evaluate(`window.bulwarkDesktop.os.${call}`);
+
+/**
+ * For a test that plays the page's part. The real page says it's open as it starts, and sends
+ * its own summary a while later: on the login page an empty one, over what the test set. So wait
+ * for its first word and drop its empty summaries. Anything else still comes over the bridge.
+ */
+async function takeOverFromPage(app: ElectronApplication): Promise<void> {
+  await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+  await app.evaluate(() => {
+    const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setSummary: (s: { unread: unknown[]; recent: unknown[]; nextEvent: unknown }) => void } } }).__bulwarkOs.hub;
+    const real = hub.setSummary.bind(hub);
+    hub.setSummary = (summary) => {
+      if (summary.unread.length || summary.recent.length || summary.nextEvent) real(summary);
+    };
+  });
+}
 
 interface TrayItem { label?: string; type?: string; enabled?: boolean; submenu?: TrayItem[] }
 
@@ -122,7 +146,7 @@ test.describe('OS integration', () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
     await os(page, 'setSettings({ closeToTray: false })');
-    const closed = app.waitForEvent('close');
+    const closed = app.waitForEvent('close', CLOSE_WAIT);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await closed;
     running = null;
@@ -134,7 +158,7 @@ test.describe('OS integration', () => {
     await record(app);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await expect.poll(() => mainVisible(app)).toBe(false);
-    const closed = app.waitForEvent('close');
+    const closed = app.waitForEvent('close', CLOSE_WAIT);
     await clickTray(app, 'Quit Bulwark');
     await closed;
     running = null;
@@ -143,6 +167,7 @@ test.describe('OS integration', () => {
   test('the tray: left click toggles, and the menu shows unread and the next event unless locked', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].focus());
@@ -173,6 +198,7 @@ test.describe('OS integration', () => {
   test('tray and jump list items reach the page as commands, in order, shown or not', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
     await listen(page);
     await os(page, 'setLocked(false)');
@@ -213,6 +239,7 @@ test.describe('OS integration', () => {
   test('notifications: duplicates, quiet hours, Do Not Disturb, focus and the lock', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await record(app);
     const send = (id: string, extra = '') => os(page, `notify({ id: '${id}', title: 'Alice', body: 'Lunch?', context: 'ctx', sound: true, actions: [{ id: 'archive', label: 'Archive' }], reply: { label: 'Reply', placeholder: 'Type' }${extra} })`) as Promise<{ shown: boolean; reason?: string; playSound: boolean }>;
     const setAssist = (value: string | null) => app.evaluate((_e, v) => (globalThis as unknown as { __bulwarkOs: { toasts: { setFocusAssistForTest: (x: unknown) => void } } }).__bulwarkOs.toasts.setFocusAssistForTest(v), value);
@@ -278,9 +305,9 @@ test.describe('OS integration', () => {
     await listen(page);
     const locked = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
     const pressDelete = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { toastAction: (a: string, c: string) => void } } }).__bulwarkOs.hub.toastAction('delete', 'ctx'));
-    // Whatever the page does at its start, a new page reports. This one hasn't had a say from us:
+    // A new page reports as it starts, which is later than its load. Past that, our word is the last one.
     await page.reload();
-    await page.waitForLoadState('domcontentloaded');
+    await expect.poll(locked).toBe(false);
 
     await os(page, 'setLocked(true)');
     await expect.poll(locked).toBe(true);
@@ -332,6 +359,7 @@ test.describe('OS integration', () => {
   test('sign-out clears what the OS shows; a quit does too', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await os(page, 'setLocked(false)');
     await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
     await os(page, 'setBadge(4)');
@@ -350,6 +378,28 @@ test.describe('OS integration', () => {
     expect(existsSync(files[0])).toBe(false);
   });
 
+  test('a wipe clears what the OS shows, and it stays clear when the page comes back', async () => {
+    test.skip(!win, 'the test root is a registry key');
+    const root = `HKCU\\Software\\BulwarkTest\\Policies\\os${process.pid}`;
+    try {
+      running = await launchStandalone(profile, `--bulwark-test-policy-root=${root}`, '--bulwark-test-policy-poll=250');
+      const { app, page } = running;
+      await takeOverFromPage(app);
+      await os(page, 'setLocked(false)');
+      await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
+      await expect.poll(async () => JSON.stringify(await trayItems(app))).toContain('Lunch');
+      const files = await app.evaluate(async () => (await (globalThis as unknown as { __bulwarkOs: { files: { prepare: (r: unknown) => Promise<{ paths: string[] }> } } }).__bulwarkOs.files.prepare([{ name: 'a.txt', data: new Uint8Array([1]) }])).paths);
+      expect(existsSync(files[0])).toBe(true);
+      expect(reg('add', `${root}\\Machine`, '/v', 'WipeOfflineData', '/t', 'REG_SZ', '/d', `wipe-${Date.now()}`, '/f').ok).toBe(true);
+      await expect.poll(() => existsSync(files[0])).toBe(false);
+      // The wiped page goes to a blank one, which alone hides the summary. Past that:
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+      expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
+    } finally {
+      reg('delete', root, '/f');
+    }
+  });
+
   test('a file a program holds stops neither the start nor a quit', async () => {
     test.skip(!win);
     const held = path.join(profile, 'os-files', 'old', 'open.txt');
@@ -361,7 +411,7 @@ test.describe('OS integration', () => {
       await new Promise((resolve) => setTimeout(resolve, 2500));
       running = await launchStandalone(profile);
       const { app } = running;
-      const closed = app.waitForEvent('close');
+      const closed = app.waitForEvent('close', CLOSE_WAIT);
       await app.evaluate(({ app: a }) => a.quit());
       await closed;
       running = null;
@@ -547,6 +597,7 @@ test.describe('OS integration', () => {
     test.skip(!win);
     running = await launchStandalone(profile);
     const { app, page } = running;
+    await takeOverFromPage(app);
     await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { __overlay: unknown[]; __progress: unknown[] };
       g.__overlay = [];
@@ -579,7 +630,7 @@ test.describe('OS integration', () => {
     await os(page, 'setProgress(null)');
     await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __progress: unknown[] }).__progress)).toEqual([[0.4, null], [2, 'indeterminate'], [-1, null]]);
 
-    expect(await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]))).toBe(true);
+    expect(await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]))).toBe(hasTaskbar());
 
     expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
     const settings = await app.evaluate(({ app: a }) => a.getJumpListSettings());

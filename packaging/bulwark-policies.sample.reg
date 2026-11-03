@@ -1,0 +1,31 @@
+Windows Registry Editor Version 5.00
+
+; Sample Bulwark policies. Remove the leading ";" of the lines you want, then import with
+; reg import on each machine, or set the same values through ADMX or Intune. MSI properties
+; only cover INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL, so not AutoUpdate.
+; Only this path is ever read. A value under Software\Policies is forced: the user can't
+; change it. Under ...\Desktop\Recommended it's only the default, and the user's own
+; choice goes first. HKEY_LOCAL_MACHINE goes before HKEY_CURRENT_USER.
+;
+; The ADMX templates generated from the schema in the webmail repo cover every key. This
+; sample is for the ones admins ask about first.
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Bulwark\Desktop]
+
+; Your Bulwark instance. Hides the server picker and standalone mode.
+;"InstanceUrl"="https://mail.example.org/"
+
+; 0 stops the app from checking for updates at all, on every install type.
+; An MSI never replaces itself anyway. It says a new version exists, unless this is 0.
+"AutoUpdate"=dword:00000000
+
+; "stable" or "beta". Beta also means prereleases on GitHub.
+"UpdateChannel"="stable"
+
+; Whether plugins may be installed: "allowed", "allowlist" or "off".
+;"PluginsMode"="off"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Bulwark\Desktop\Recommended]
+
+; A default for the user's own choice, for example the channel for a pilot group.
+;"UpdateChannel"="beta"

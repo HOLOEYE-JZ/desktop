@@ -14,6 +14,7 @@ import { setupDefaultApp } from './os-default-app';
 import { setupFiles } from './os-files';
 import { OsHub } from './os-hub';
 import { setupLaunch } from './os-launch';
+import { addWipeStep } from './local-wipe';
 import { applyLoginItem, readLoginItem, setupLogin } from './os-login';
 import { setupPower } from './os-power';
 import { setupResilience } from './os-resilience';
@@ -60,8 +61,6 @@ function setup(ctx: FeatureContext): void {
     // Without this a hidden page reads as hidden and its timers run about once a second
     // (measured on 45). With it, it stays "visible" to itself, and on time.
     window.webContents.setBackgroundThrottling(false);
-    // Signing out of the OS must not stop at a window that wants to hide.
-    window.on('session-end', () => windows.beginQuit());
   });
   powerMonitor.on('shutdown', () => windows.beginQuit());
   autoUpdater.on('before-quit-for-update', () => windows.beginQuit());
@@ -97,6 +96,7 @@ function setup(ctx: FeatureContext): void {
   });
   // Nothing of the account is left on the OS's surfaces once it's gone. No page answers then.
   app.on('will-quit', () => hub.clearSurfaces());
+  addWipeStep(async () => hub.clearSurfaces());
   setupLogin(hub);
   const power = setupPower(hub);
 

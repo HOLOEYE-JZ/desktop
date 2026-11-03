@@ -1,11 +1,17 @@
 node_modules/
 dist/
 release/
+release-test/
+release-strict/
 # The webmail build, from scripts/fetch-webmail.mjs. Never committed.
 webmail/
+# The policy templates, also from there.
+/policies/
 # The native helper's build. Made by scripts/build-native.mjs, never committed.
 native/target/
 native/dist/
 test-results/
 playwright-report/
 *.log
+.server-build/
+.native-modules/

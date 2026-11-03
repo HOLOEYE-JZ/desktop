@@ -16,6 +16,7 @@ import {
   reloadDelayMs,
   safeDragFileName,
   commandFromUrl,
+  requestFromUrl,
   defaultSettings,
   fileReason,
   inQuietHours,
@@ -126,17 +127,22 @@ test.describe('what a command line asks for', () => {
 
 test.describe('bulwark: links only show things', () => {
   test('what they can name', () => {
-    expect(commandFromUrl('bulwark://new')).toEqual({ type: 'new-message' });
-    expect(commandFromUrl('bulwark://calendar')).toEqual({ type: 'navigate', target: 'calendar' });
-    expect(commandFromUrl('bulwark://message/acc%2F1/id-2')).toEqual({ type: 'open-message', accountId: 'acc/1', emailId: 'id-2' });
-    expect(commandFromUrl('bulwark://mailbox/inbox-1')).toEqual({ type: 'open-mailbox', mailboxId: 'inbox-1' });
-    expect(commandFromUrl('bulwark://folder/inbox')).toEqual({ type: 'open-mailbox', mailboxId: 'inbox' });
+    expect(requestFromUrl('bulwark://new')).toEqual({ commands: [{ type: 'new-message' }], links: [] });
+    expect(requestFromUrl('bulwark://calendar')).toEqual({ commands: [{ type: 'navigate', target: 'calendar' }], links: [] });
+    expect(requestFromUrl('bulwark://message/id-2?owner=acc1')).toEqual({ commands: [], links: [{ kind: 'message', emailId: 'id-2', account: undefined, owner: 'acc1' }] });
+    expect(requestFromUrl('bulwark://mailbox/inbox-1')).toEqual({ commands: [], links: [{ kind: 'folder', folder: 'inbox-1' }] });
+    expect(requestFromUrl('mailto:a@example.org')).toEqual({ commands: [{ type: 'mailto', url: 'mailto:a@example.org' }], links: [] });
   });
 
   test('nothing that changes mail, and nothing unknown', () => {
-    for (const url of ['bulwark://toast/archive?c=x&s=y', 'bulwark://archive/a/b', 'bulwark://delete/a/b', 'bulwark://notification/archive', 'bulwark://message/only-one', 'bulwark://message/%E0%A4%A/x']) {
-      expect(commandFromUrl(url), url).toBeNull();
+    for (const url of ['bulwark://toast/archive?c=x&s=y', 'bulwark://archive/a/b', 'bulwark://delete/a/b', 'bulwark://new/x', 'bulwark://inbox/x', 'bulwark://calendar/a/b', 'https://example.org/']) {
+      expect(requestFromUrl(url), url).toEqual({ commands: [], links: [] });
     }
+  });
+
+  test('the bulwark: part is the one parser\'s alone', () => {
+    expect(commandFromUrl('bulwark://new')).toBeNull();
+    expect(commandFromUrl('bulwark://message/a@b.example/c')).toBeNull();
   });
 
   test('a huge link is refused', () => {

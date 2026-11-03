@@ -11,12 +11,17 @@ import { helperFile, loadHelperModule, wrapHelper, type NativeHelper } from './n
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+declare const __BULWARK_TEST_BUILD__: boolean;
+
 let helper: NativeHelper | null = null;
 
 export function native(): NativeHelper {
   if (helper) return helper;
-  const disabled = !app.isPackaged && process.argv.includes('--bulwark-test-no-native');
-  const file = helperFile({ packaged: app.isPackaged, mainDir: HERE, platform: process.platform, arch: process.arch });
+  // Not by app.isPackaged alone: Electron decides that by the exe's name, and the helper
+  // vouches for what a macOS profile forces, so a rename mustn't lose it.
+  const disabled = __BULWARK_TEST_BUILD__ && process.argv.includes('--bulwark-test-no-native');
+  const packaged = app.isPackaged || !__BULWARK_TEST_BUILD__;
+  const file = helperFile({ packaged, mainDir: HERE, platform: process.platform, arch: process.arch });
   helper = wrapHelper(disabled ? null : loadHelperModule(file));
   return helper;
 }

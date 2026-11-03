@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements. Used only when CI signs: unsigned builds ignore this.
+  The same file goes to helpers (entitlementsInherit), since the utilityProcess that
+  runs the webmail server is a helper and runs Node with V8's JIT.
+
+  allow-jit: V8 needs MAP_JIT memory in every process that runs JavaScript.
+  allow-unsigned-executable-memory: V8's WebAssembly tiers and the Electron helpers
+    still ask for it. The local mail store is SQLite in WebAssembly, so it's needed.
+
+  Left out on purpose, after checking what the app does:
+  - keychain-access-groups. safeStorage uses the login keychain through the legacy
+    SecKeychain calls, whose access follows the code signature. It needs no entitlement.
+    The native helper's Touch ID path adds it with a provisioning profile if it starts
+    keeping keys in the data protection keychain.
+  - disable-library-validation. Every .node and .dylib in the bundle, the server's
+    sharp included, is signed with the app's own team when the bundle is signed.
+  - allow-dyld-environment-variables, debugger, automation, camera and microphone. The
+    app has no use for any of them.
+  - app-sandbox and network entitlements. Those are for the Mac App Store. This is a
+    Developer ID build.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+</dict>
+</plist>

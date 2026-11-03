@@ -5,7 +5,7 @@
 
 import path from 'node:path';
 import { app, Menu, nativeImage, type BrowserWindow, type JumpListCategory, type ProgressBarOptions } from 'electron';
-import type { OsCommand, OsSummary } from '../../shared/bridge';
+import type { OsCommand, OsSummary, OsTrayMessage } from '../../shared/bridge';
 import { strings } from '../strings';
 import { overlayPng } from './os-icons';
 import type { OsHub } from './os-hub';
@@ -23,6 +23,18 @@ export interface TaskbarHandle {
 /** A jump list entry starts us again; in development the script goes in front. */
 function launchArgs(url: string): string {
   return `${process.defaultApp ? `"${app.getAppPath()}" ` : ''}-- ${url}`;
+}
+
+/** The same link a web page could make: see src/main/deep-link.ts. */
+function messageLink(message: OsTrayMessage): string {
+  const query = new URLSearchParams({ owner: message.accountId });
+  try {
+    const { login } = JSON.parse(message.context ?? '{}') as { login?: unknown };
+    if (typeof login === 'string') query.set('account', login);
+  } catch {
+    // No context, or not this shape: it opens in the account that's active.
+  }
+  return `bulwark://message/${encodeURIComponent(message.emailId)}?${query}`;
 }
 
 export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
@@ -112,7 +124,7 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
     });
     const recent = summary.recent.slice(0, 5).map((message) => {
       const title = message.subject.replace(/\s+/g, ' ').trim().slice(0, 120) || text.jumpNoSubject;
-      return task(title, `bulwark://message/${encodeURIComponent(message.accountId)}/${encodeURIComponent(message.emailId)}`);
+      return task(title, messageLink(message));
     });
     return [
       ...(recent.length ? [{ type: 'custom' as const, name: text.jumpRecent, items: recent }] : []),

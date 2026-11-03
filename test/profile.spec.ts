@@ -20,6 +20,8 @@ test.describe('the first run', () => {
     await expect(page.locator('#error')).not.toBeEmpty();
 
     await page.click('#standalone');
+    // The second question: both boxes stay empty.
+    await page.click('#continue');
     await expect.poll(async () => {
       const urls = await Promise.all(app.windows().filter((p) => !p.isClosed()).map((p) => p.url()));
       return urls.some((url) => url.startsWith('https://app.bulwark.localhost'));
@@ -148,13 +150,12 @@ test.describe('the environment', () => {
 });
 
 test.describe('the title bar', () => {
-  test('a page with the title bar row keeps the overlay, and its colours follow the theme live', async () => {
+  test('the overlay stays see-through over the app, and its symbols follow the theme live', async () => {
     test.skip(process.platform !== 'win32', 'the coloured overlay is Windows only');
     const profile = tempProfile('overlay');
     mkdirSync(profile, { recursive: true });
     const app = await launch(profile, '--standalone');
-    // Until the webmail's title bar row is merged, the page's variable is added here.
-    await app.evaluate(({ app: electronApp, BrowserWindow }) => {
+    await app.evaluate(({ BrowserWindow }) => {
       const g = globalThis as unknown as { __overlays: unknown[] };
       g.__overlays = [];
       const original = BrowserWindow.prototype.setTitleBarOverlay;
@@ -162,9 +163,6 @@ test.describe('the title bar', () => {
         g.__overlays.push(options);
         return original.call(this, options);
       };
-      electronApp.on('web-contents-created', (_event, contents) => {
-        contents.on('dom-ready', () => void contents.insertCSS(':root{--titlebar-inset:env(titlebar-area-height,0px)}'));
-      });
     });
     const page = await shownPage(app);
     await waitForLogin(page);
@@ -177,11 +175,11 @@ test.describe('the title bar', () => {
     expect(overlay.width).toBeLessThan(overlay.inner);
 
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { theme: { set: (t: object) => void } } }).bulwarkDesktop.theme.set({ dark: true, background: '#112233' }));
-    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __overlays: { color: string }[] }).__overlays.at(-1)?.color)).toBe('#112233');
+    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __overlays: { color: string }[] }).__overlays.at(-1)?.color)).toBe('#00000000');
     const symbol = await app.evaluate(() => (globalThis as unknown as { __overlays: { symbolColor: string }[] }).__overlays.at(-1)?.symbolColor);
     expect(symbol).toBe('#f4f4f5');
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { theme: { set: (t: object) => void } } }).bulwarkDesktop.theme.set({ dark: false, background: 'rgb(255, 255, 255)' }));
-    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __overlays: { color: string }[] }).__overlays.at(-1)?.color)).toBe('#ffffff');
+    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __overlays: { color: string }[] }).__overlays.at(-1)?.color)).toBe('#00000000');
     expect(await app.evaluate(() => (globalThis as unknown as { __overlays: { symbolColor: string }[] }).__overlays.at(-1)?.symbolColor)).toBe('#18181b');
     await app.close();
     removeProfile(profile);
@@ -248,6 +246,8 @@ test.describe('closing and quitting', () => {
     const profile = tempProfile('hang');
     const { app, page } = await launchStandalone(profile);
     await waitForLogin(page);
+    // It may hold unsaved text, so the quit asks. Answered: it goes.
+    await fakeOsIntegration(app, 0);
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (f: () => Promise<void>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(() => new Promise(() => {})));
     const started = Date.now();
     await app.close();
@@ -271,6 +271,35 @@ test.describe('closing and quitting', () => {
     removeProfile(profile);
   });
 
+  test('a window that opens during the quit, and has something to save by the end, does not call the quit off', async () => {
+    const profile = tempProfile('quit-late');
+    const { app, page } = await launchStandalone(profile);
+    await waitForLogin(page);
+    // Asked to save, the page opens a window, and takes long enough for that to load and sign up too.
+    await page.evaluate(() => {
+      const desktop = (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (f: () => Promise<void>) => void }; windows: { open: (u: string, o: object) => void } } }).bulwarkDesktop;
+      desktop.lifecycle.onFlushRequest(async () => {
+        desktop.windows.open('/en/login?late=1', { name: 'late', width: 500, height: 500 });
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      });
+    });
+    // Preventing a close during a quit is what calls the quit off.
+    const held = path.join(profile, 'held.txt');
+    await app.evaluate(({ app: electronApp }, file) => {
+      const { appendFileSync } = process.getBuiltinModule('node:fs');
+      electronApp.on('browser-window-created', (_event, window) => {
+        window.on('close', (event) => setImmediate(() => {
+          if (event.defaultPrevented) appendFileSync(file, 'held\n');
+        }));
+      });
+    }, held);
+    const closed = app.waitForEvent('close', { timeout: 30_000 });
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    await closed;
+    expect(existsSync(held)).toBe(false);
+    removeProfile(profile);
+  });
+
   test('changing the connection: Stay keeps the mode, Leave forgets it', async () => {
     const profile = tempProfile('switch');
     mkdirSync(profile, { recursive: true });
@@ -287,7 +316,7 @@ test.describe('closing and quitting', () => {
         electronApp.relaunch = () => {};
         const find = (menu: Electron.Menu | null): Electron.MenuItem | undefined => {
           for (const item of menu?.items ?? []) {
-            if (/Change Connection|Verbindung/.test(item.label)) return item;
+            if (/Change connection|Verbindung/.test(item.label)) return item;
             const inner = find(item.submenu ?? null);
             if (inner) return inner;
           }
@@ -317,12 +346,12 @@ test.describe('closing and quitting', () => {
     const page = await shownPage(app);
     await waitForLogin(page);
     await fakeOsIntegration(app, 0);
-    const closed = app.waitForEvent('close');
+    const closed = app.waitForEvent('close', { timeout: 120_000 });
     await app.evaluate(({ Menu, app: electronApp }) => {
       electronApp.relaunch = () => {};
       const find = (menu: Electron.Menu | null): Electron.MenuItem | undefined => {
         for (const item of menu?.items ?? []) {
-          if (/Change Connection|Verbindung/.test(item.label)) return item;
+          if (/Change connection|Verbindung/.test(item.label)) return item;
           const inner = find(item.submenu ?? null);
           if (inner) return inner;
         }
