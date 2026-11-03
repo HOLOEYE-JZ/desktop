@@ -19,6 +19,8 @@ import { instancePartition, setupAppSession } from './app-session';
 import { fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { holdEarlyLaunches } from './features/os-launch';
+import { setToastActivator } from './features/os-toasts';
 import { createChannels, registerBridge } from './ipc';
 import { LocalAdmin } from './local-admin';
 import { installMenu } from './menu';
@@ -54,7 +56,10 @@ const userDataArg = DEV ? argValue('bulwark-user-data') : undefined;
 if (userDataArg) app.setPath('userData', userDataArg);
 
 app.setName('Bulwark');
-if (process.platform === 'win32') app.setAppUserModelId('org.bulwarkmail.desktop');
+if (process.platform === 'win32') {
+  app.setAppUserModelId('org.bulwarkmail.desktop');
+  setToastActivator();
+}
 
 /** A free port on 127.0.0.1, asked of the OS: Windows' excluded ranges made random picks hang. */
 function reservePort(): Promise<number> {
@@ -79,6 +84,7 @@ const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
+let mainWindowAllowed = false;
 
 function serverDirectory(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, 'server');
@@ -238,6 +244,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     windows,
     servers,
     localAdmin,
+    showMain,
     ...createChannels(APP_ORIGIN),
   };
   registerBridge(ctx, { origin: APP_ORIGIN, signIn });
@@ -274,6 +281,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   watch();
 
   windows.on('created', ({ window }) => watchForReplacedCertificate(window));
+  mainWindowAllowed = true;
   windows.open({ type: 'main', url: `${APP_ORIGIN}/` });
 }
 
@@ -282,9 +290,10 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const session = electronSession.fromPartition(instancePartition(origin));
   applyPermissionPolicy(session, origin);
   const windows = createWindowManager('instance', origin, session, theme);
-  const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, ...createChannels(origin) };
+  const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, showMain, ...createChannels(origin) };
   registerBridge(ctx, { origin });
   setupFeatures(ctx);
+  mainWindowAllowed = true;
   windows.open({ type: 'main', url: instanceUrl });
 }
 
@@ -354,6 +363,14 @@ async function boot(theme: ThemeController): Promise<void> {
   showWelcome(theme);
 }
 
+// Another launch means "show me the app". With only a pop-out left open, that's a new main window.
+function showMain(): void {
+  // Until the server is up, the boot opens it: a window now would load an error page.
+  if (!windowManager || !mainWindowAllowed) return;
+  if (windowManager.mainWindow()) windowManager.focus();
+  else windowManager.open({ type: 'main', url: appStartUrl });
+}
+
 // Quitting closes the windows, and each may ask first. Nothing is forgotten until all
 // of them have gone, so choosing Stay keeps the mode.
 let switching = false;
@@ -378,22 +395,19 @@ if (gotLock) {
     contents.on('will-attach-webview', (event) => event.preventDefault());
   });
 
-  // Another launch means "show me the app". With only a pop-out left open, that's a new main window.
-  const showMain = () => {
-    if (!windowManager) return;
-    if (windowManager.mainWindow()) windowManager.focus();
-    else windowManager.open({ type: 'main', url: appStartUrl });
-  };
+  // Registered here: macOS sends a launch's file or link before `ready`.
+  holdEarlyLaunches();
 
   app.on('second-instance', showMain);
 
   app.on('window-all-closed', () => {
-    // Step 6 keeps the app running here when close-to-tray is on.
+    // Closing to the tray hides the main window, so this means there's nothing left.
     if (process.platform !== 'darwin') app.quit();
   });
 
   app.on('activate', () => {
-    if (windowManager && windowManager.isEmpty()) showMain();
+    // A main window closed to the dock is only hidden.
+    if (windowManager && (windowManager.isEmpty() || !windowManager.mainWindow()?.isVisible())) showMain();
   });
 
   // Pages save first, within limits, and then the quit goes on. A preventDefault in a
@@ -401,6 +415,7 @@ if (gotLock) {
   app.on('before-quit', (event) => {
     signIn?.closeAll();
     stateFile.save();
+    windowManager?.beginQuit();
     if (quitFlushed || !windowManager) return;
     event.preventDefault();
     quitFlushed = true;

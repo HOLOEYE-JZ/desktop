@@ -3,11 +3,12 @@
 // with require). esbuild is what the webmail uses too.
 
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { build } from 'esbuild';
 
 rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist/pages', { recursive: true });
+cpSync('assets/os', 'dist/os-icons', { recursive: true });
 
 const common = { bundle: true, platform: 'node', target: 'node22', sourcemap: false, logLevel: 'warning' };
 

@@ -5,7 +5,7 @@
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import type { Mode, ThemeColours, WindowType } from '../shared/bridge';
+import type { Mode, OsSettings, ThemeColours, WindowType } from '../shared/bridge';
 
 export interface StoredBounds {
   x: number;
@@ -31,6 +31,14 @@ export interface ShellState {
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
+  /** What the user changed of the OS settings; the rest are defaults (features/os-rules.ts). */
+  os?: Partial<OsSettings>;
+  /** Pause notifications, from the tray. */
+  osPausedUntil?: number | null;
+  /** The first close to the tray said so. */
+  osCloseNoticeShown?: boolean;
+  /** The path the mail app's registry keys point at. */
+  osRegisteredExe?: string;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };

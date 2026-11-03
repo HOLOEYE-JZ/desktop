@@ -85,11 +85,16 @@ export class WindowManager extends EventEmitter<{
   changed: [WindowInfo[]];
   /** The user chose to stay on a page, so whatever was closing it is off. */
   stayed: [];
+  /** The main window closed to the tray. */
+  hiddenToBackground: [ManagedWindow];
 }> {
   private readonly windows = new Map<number, ManagedWindow>();
   private lastFocused: number | null = null;
   private nextFlushId = 1;
   private readonly flushWaits = new Map<number, () => void>();
+  private closeToBackground: () => boolean = () => false;
+  private quitting = false;
+  private mainStartsHidden = false;
 
   constructor(private readonly options: WindowManagerOptions) {
     super();
@@ -209,6 +214,12 @@ export class WindowManager extends EventEmitter<{
     }
     window.on('close', (event) => {
       this.rememberBounds(managed);
+      if (managed.type === 'main' && !this.quitting && this.closeToBackground()) {
+        event.preventDefault();
+        window.hide();
+        this.emit('hiddenToBackground', managed);
+        return;
+      }
       if (!managed.flushable || managed.flushed) return;
       event.preventDefault();
       void this.flushWindow(managed).then(() => {
@@ -236,6 +247,7 @@ export class WindowManager extends EventEmitter<{
         return;
       }
       for (const other of this.windows.values()) other.flushed = false;
+      this.quitting = false;
       this.emit('stayed');
     });
     window.once('closed', () => {
@@ -250,16 +262,39 @@ export class WindowManager extends EventEmitter<{
     return managed;
   }
 
+  /** Closing the main window then hides it, and its page goes on working. */
+  setCloseToBackground(check: () => boolean): void {
+    this.closeToBackground = check;
+  }
+
+  /** From here on closing a window closes it. Undone by choosing Stay in a prompt. */
+  beginQuit(): void {
+    this.quitting = true;
+  }
+
+  /** The next main window loads but isn't shown: a start at login, or a toast's button. */
+  startMainHidden(): void {
+    this.mainStartsHidden = true;
+  }
+
   private showWhenPainted(managed: ManagedWindow): void {
     const { window } = managed;
+    const hidden = managed.type === 'main' && this.mainStartsHidden;
+    this.mainStartsHidden = false;
     const fallback = setTimeout(() => {
-      if (!window.isDestroyed() && !window.isVisible()) window.show();
+      if (!hidden && !window.isDestroyed() && !window.isVisible()) window.show();
     }, SHOW_FALLBACK_MS);
     window.once('closed', () => clearTimeout(fallback));
     window.once('ready-to-show', () => {
       clearTimeout(fallback);
       if (window.isDestroyed()) return;
+      // A window rebuilt with a native frame starts hidden just the same.
+      if (hidden) this.mainStartsHidden = true;
       void this.checkOverlay(managed).then((replaced) => {
+        if (hidden) {
+          if (!replaced) this.mainStartsHidden = false;
+          return;
+        }
         if (!replaced && !window.isDestroyed() && !window.isVisible()) window.show();
       });
     });
