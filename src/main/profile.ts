@@ -1,0 +1,119 @@
+/**
+ * The desktop profile of the embedded webmail: data dirs under userData, the
+ * seeded config and policy, and the env the utilityProcess gets.
+ *
+ * The utilityProcess gets this env and nothing inherited. config-manager reads
+ * about 75 keys from the environment, so a REDIS_URL, DEMO_MODE, JMAP_SERVER_URL,
+ * NODE_OPTIONS or HOSTNAME on a user's machine would otherwise change how the
+ * app behaves.
+ */
+
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+
+export interface ProfilePaths {
+  root: string;
+  adminConfig: string;
+  adminState: string;
+  settings: string;
+  pluginSecrets: string;
+  telemetry: string;
+  versionCheck: string;
+}
+
+export function profilePaths(userData: string): ProfilePaths {
+  const root = path.join(userData, 'webmail');
+  return {
+    root,
+    adminConfig: path.join(root, 'admin'),
+    adminState: path.join(root, 'admin-state'),
+    settings: path.join(root, 'settings'),
+    pluginSecrets: path.join(root, 'plugin-secrets'),
+    telemetry: path.join(root, 'telemetry'),
+    versionCheck: path.join(root, 'version-check'),
+  };
+}
+
+function writeJson(file: string, value: unknown): void {
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, JSON.stringify(value, null, 2), { mode: 0o600 });
+  renameSync(temp, file);
+}
+
+function readJson(file: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8'));
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+/** What the app needs in config.json, whatever else has been saved there. */
+const SEEDED_CONFIG = {
+  setupComplete: true,
+  allowCustomJmapEndpoint: true,
+  // People bring tokens from their mail provider: it's their own client.
+  loginShowTokenLogin: true,
+};
+
+/**
+ * A user's upload is their own decision on their own machine, so it doesn't wait
+ * for a local admin nobody can reach (lib/admin/types.ts:91-92). The hook for the
+ * PluginsMode policy (step 6) is `applyPluginPolicy` in features/plugins.ts,
+ * which overrides these.
+ */
+export const SEEDED_FEATURES = {
+  pluginsEnabled: true,
+  pluginsUploadEnabled: true,
+  requirePluginApproval: false,
+};
+
+/**
+ * Rewritten at each start since a user can edit these files: the keys above
+ * always win, anything else stays. config-manager picks up later changes to them
+ * on its own (5 s stat), so a policy can also rewrite them while running.
+ */
+export function seedProfile(paths: ProfilePaths, features: Record<string, boolean> = SEEDED_FEATURES): void {
+  for (const dir of [paths.adminConfig, paths.adminState, paths.settings, paths.pluginSecrets, paths.telemetry, paths.versionCheck]) {
+    mkdirSync(dir, { recursive: true });
+  }
+  const configFile = path.join(paths.adminConfig, 'config.json');
+  writeJson(configFile, { ...readJson(configFile), ...SEEDED_CONFIG });
+
+  const policyFile = path.join(paths.adminConfig, 'policy.json');
+  const policy = readJson(policyFile);
+  const currentFeatures = policy.features && typeof policy.features === 'object' ? policy.features : {};
+  writeJson(policyFile, { ...policy, features: { ...currentFeatures, ...features } });
+}
+
+const PASS_THROUGH: Record<NodeJS.Platform | string, string[]> = {
+  // What Windows itself needs to start a process and find its temp and DLLs.
+  win32: ['SystemRoot', 'windir', 'SystemDrive', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'PATH', 'Path', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE'],
+  darwin: ['HOME', 'TMPDIR', 'USER', 'LANG', 'LC_ALL', 'PATH'],
+  linux: ['HOME', 'TMPDIR', 'USER', 'LANG', 'LC_ALL', 'PATH', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'],
+};
+
+/** Allowlist only. Secrets don't go here: they arrive by message (protocol.ts). */
+export function serverEnv(paths: ProfilePaths, source: NodeJS.ProcessEnv, platform: NodeJS.Platform): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const name of PASS_THROUGH[platform] ?? PASS_THROUGH.linux) {
+    const value = source[name];
+    if (value !== undefined) env[name] = value;
+  }
+  return {
+    ...env,
+    NODE_ENV: 'production',
+    NEXT_TELEMETRY_DISABLED: '1',
+    COOKIE_SECURE: 'true',
+    BULWARK_UPDATE_CHECK: 'off',
+    BULWARK_TELEMETRY: 'off',
+    LOG_LEVEL: 'warn',
+    ADMIN_CONFIG_DIR: paths.adminConfig,
+    ADMIN_STATE_DIR: paths.adminState,
+    SETTINGS_DATA_DIR: paths.settings,
+    PLUGIN_SECRETS_DIR: paths.pluginSecrets,
+    TELEMETRY_DATA_DIR: paths.telemetry,
+    VERSION_CHECK_DATA_DIR: paths.versionCheck,
+  };
+}

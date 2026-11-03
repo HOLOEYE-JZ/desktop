@@ -1,0 +1,41 @@
+# Package layout and hardening. Installers, channels, MSI and release workflows are
+# step 6; this keeps `npm run pack:dir` and the fuses in place from the start.
+appId: org.bulwarkmail.desktop
+productName: Bulwark
+copyright: Copyright (C) 2025-2026 Bulwark Project Authors
+directories:
+  output: release
+  buildResources: build
+asar: true
+files:
+  - dist/**/*
+  - package.json
+# The webmail server stays unpacked: it needs a real cwd, and Next reads its own files.
+extraResources:
+  - from: webmail
+    to: server
+    filter:
+      - '**/*'
+      - '**/.next/**'
+      - '!node_modules/**'
+# node_modules: see scripts/after-pack.cjs.
+afterPack: scripts/after-pack.cjs
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+win:
+  # Signing hook: unsigned for now. A signing certificate or Azure signing goes here.
+  # signtoolOptions: {}
+  # azureSignOptions: {}
+  target: dir
+mac:
+  # Hardened runtime and notarization are driven by env in CI, unused here.
+  hardenedRuntime: true
+  target: dir
+linux:
+  target: dir
+  category: Network;Email

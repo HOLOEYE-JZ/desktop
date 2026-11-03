@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'" />
+    <title>Bulwark</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 32px 36px; user-select: none; cursor: default; }
+      h1 { font-size: 1.4em; font-weight: 600; margin: 0 0 4px; }
+      p { margin: 0 0 20px; opacity: .75; }
+      button { display: block; width: 100%; text-align: start; font: inherit; padding: 14px 16px; margin-bottom: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; cursor: default; }
+      button:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
+      button strong { display: block; font-weight: 600; }
+      button span { opacity: .75; }
+      form { margin-top: 4px; display: none; }
+      form.open { display: block; }
+      label { display: block; margin-bottom: 4px; }
+      input { width: 100%; box-sizing: border-box; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: transparent; color: inherit; user-select: text; }
+      .connect { display: inline-block; width: auto; margin-top: 10px; padding: 8px 18px; }
+      .error { color: #d43; min-height: 1.4em; margin-top: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title"></h1>
+    <p id="intro"></p>
+    <button id="standalone" type="button"><strong id="standalone-title"></strong><span id="standalone-text"></span></button>
+    <button id="instance" type="button"><strong id="instance-title"></strong><span id="instance-text"></span></button>
+    <form id="form">
+      <label for="url" id="url-label"></label>
+      <input id="url" type="url" placeholder="https://mail.example.org" autocomplete="url" />
+      <button id="connect" class="connect" type="submit"></button>
+      <div id="error" class="error" role="alert"></div>
+    </form>
+    <script src="welcome.js"></script>
+  </body>
+</html>

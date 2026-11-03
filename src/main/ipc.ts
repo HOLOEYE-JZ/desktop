@@ -1,0 +1,128 @@
+/**
+ * Every bridge call passes through here. The preload only exposes the bridge on
+ * the right origin, but the check that counts is this one: the sender must be a
+ * main frame on the app's origin. A plugin frame, a mail frame, or a page the
+ * window navigated to gets nothing.
+ */
+
+import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebFrameMain } from 'electron';
+import { CHANNEL, type ThemeColours, type WindowType } from '../shared/bridge';
+import { setCommandState } from './menu';
+import { openExternally } from './navigation';
+import type { FeatureContext } from './features';
+import type { LoopbackSignIn } from './oauth-loopback';
+import { installPlugin, type PluginPolicyCheck } from './plugins';
+import { windowTypeOf } from './windows';
+
+export function senderAllowed(frame: WebFrameMain | null | undefined, origin: string): boolean {
+  if (!frame || frame.parent) return false;
+  try {
+    const url = new URL(frame.url);
+    return url.protocol === 'https:' && url.origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+export interface IpcOptions {
+  origin: string;
+  signIn?: LoopbackSignIn;
+  pluginPolicy?: PluginPolicyCheck;
+}
+
+export function createChannels(origin: string): Pick<FeatureContext, 'handle' | 'on'> {
+  return {
+    handle(channel, handler) {
+      ipcMain.handle(channel, (event: IpcMainInvokeEvent, ...args: unknown[]) => {
+        if (!senderAllowed(event.senderFrame, origin)) throw new Error('Not allowed');
+        return handler(event, BrowserWindow.fromWebContents(event.sender), ...args);
+      });
+    },
+    on(channel, handler) {
+      ipcMain.on(channel, (event: IpcMainEvent, ...args: unknown[]) => {
+        if (!senderAllowed(event.senderFrame, origin)) return;
+        handler(event, BrowserWindow.fromWebContents(event.sender), ...args);
+      });
+    },
+  };
+}
+
+/** A same-origin https URL, resolved against the app. Null for anything else. */
+function resolveAppUrl(url: unknown, origin: string): URL | null {
+  if (typeof url !== 'string' || !url) return null;
+  try {
+    const parsed = new URL(url, origin);
+    if (parsed.origin !== origin || parsed.protocol !== 'https:') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function positive(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+}
+
+export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
+  const { windows, theme, origin } = ctx;
+
+  const openAppWindow = (url: unknown, key: unknown, size?: { width: unknown; height: unknown }, type?: WindowType) => {
+    const target = resolveAppUrl(url, origin);
+    if (!target || target.pathname.startsWith('/api/')) return;
+    const width = positive(size?.width);
+    const height = positive(size?.height);
+    windows.open({
+      type: type ?? windowTypeOf(target.pathname),
+      url: target.toString(),
+      key: typeof key === 'string' && key ? key : target.toString(),
+      size: width && height ? { width, height } : undefined,
+    });
+  };
+
+  ctx.on(CHANNEL.windowsOpen, (_event, _window, url, opts) => {
+    const o = (opts ?? {}) as { name?: unknown; width?: unknown; height?: unknown };
+    openAppWindow(url, o.name, { width: o.width, height: o.height });
+  });
+  ctx.on(CHANNEL.windowsOpenMessage, (_event, _window, target) => {
+    const t = (target ?? {}) as { url?: unknown; emailId?: unknown };
+    if (typeof t.emailId !== 'string' || !t.emailId) return;
+    openAppWindow(t.url, `message:${t.emailId}`, undefined, 'message');
+  });
+  ctx.on(CHANNEL.windowsOpenComposer, (_event, _window, target) => {
+    const t = (target ?? {}) as { url?: unknown; name?: unknown };
+    openAppWindow(t.url, t.name, undefined, 'composer');
+  });
+  ctx.on(CHANNEL.windowsFocus, (_event, _window, id) => {
+    windows.focus(typeof id === 'number' ? id : undefined);
+  });
+  ctx.handle(CHANNEL.windowsList, () => windows.list());
+
+  ctx.on(CHANNEL.themeSet, (_event, _window, value) => {
+    theme.set((value ?? {}) as ThemeColours);
+  });
+
+  ctx.on(CHANNEL.menuSetState, (_event, window, state) => {
+    if (window && state && typeof state === 'object') setCommandState(window, state as never);
+  });
+
+  ctx.on(CHANNEL.shellOpenExternal, (_event, _window, url) => {
+    if (typeof url === 'string') openExternally(url);
+  });
+
+  if (ctx.mode !== 'standalone') return;
+
+  ctx.handle(CHANNEL.serversPrepare, (_event, window, serverUrl) => ctx.servers!.prepare(serverUrl, window));
+  ctx.on(CHANNEL.serversNoteSession, (_event, _window, serverUrl, urls) => {
+    ctx.servers!.noteSession(serverUrl, urls as never);
+  });
+
+  const signIn = options.signIn!;
+  ctx.handle(CHANNEL.authBegin, (event) => signIn.begin(event.sender.id));
+  ctx.handle(CHANNEL.authComplete, (event, _window, flowId, authorizeUrl) => signIn.complete(flowId, authorizeUrl, event.sender.id));
+  ctx.on(CHANNEL.authCancel, (event, _window, flowId) => signIn.cancel(flowId, event.sender.id));
+
+  ctx.handle(CHANNEL.pluginsInstall, (_event, window, slug, version) =>
+    installPlugin(ctx.localAdmin!, slug, version, window, options.pluginPolicy),
+  );
+}
+

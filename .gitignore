@@ -1,0 +1,8 @@
+node_modules/
+dist/
+release/
+# The webmail build, from scripts/fetch-webmail.mjs. Never committed.
+webmail/
+test-results/
+playwright-report/
+*.log
