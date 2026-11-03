@@ -347,6 +347,36 @@ test.describe('fetching the webmail', () => {
   });
 });
 
+test.describe('after-pack on a universal macOS build', () => {
+  // electron-builder calls it for the x64 tree, the arm64 tree, and last for their merge. No
+  // beforePack ran for the merge, so there is no archive to copy from.
+  test('the merge has no archive of its own and passes, a single tree needs one', async () => {
+    const requireHere = createRequire(path.join(ROOT, 'package.json'));
+    const afterPack = requireHere('./scripts/after-pack.cjs').default;
+    const project = mkdtempSync(path.join(tmpdir(), 'bw-afterpack-'));
+    try {
+      const appOutDir = path.join(project, 'release', 'mac-universal');
+      const resources = path.join(appOutDir, 'Bulwark.app', 'Contents', 'Resources');
+      mkdirSync(resources, { recursive: true });
+      const tree = path.join(project, 'server-tree');
+      mkdirSync(tree);
+      writeFileSync(path.join(tree, 'server.js'), 'x');
+      await requireHere('@electron/asar').createPackage(tree, path.join(resources, 'server.asar'));
+      const context = (arch: number) => ({
+        packager: { projectDir: project, appInfo: { productFilename: 'Bulwark' } },
+        electronPlatformName: 'darwin',
+        appOutDir,
+        arch,
+      });
+      await afterPack(context(4));
+      expect(existsSync(path.join(resources, 'bulwark-build.json'))).toBe(true);
+      await expect(afterPack(context(3))).rejects.toThrow(/server\.asar\.unpacked/);
+    } finally {
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+});
+
 test.describe('the server tree per target', () => {
   function tree(names: string[]): string {
     const server = mkdtempSync(path.join(tmpdir(), 'bw-nat-'));

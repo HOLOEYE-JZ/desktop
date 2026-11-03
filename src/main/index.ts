@@ -21,6 +21,7 @@ import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } 
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
+import { registerImportScheme } from './features/import';
 import { holdEarlyLaunches } from './features/os-launch';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
@@ -156,6 +157,7 @@ if (gotLock && process.platform === 'win32') {
 }
 
 // After those runs, so another program has as little time as possible to take the port.
+registerImportScheme();
 const SERVER_PORT = await reservePort();
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
 
