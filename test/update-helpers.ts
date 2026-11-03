@@ -1,4 +1,4 @@
-import { execFile, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -173,15 +173,6 @@ export function runningFromInstall(): number[] {
 /** An NSIS installer at work: electron-updater's download keeps its name. */
 export function installerRunning(): boolean {
   return powershell(`(Get-Process -Name 'Bulwark-Setup*' -ErrorAction SilentlyContinue | Measure-Object).Count`) !== '0';
-}
-
-/** The same, without holding up the test process while PowerShell starts. */
-export function installerRunningSoon(): Promise<boolean> {
-  return new Promise((resolve) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Name 'Bulwark-Setup*' -ErrorAction SilentlyContinue | Measure-Object).Count`], (_error, stdout) => {
-      resolve(stdout.trim() !== '0');
-    });
-  });
 }
 
 export function killInstalled(): void {

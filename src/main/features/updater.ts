@@ -44,6 +44,7 @@ declare const __BULWARK_UPDATER_TEST__: boolean;
 
 const FIRST_CHECK_MS = 30_000;
 const CHECK_EVERY_MS = 4 * 3600_000;
+const ABANDON_WAIT_MS = 10_000;
 const OWNER = 'bulwarkmail';
 const REPO = 'desktop';
 const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases`;
@@ -185,6 +186,9 @@ class Updater {
     // Only true once a right version is on disk: see `onDownloaded`.
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
+    // Its differential path ignores the cancellation token, so a download given up on would
+    // run to the end and block the next one. The packages have no blockmaps anyway.
+    autoUpdater.disableDifferentialDownload = true;
     // Every hop of every request, redirects included: only GitHub. TLS doesn't help against a
     // release asset that points somewhere else.
     const testOrigin = __BULWARK_UPDATER_TEST__ && this.testFeed ? new URL(this.testFeed).origin : undefined;
@@ -215,14 +219,12 @@ class Updater {
    */
   private async pointFeed(updater: AppUpdater, channel: UpdateChannel): Promise<void> {
     const { host, protocol, base } = this.feedBase;
-    updater.disableDifferentialDownload = false;
     if (channel === 'beta') {
       try {
         const response = await updater.netSession.fetch(`${base}/${OWNER}/${REPO}/releases.atom`, { headers: { accept: 'application/atom+xml' } });
         const newest = response.ok ? newestReleaseInFeed(await response.text()) : null;
         if (newest) {
           updater.setFeedURL({ provider: 'generic', url: `${base}/${OWNER}/${REPO}/releases/download/v${newest}/` });
-          updater.disableDifferentialDownload = true;
           return;
         }
       } catch (error) {
@@ -280,7 +282,8 @@ class Updater {
     this.downloadToken?.cancel();
     this.downloadToken = null;
     if (this.updater) this.updater.autoInstallOnAppQuit = false;
-    await this.activeDownload;
+    // Not forever, whatever the network does: a setting mustn't hang on it.
+    await Promise.race([this.activeDownload, new Promise((resolve) => setTimeout(resolve, ABANDON_WAIT_MS))]);
     this.activeDownload = null;
   }
 

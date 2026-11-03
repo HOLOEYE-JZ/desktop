@@ -79,7 +79,10 @@ function pack(project: Project, extraEnv: Record<string, string> = {}): { status
   const env: NodeJS.ProcessEnv = { ...process.env, ...extraEnv };
   delete env.ELECTRON_RUN_AS_NODE;
   const cli = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
-  const result = spawnSync(process.execPath, [cli, '--dir', process.platform === 'win32' ? '--win' : '--linux', '--x64', '--projectDir', project.dir, '--publish', 'never', `-c.electronDist=${path.join(ROOT, 'node_modules', 'electron', 'dist')}`], { encoding: 'utf8', env, cwd: project.dir, timeout: 280_000 });
+  // The Electron already installed, to stay off the network, where there is one.
+  const dist = path.join(ROOT, 'node_modules', 'electron', 'dist');
+  const electronDist = existsSync(dist) ? [`-c.electronDist=${dist}`] : [];
+  const result = spawnSync(process.execPath, [cli, '--dir', process.platform === 'win32' ? '--win' : '--linux', '--x64', '--projectDir', project.dir, '--publish', 'never', ...electronDist], { encoding: 'utf8', env, cwd: project.dir, timeout: 280_000 });
   return { status: result.status, output: `${result.stdout}\n${result.stderr}` };
 }
 

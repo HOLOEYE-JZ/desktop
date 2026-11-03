@@ -12,7 +12,6 @@ import {
   installedExe,
   installedVersion,
   installerRunning,
-  installerRunningSoon,
   installFixture,
   killInstalled,
   pendingUpdateFiles,
@@ -108,7 +107,6 @@ async function clearRelaunchedApp(): Promise<void> {
 }
 
 test.describe('updates', () => {
-  test.describe.configure({ mode: 'serial' });
   // A real install, with a virus scanner reading 450 MB, takes a minute or two by itself.
   test.setTimeout(1_200_000);
   test.skip(process.platform !== 'win32', 'NSIS');
@@ -171,30 +169,37 @@ test.describe('updates', () => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(installedVersion()).toBe(A);
 
-    // A page holding a draft, whose save takes most of the shell's 4 seconds. It says when
-    // it's under way and when it's done. An installer started before the quit would be
-    // running by then, and in a little while kill the app in the middle of the save.
-    const flush: { name: string; installed: string; installer: Promise<boolean> }[] = [];
-    await page.exposeFunction('__flushEvent', (name: string) => {
-      flush.push({ name, installed: installedVersion(), installer: installerRunningSoon() });
+    // A page holding a draft, whose save takes most of the shell's 4 seconds, says when it's
+    // done. The app says when it starts anything. An installer started before the quit would
+    // kill the app in the middle of the save.
+    const spawnLog = path.join(profile, 'spawned.txt');
+    await app.evaluate((_electron, file) => {
+      const childProcess = process.getBuiltinModule('node:child_process');
+      const fs = process.getBuiltinModule('node:fs');
+      const original = childProcess.spawn;
+      childProcess.spawn = function spawn(this: unknown, command: string, ...rest: unknown[]) {
+        fs.appendFileSync(file, `${Date.now()} ${command}\n`);
+        return (original as (...args: unknown[]) => unknown).call(this, command, ...rest);
+      } as typeof original;
+    }, spawnLog);
+    const saved: number[] = [];
+    await page.exposeFunction('__flushDone', (at: number) => {
+      saved.push(at);
     });
     await page.evaluate(() => {
-      const report = (window as any).__flushEvent;
-      const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
       (window as any).bulwarkDesktop.lifecycle.onFlushRequest(async () => {
-        await wait(300);
-        await report('saving');
-        await wait(2700);
-        await report('saved');
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        await (window as any).__flushDone(Date.now());
       });
     });
     await page.evaluate(() => (window as any).bulwarkDesktop.updates.restart());
 
     await waitForInstalled(B);
     await clearRelaunchedApp();
-    expect(flush.map((event) => event.name), 'the page finished saving').toEqual(['saving', 'saved']);
-    expect(flush[1].installed, 'still the old files when the save ended').toBe(A);
-    expect(await flush[0].installer, 'no installer running during the save').toBe(false);
+    expect(saved.length, 'the page finished saving').toBe(1);
+    const installers = readFileSync(spawnLog, 'utf8').split('\n').filter((line) => line.includes('Bulwark-Setup'));
+    expect(installers.length, 'the installer ran through the updater').toBe(1);
+    expect(Number(installers[0].split(' ')[0]), 'the installer started after the save').toBeGreaterThanOrEqual(saved[0]);
     removeProfile(profile);
   });
 
@@ -472,7 +477,8 @@ test.describe('updates', () => {
     expect(state.perMachine).toBe(true);
     expect(state.target).toBe(B);
     expect(github.downloads()).toEqual([]);
-    expect(await menuItem(app, 'update-download')).toBe(true);
+    // Nothing in the menu: the person using a per-machine install can't act on it.
+    expect(await menuItem(app, 'update-download')).toBe(false);
     expect(await menuItem(app, 'update-restart')).toBe(false);
     await page.evaluate(() => (window as any).bulwarkDesktop.updates.restart());
     await new Promise((resolve) => setTimeout(resolve, 1000));
