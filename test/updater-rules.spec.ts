@@ -205,6 +205,8 @@ test.describe('the normal build', () => {
     // Run after a plain `node build.mjs`. This string only exists in a test build.
     const main = readFileSync(path.join(ROOT, 'dist', 'main.mjs'), 'utf8');
     expect(main).toContain('update-downloaded');
+    expect(main).not.toContain('bulwark-test-update-policy');
+    expect(main).not.toContain('__bulwarkUpdaterTest');
     expect(main).not.toContain('bulwark-test-update-feed');
   });
 });

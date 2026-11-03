@@ -80,6 +80,7 @@ function detectKind(): InstallKind {
   });
 }
 
+let testPolicy: UpdatePolicy | null = null;
 let hold: (() => void) | null = null;
 
 /** The app is restarting for something else (Change Connection): an update waits for the next quit. */
@@ -111,6 +112,9 @@ class Updater {
   }
 
   private policy(): UpdatePolicy {
+    // The real reader's stand-in root doesn't work in a package. updater-policy.spec.ts tests
+    // that way in; a package under test gets its policy here.
+    if (__BULWARK_UPDATER_TEST__ && testPolicy) return testPolicy;
     return readUpdatePolicy();
   }
 
@@ -477,6 +481,16 @@ class Updater {
 
     setUpdatePolicySource(() => updatePolicyFrom(policies.snapshot));
     onUpdatePolicyChange(() => void this.onPolicyChange());
+    if (__BULWARK_UPDATER_TEST__) {
+      const start = argValue('bulwark-test-update-policy');
+      if (start) testPolicy = JSON.parse(start) as UpdatePolicy;
+      (globalThis as unknown as { __bulwarkUpdaterTest: unknown }).__bulwarkUpdaterTest = {
+        setPolicy: (policy: UpdatePolicy) => {
+          testPolicy = policy;
+          notifyUpdatePolicyChanged();
+        },
+      };
+    }
     policies.on('changed', notifyUpdatePolicyChanged);
     this.schedule();
     powerMonitor.on('resume', () => {
