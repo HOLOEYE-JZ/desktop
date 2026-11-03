@@ -594,7 +594,8 @@ test.describe('the warm spare', () => {
     });
     const composer = await pageWith(app, '/popout/compose');
     await composer.getByPlaceholder(/subject/i).or(composer.getByLabel(/subject/i)).first().waitFor({ timeout: 60_000 });
-    // Everything closes with a spare still loaded: the app still quits.
+    // Everything closes with a spare still loaded: the app still quits. With nothing to stay running in, that is.
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { os: { setSettings: (patch: unknown) => Promise<unknown> } } }).bulwarkDesktop.os.setSettings({ closeToTray: false }));
     await expect.poll(spareId, { timeout: 30_000 }).not.toBeNull();
     const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
     await app.evaluate(({ BrowserWindow }) => {
