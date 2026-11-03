@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app } from 'electron';
+import { app, powerMonitor } from 'electron';
 import { CHANNEL, type OsSummary, type OsTrayMessage } from '../../shared/bridge';
 import { strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
@@ -55,9 +55,15 @@ function setup(ctx: FeatureContext): void {
 
   // The main window keeps working while hidden: sync, push, reminders, policy, wipes.
   windows.on('created', ({ type, window }) => {
-    if (type === 'main') window.webContents.setBackgroundThrottling(false);
+    if (type !== 'main') return;
+    // Without this a hidden page reads as hidden and its timers run about once a second
+    // (measured on 45). With it, it stays "visible" to itself, and on time.
+    window.webContents.setBackgroundThrottling(false);
+    // Signing out of the OS must not stop at a window that wants to hide.
+    window.on('session-end', () => windows.beginQuit());
   });
   windows.setCloseToBackground(() => hub.settings().closeToTray);
+  powerMonitor.on('shutdown', () => windows.beginQuit());
 
   const taskbar = setupTaskbar(hub, ICONS);
   const toasts = setupToasts(hub, taskbar.attention);

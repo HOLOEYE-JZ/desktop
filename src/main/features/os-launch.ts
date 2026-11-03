@@ -22,14 +22,14 @@ let liveHandler: ((request: LaunchRequest) => void) | null = null;
 export function holdEarlyLaunches(): void {
   app.on('open-file', (event, file) => {
     event.preventDefault();
-    if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false });
+    if (liveHandler) liveHandler({ commands: [], files: [file], fromLogin: false, startedByToast: false });
     else early.files.push(file);
   });
   app.on('open-url', (event, url) => {
     event.preventDefault();
     const command = commandFromUrl(url);
     if (!command) return;
-    if (liveHandler) liveHandler({ commands: [command], files: [], fromLogin: false });
+    if (liveHandler) liveHandler({ commands: [command], files: [], fromLogin: false, startedByToast: false });
     else early.urls.push(url);
   });
 }
@@ -90,6 +90,8 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   if ((first.fromLogin || wasAtLogin) && hub.settings().startMinimized && first.commands.length === 0 && first.files.length === 0) {
     hub.ctx.windows.startMainHidden();
   }
+  // COM started us for a toast that outlived the app. Its activation says whether to show anything.
+  if (first.startedByToast) hub.ctx.windows.startMainHidden();
   void run(first);
 
   return { handle };

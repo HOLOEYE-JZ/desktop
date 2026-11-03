@@ -64,6 +64,13 @@ test.describe('what a command line asks for', () => {
     expect(parseArgv(['bulwark.exe'], ARGV_OPTIONS).fromLogin).toBe(false);
   });
 
+  test('COM starting us for a toast is noticed, also in its own spelling, and is no file', () => {
+    const request = parseArgv(['bulwark.exe', '-Embedding'], ARGV_OPTIONS);
+    expect(request.startedByToast).toBe(true);
+    expect(request.files).toEqual([]);
+    expect(parseArgv(['bulwark.exe', '--', '-Embedding'], ARGV_OPTIONS).startedByToast).toBe(false);
+  });
+
   test('unknown schemes do nothing', () => {
     const request = parseArgv(['bulwark.exe', 'javascript:alert(1)', 'file:///c:/x', 'https://example.org/'], ARGV_OPTIONS);
     expect(request.commands).toEqual([]);

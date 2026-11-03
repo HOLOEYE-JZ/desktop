@@ -134,6 +134,8 @@ export interface LaunchRequest {
   files: string[];
   /** The login item's flag. */
   fromLogin: boolean;
+  /** COM's flag for a server it started: a button on a toast of an app that wasn't running. */
+  startedByToast: boolean;
 }
 
 const OPENABLE = new Set(['.eml', '.ics', '.vcf']);
@@ -148,7 +150,7 @@ export function fileReason(file: string): 'open' | 'attach' {
  * registered handlers pass a URL.
  */
 export function parseArgv(argv: readonly string[], options: { cwd: string; skip: readonly string[] }): LaunchRequest {
-  const request: LaunchRequest = { commands: [], files: [], fromLogin: false };
+  const request: LaunchRequest = { commands: [], files: [], fromLogin: false, startedByToast: false };
   const skipped = new Set(options.skip.map((entry) => path.resolve(options.cwd, entry).toLowerCase()));
   let positional = false;
   for (const arg of argv.slice(1)) {
@@ -158,6 +160,10 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
     }
     if (!positional && arg === LOGIN_FLAG) {
       request.fromLogin = true;
+      continue;
+    }
+    if (!positional && arg.toLowerCase() === COM_FLAG) {
+      request.startedByToast = true;
       continue;
     }
     if (!positional && arg.startsWith('-')) continue;
@@ -174,6 +180,7 @@ export function parseArgv(argv: readonly string[], options: { cwd: string; skip:
 }
 
 export const LOGIN_FLAG = '--bulwark-from-login';
+const COM_FLAG = '-embedding';
 
 const RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
