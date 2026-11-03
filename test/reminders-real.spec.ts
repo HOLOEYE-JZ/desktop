@@ -21,7 +21,7 @@ const MIN = 60_000;
 const AWAY_MS = 6.5 * MIN;
 const ROOT = path.resolve(import.meta.dirname, '..');
 
-interface Toast { toastXml: string; title: string; body: string }
+interface Toast { toastXml: string; title: string; body: string; at: number }
 
 async function jmap(server: string, calls: [string, Record<string, unknown>, string][]) {
   const auth = `Basic ${Buffer.from(`${USER}:${ENT_PASSWORD}`).toString('base64')}`;
@@ -50,7 +50,7 @@ async function record(app: ElectronApplication): Promise<void> {
     g.__opened = [];
     g.__realShow ??= Notification.prototype.show;
     Notification.prototype.show = function show(this: Electron.Notification) {
-      g.__toasts.push({ toastXml: this.toastXml, title: this.title, body: this.body });
+      g.__toasts.push({ toastXml: this.toastXml, title: this.title, body: this.body, at: Date.now() });
     };
     shell.openExternal = async (url: string) => {
       g.__opened.push(url);
@@ -125,6 +125,8 @@ for (const { label, url } of STALWARTS) {
     }
 
     test.beforeAll(async () => {
+      // The account's first sync: it holds a lot of mail by now, and the machine may be busy.
+      test.setTimeout(10 * MIN);
       requireAccount();
       profile = tempProfile('rmd');
       await start(true);
@@ -134,7 +136,7 @@ for (const { label, url } of STALWARTS) {
       const toggle = page.getByTestId('offline-switch');
       await toggle.waitFor({ state: 'visible', timeout: MIN });
       if ((await toggle.getAttribute('aria-checked')) !== 'true') await toggle.click();
-      await expect(page.getByTestId('offline-status')).toContainText('updated', { timeout: 3 * MIN });
+      await expect(page.getByTestId('offline-status')).toContainText('updated', { timeout: 8 * MIN });
       await page.goto(new URL('/', page.url()).toString());
       await page.waitForTimeout(SYNC_MS);
     });
@@ -182,9 +184,8 @@ for (const { label, url } of STALWARTS) {
 
       await start();
       await record(running.app);
-      await running.page.waitForTimeout(Math.max(snoozedAt + 4.5 * MIN - Date.now(), 0));
-      expect(await toastsWith(running.app, title)).toEqual([]);
-      const back = await toastFor(running.app, title, 2 * MIN);
+      const back = await toastFor(running.app, title, 7 * MIN);
+      expect(back.at).toBeGreaterThan(snoozedAt + 4.5 * MIN);
       expect(back.toastXml).toContain('content="5 min"');
       await running.page.waitForTimeout(30_000);
       expect(await toastsWith(running.app, title)).toHaveLength(1);
