@@ -96,7 +96,10 @@ const toastFor = async (app: ElectronApplication, subject: string): Promise<Toas
   await expect.poll(async () => {
     found = (await toasts(app)).find((toast) => toast.toastXml?.includes(subject));
     return !!found;
-  }, { timeout: 90_000, intervals: [500] }).toBe(true);
+  }, { timeout: 90_000, intervals: [500], message: `no toast for ${subject}` }).toBe(true).catch(async (error) => {
+    console.log('toasts so far:', (await toasts(app)).map((toast) => /<text>(.*?)<\/text><text>(.*?)<\/text>/.exec(toast.toastXml)?.slice(1).join(' | ')));
+    throw error;
+  });
   return found!;
 };
 
@@ -319,9 +322,7 @@ for (const { label, url } of STALWARTS) {
 
     test('the Desktop app section in settings shows and changes what main holds', async () => {
       const { app, page } = running;
-      await page.goto(`${new URL(page.url()).origin}/settings`);
-      const general = page.getByRole('button', { name: /^General$/ }).or(page.getByRole('link', { name: /^General$/ })).first();
-      if (await general.isVisible().catch(() => false)) await general.click();
+      await page.goto(`${new URL(page.url()).origin}/settings/general`);
       const section = page.locator('#desktop-app').or(page.getByRole('heading', { name: 'Desktop app' })).first();
       await section.waitFor({ timeout: 60_000 });
       await section.scrollIntoViewIfNeeded();
