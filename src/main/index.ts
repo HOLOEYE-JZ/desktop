@@ -7,8 +7,9 @@
  * loading. So: never await `app.whenReady()` at the top level here. It deadlocks.
  */
 
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,13 +17,14 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { APP_PARTITION, instancePartition, setupAppSession } from './app-session';
-import { fingerprintOf, generateCertificate } from './cert';
+import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
+import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
+import { durableWrite, keyOnDisk, KEY_INIT_SWITCH, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
 import { notePartition } from './features/local-wipe';
 import { native } from './native';
 import { LocalAdmin } from './local-admin';
@@ -97,11 +99,28 @@ function reservePort(): Promise<number> {
   });
 }
 
+const keyInitOnly = process.argv.includes(KEY_INIT_SWITCH);
+const gotLock = !keyInitOnly && app.requestSingleInstanceLock();
+// A clean quit is the one thing that makes Chromium write Local State at once.
+if (keyInitOnly) void app.whenReady().then(() => app.quit());
+else if (!gotLock) app.exit(0);
+
+/** Passes on only what says which profile this is. A production build has refused the switches by now. */
+function runKeyInit(): void {
+  const profile = process.argv.filter((arg) => arg.startsWith('--bulwark-user-data=') || arg.startsWith('--user-data-dir='));
+  const args = [...(app.isPackaged ? [] : [path.join(HERE, 'main.mjs')]), ...profile, KEY_INIT_SWITCH];
+  spawnSync(process.execPath, args, { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
+}
+
+// Holding the lock, so no other run of the app is making a key for this profile.
+if (gotLock && process.platform === 'win32') {
+  // A development switch for the test of what happens if that run gets nothing onto the disk.
+  settleKeyBeforeChromium(app.getPath('userData'), __BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-test-no-key-init') ? () => {} : runKeyInit);
+}
+
+// After that run, so another program has as little time as possible to take the port.
 const SERVER_PORT = await reservePort();
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.exit(0);
 
 // Before `ready`: Chromium takes the auth lists from its command line at start.
 if (gotLock) {
@@ -192,17 +211,35 @@ async function tlsMaterial(secrets: SecretStore, dir: string): Promise<{ keyPem:
   }
   if (keyPem && existsSync(certFile)) {
     const certPem = readFileSync(certFile, 'utf8');
-    return { keyPem, certPem, fingerprint: fingerprintOf(certPem) };
+    if (certificateFitsKey(certPem, keyPem)) return { keyPem, certPem, fingerprint: fingerprintOf(certPem) };
   }
   const fresh = generateCertificate(APP_HOST);
   await secrets.set('tls-key', fresh.keyPem);
-  writeFileSync(certFile, fresh.certPem);
+  durableWrite(certFile, fresh.certPem);
   return fresh;
+}
+
+/**
+ * Nothing that encrypts runs before this: not the secrets, the server, the pages or their
+ * cookies. The saved copy of the key goes before the first secret, and isn't changed while
+ * secrets can't be read, as then it's the only copy that opens them.
+ */
+async function keySafeOnDisk(): Promise<boolean> {
+  if (process.platform !== 'win32') return true;
+  const userData = app.getPath('userData');
+  try {
+    if (!(await waitForKeyOnDisk(userData))) return false;
+    if (savedKey(userData) !== keyOnDisk(userData) && (await new SecretStore(path.join(userData, KEYS_FOLDER)).allReadable())) saveKey(userData);
+    return true;
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
 }
 
 async function bootStandalone(theme: ThemeController): Promise<void> {
   const userData = app.getPath('userData');
-  const secretsDir = path.join(userData, 'keys');
+  const secretsDir = path.join(userData, KEYS_FOLDER);
   mkdirSync(secretsDir, { recursive: true });
   const secrets = new SecretStore(secretsDir);
   const profile = profilePaths(userData);
@@ -216,10 +253,9 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     // without one lost it. A new one would sign out every account just the same.
     const seeded = existsSync(path.join(profile.adminConfig, 'config.json'));
     sessionSecret = await secrets.getOrCreate('session-secret', () => randomSecret(48), { mustExist: seeded });
-    const admin = await secrets.getOrReplace('admin-credential', () => randomSecret(32));
-    adminPassword = admin.value;
     // A new credential only takes if the stored hash goes with the old one.
-    if (admin.created) rmSync(path.join(profile.adminConfig, 'admin.json'), { force: true });
+    const admin = await secrets.getOrReplace('admin-credential', () => randomSecret(32), () => rmSync(path.join(profile.adminConfig, 'admin.json'), { force: true }));
+    adminPassword = admin.value;
     tlsPair = await tlsMaterial(secrets, secretsDir);
   } catch (error) {
     if (error instanceof SecretStoreError) {
@@ -240,6 +276,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const session = setupAppSession(pin, launchSecret, () => {
     pinFailed = true;
   });
+  keepSignInsOnDisk(session);
   notePartition(stateFile, APP_PARTITION);
   applyPermissionPolicy(session, APP_ORIGIN);
 
@@ -336,6 +373,7 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const origin = new URL(instanceUrl).origin;
   const partition = instancePartition(origin);
   const session = electronSession.fromPartition(partition);
+  keepSignInsOnDisk(session);
   notePartition(stateFile, partition);
   applyPermissionPolicy(session, origin);
   const windows = createWindowManager('instance', origin, session, theme, instanceUrl);
@@ -440,9 +478,10 @@ async function boot(theme: ThemeController): Promise<void> {
   bootedDecision = decision;
   installMenu({ switchMode: decision.canSwitch ? switchMode : undefined, devTools });
   if (decision.kind === 'policy-error') await showPolicyError(decision);
+  else if (decision.kind === 'welcome') showWelcome(theme, decision);
+  else if (!(await keySafeOnDisk())) await showErrorPage(strings().errorKeyNotSavedTitle, strings().errorKeyNotSavedBody);
   else if (decision.kind === 'instance') await bootInstance(decision.url, theme);
-  else if (decision.kind === 'standalone') await bootStandalone(theme);
-  else showWelcome(theme, decision);
+  else await bootStandalone(theme);
 }
 
 function restartNow(): void {
