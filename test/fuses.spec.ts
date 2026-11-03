@@ -118,6 +118,29 @@ test.describe('the packaged app', () => {
     }
   });
 
+  test('the native helper ships unpacked and loads in the process, with the fuses on', async () => {
+    test.skip(process.platform !== 'win32', 'reads the loaded modules through PowerShell');
+    const file = path.join(UNPACKED, 'resources', 'app.asar.unpacked', 'native', 'bulwark-native.node');
+    expect(existsSync(file), 'run npm run pack:dir with cargo on the PATH').toBe(true);
+    const profile = tempProfile('packnative');
+    const userData = path.join(profile, 'ud');
+    mkdirSync(userData, { recursive: true });
+    writeFileSync(path.join(userData, 'shell-state.json'), JSON.stringify({ mode: 'standalone' }));
+    const env: NodeJS.ProcessEnv = { ...process.env };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawn(EXE, [`--user-data-dir=${userData}`], { env, stdio: 'ignore' });
+    try {
+      const modules = () =>
+        spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue).Modules | Where-Object { $_.ModuleName -eq 'bulwark-native.node' } | ForEach-Object { $_.FileName }`], { encoding: 'utf8' }).stdout.trim();
+      await expect.poll(modules, { timeout: 60_000, intervals: [1000] }).toContain('app.asar.unpacked');
+    } finally {
+      child.kill();
+      spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      removeProfile(profile);
+    }
+  });
+
   test('it starts from the package with the fuses on, and the server listens', async () => {
     const profile = tempProfile('pack');
     const userData = path.join(profile, 'ud');

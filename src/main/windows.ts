@@ -12,6 +12,7 @@ import { EventEmitter } from 'node:events';
 import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { StateFile } from './state';
+import { native } from './native';
 import { strings } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
 import { placeWindow, type Rect } from './window-placement';
@@ -117,7 +118,11 @@ export class WindowManager extends EventEmitter<{
       webviewTag: false,
       spellcheck: true,
       devTools,
-      additionalArguments: [`${PRELOAD_ARG.allowedOrigin}${origin}`, `${PRELOAD_ARG.mode}${mode}`],
+      additionalArguments: [
+        `${PRELOAD_ARG.allowedOrigin}${origin}`,
+        `${PRELOAD_ARG.mode}${mode}`,
+        `${PRELOAD_ARG.keystore}${native().keystore.available ? '1' : '0'}`,
+      ],
     };
   }
 

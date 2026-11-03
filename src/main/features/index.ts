@@ -14,6 +14,7 @@ import type { WindowManager } from '../windows';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
 import { osIntegration } from './os';
+import { keystoreFeature } from './keystore';
 
 export interface FeatureContext {
   mode: Mode;
@@ -39,7 +40,7 @@ export interface Feature {
   setup: (ctx: FeatureContext) => void;
 }
 
-export const FEATURES: Feature[] = [osIntegration];
+export const FEATURES: Feature[] = [osIntegration, keystoreFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

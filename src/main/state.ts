@@ -41,6 +41,8 @@ export interface ShellState {
   osRegisteredExe?: string;
   /** Signs what a toast's buttons hand back. Only a page reading this file could forge one. */
   osToastSecret?: string;
+  /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
+  keystoreOrigins?: string[];
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };
