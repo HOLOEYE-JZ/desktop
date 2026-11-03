@@ -757,6 +757,9 @@ export class WindowManager extends EventEmitter<{
     const pending = [...this.windows.values()].filter((w) => w.flushable && !w.flushed && !w.window.isDestroyed());
     const answers = await Promise.all(pending.map((w) => this.flushWindow(w)));
     for (const w of pending) w.flushed = true;
+    // A composer saved for the first time just now said which draft while quitting. All the
+    // windows are still here, and none of them has been closed by the quit yet.
+    if (this.quitting) this.writeSession();
     const { failed, unsent } = sumAnswers(answers.flat());
     return { asked: pending.length > 0, failed, unsent };
   }
@@ -814,7 +817,10 @@ export class WindowManager extends EventEmitter<{
 
   private storeSession(): void {
     // Quitting closes the windows one by one, which would forget them.
-    if (this.quitting) return;
+    if (!this.quitting) this.writeSession();
+  }
+
+  private writeSession(): void {
     // With the setting off nothing is written. Before the restore, the old list stands.
     const { state } = this.options;
     if (state.data.restoreWindows === false || (this.savedSession.length > 0 && !this.restoring)) return;
