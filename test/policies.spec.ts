@@ -205,7 +205,6 @@ test.describe('a forced InstanceUrl', () => {
     });
     await expect.poll(() => opened(app)).toContain('https://example.com/elsewhere');
     expect(new URL(window.url()).origin).toBe(new URL(instanceA).origin);
-    await window.screenshot({ path: path.join(SCREENSHOTS, 'desktop-policy-forced-instance.png') });
   });
 
   test('nothing the user stored or passes on the command line gets around it', async () => {

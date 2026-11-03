@@ -127,7 +127,7 @@ test.describe('window prefs', () => {
     });
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
-    expect(shape.keys).toEqual(['auth', 'lifecycle', 'menu', 'mode', 'platform', 'plugins', 'servers', 'shell', 'theme', 'version', 'windows']);
+    expect(shape.keys).toEqual(['auth', 'lifecycle', 'menu', 'mode', 'platform', 'plugins', 'policy', 'servers', 'shell', 'theme', 'version', 'windows']);
   });
 
   test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {

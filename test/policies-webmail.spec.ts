@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
-import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, signIn, tempProfile, waitForLogin } from './helpers';
+import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, signIn, tempProfile, waitForLogin } from './helpers';
 
 /**
  * Policies in the webmail itself: the login page, the settings lock, the plugin list.
@@ -106,7 +106,7 @@ test.describe('standalone', () => {
     // Nothing happened to the registry.
     expect(JSON.parse(readFileSync(path.join(profile, 'webmail', 'admin', 'plugins', 'registry.json'), 'utf8')).plugins[0].id).toBe('seeded-plugin');
 
-    await page.goto('/en/settings?tab=addons').catch(() => {});
+    await page.goto(`${APP_ORIGIN}/settings/addons`);
     const row = page.getByTestId('device-plugins-off');
     await expect(row).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('[data-org-locked]').first()).toContainText('Set by your organisation');
@@ -122,9 +122,11 @@ test.describe('standalone', () => {
     setString(forced(root), 'OfflineEnabled', 'not-a-switch');
     const { page } = await start(root, { state: { mode: 'standalone' } });
     await signIn(page, STALWART);
-    await page.goto('/en/settings?tab=data').catch(() => {});
+    await page.goto(`${APP_ORIGIN}/settings/backup`);
     const locked = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { policy: { get(): { OfflineEnabled: unknown } } } }).bulwarkDesktop.policy.get().OfflineEnabled);
     expect(locked).toMatchObject({ value: false, locked: true, invalid: 'not_a_switch' });
+    await expect(page.getByTestId('offline-forbidden')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId('offline-forbidden').locator('[data-org-locked]')).toContainText('Set by your organisation');
   });
 });
 
