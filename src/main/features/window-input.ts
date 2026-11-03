@@ -1,6 +1,6 @@
 /**
  * What the mouse and keyboard do to a window outside the page: Ctrl+wheel zooms with
- * the menu's zoom, pinch doesn't, the mouse's back and forward buttons go through
+ * the menu's zoom, the mouse's back and forward buttons go through
  * the app's own history, and Alt shows the menu strip where there's no native bar.
  */
 
@@ -50,10 +50,9 @@ export const windowInputFeature: Feature = {
       const { webContents } = window;
 
       webContents.on('zoom-changed', (_event, direction) => zoom.step(direction === 'in' ? 1 : -1));
-      // No pinch: Ctrl+wheel and the keys are the zoom, and they're remembered.
-      webContents.on('did-finish-load', () => {
-        void webContents.setVisualZoomLevelLimits(1, 1).catch(() => {});
-      });
+      // Pinch needs nothing: visual zoom is off by default in Electron. Don't call
+      // setVisualZoomLevelLimits here to be sure. On a window closing as its page
+      // finishes loading it took the whole app down, about one close in four.
 
       // Windows and Linux. The mouse's own buttons arrive as these.
       window.on('app-command', (_event, command) => {

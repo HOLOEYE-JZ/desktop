@@ -45,7 +45,7 @@ test('it shows the instance, in a session of its own, with no embedded server', 
 test('the bridge is there on the instance, but without the standalone parts', async () => {
   expect(await bridgeType()).toBe('object');
   const keys = await page.evaluate(() => Object.keys((window as unknown as { bulwarkDesktop: object }).bulwarkDesktop).sort());
-  expect(keys).toEqual(['lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'version', 'windows']);
+  expect(keys).toEqual(['clipboard', 'dialogs', 'lifecycle', 'menu', 'mode', 'platform', 'shell', 'theme', 'version', 'windows']);
 });
 
 test('the same preload on a foreign origin exposes no bridge', async () => {

@@ -43,6 +43,8 @@ function runsInMain(id: string): boolean {
 /** Enabled unless a state says otherwise, and available in a page with no state. */
 const SHELL_COMMANDS = new Set(['file.newWindow', 'file.print', 'file.savePdf', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'go.back', 'go.forward']);
 
+const SHELL_STATE_COMMANDS = ['file.print', 'file.savePdf'];
+
 /** Letters the keys of `File`, `Edit` … open with Alt. Strings mark them with &. */
 function mnemonicOf(label: string): string | undefined {
   const at = label.indexOf('&');
@@ -64,9 +66,22 @@ export class MenuController {
   /** Once a mode has started: the first-run page has a menu without any windows behind it. */
   attach(windows: WindowManager): void {
     this.windows = windows;
-    windows.on('changed', () => this.scheduleRebuild());
+    windows.on('changed', (list) => {
+      // Windows came or went, or a title changed: the Window menu has other lines now.
+      // Only the focus moving is a matter of ticks and greyed items.
+      const signature = list.map((w) => `${w.id}:${w.title}`).join('\n');
+      if (signature !== this.windowSignature) {
+        this.windowSignature = signature;
+        this.scheduleRebuild();
+      } else {
+        this.applyState();
+      }
+    });
     this.rebuild();
   }
+
+  /** The window lines the menu was last built with. */
+  private windowSignature = '';
 
   extend(section: MenuSection, extension: Extension): void {
     this.extensions.set(section, [...(this.extensions.get(section) ?? []), extension]);
@@ -85,6 +100,38 @@ export class MenuController {
       this.rebuild();
     }, 50);
     this.timer.unref?.();
+  }
+
+  /** Greys and ticks, in place, with no new menu. */
+  private applyState(): void {
+    const menu = Menu.getApplicationMenu();
+    if (!menu) return;
+    const walk = (items: MenuItem[]) => {
+      for (const item of items) {
+        if (item.submenu) walk(item.submenu.items);
+        const id = item.id;
+        if (!id) continue;
+        if (id.startsWith('window.focus.')) {
+          item.checked = this.windows?.focusedManaged()?.window.id === Number(id.slice('window.focus.'.length));
+          continue;
+        }
+        if (!/^(file|edit|view|message|go|help)\./.test(id) || !this.knownCommands.has(id)) continue;
+        const state = this.stateOf(id);
+        item.enabled = state.enabled;
+        if (item.type === 'checkbox' && state.checked !== undefined) item.checked = state.checked;
+        // Setting a radio item at all ticks it, whatever the value: Electron's group does that.
+        if (item.type === 'radio' && state.checked) item.checked = true;
+      }
+    };
+    walk(menu.items);
+  }
+
+  /** Items whose state comes from the page or the policy. */
+  private readonly knownCommands = new Set<string>(SHELL_STATE_COMMANDS);
+
+  /** The language changed: a new menu. */
+  refresh(): void {
+    this.scheduleRebuild();
   }
 
   /** The window a command is for: the focused one, or the one last used. */
@@ -130,6 +177,7 @@ export class MenuController {
   }
 
   private command(id: string, label: string, extra: MenuItemConstructorOptions = {}): MenuItemConstructorOptions {
+    this.knownCommands.add(id);
     const state = this.stateOf(id);
     return {
       id,
@@ -374,8 +422,11 @@ export class MenuController {
   // ─── The state a page reports ───────────────────────────────
 
   setCommandState(window: BrowserWindow, state: MenuState): void {
+    const keysBefore = this.singleKeysOff();
     this.stateByWindow.set(window, state);
-    this.scheduleRebuild();
+    // Accelerators only change in a new menu.
+    if (this.singleKeysOff() !== keysBefore) this.scheduleRebuild();
+    else this.applyState();
   }
 
   commandState(window: BrowserWindow): MenuState | undefined {

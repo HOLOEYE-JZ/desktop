@@ -153,7 +153,7 @@ export const contextMenuFeature: Feature = {
       const { ui, composer } = (update ?? {}) as Partial<LanguagesUpdate>;
       if (typeof ui !== 'string') return;
       setUiLanguage(ui);
-      menu.rebuild();
+      menu.refresh();
       const wanted = [ui, ...(Array.isArray(composer) ? composer.filter((l): l is string => typeof l === 'string') : [])];
       const languages = pickSpellLanguages(wanted, session.availableSpellCheckerLanguages);
       // macOS has no such setting: its own spellchecker detects the language.
