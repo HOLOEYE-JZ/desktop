@@ -31,6 +31,9 @@ import {
   type KeystoreCertificate,
   type KeystoreResult,
   type KeystoreSignScheme,
+  type LocalImportGrantResult,
+  type LocalImportResumeResult,
+  type LocalImportScanResult,
   type MenuState,
   type OsCommand,
   type OsDefaultAppStatus,
@@ -158,6 +161,14 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       restart: () => ipcRenderer.send(CHANNEL.updatesRestart),
       openDownload: () => ipcRenderer.send(CHANNEL.updatesOpenDownload),
       onChanged: (listener: (state: UpdateState) => void) => subscribe(CHANNEL.updatesChanged, listener),
+    },
+    localImport: {
+      /** Asks the user natively before it looks. See src/main/features/import.ts. */
+      scan: (): Promise<LocalImportScanResult> => ipcRenderer.invoke(CHANNEL.localImportScan),
+      grant: (handles: string[]): Promise<LocalImportGrantResult> => ipcRenderer.invoke(CHANNEL.localImportGrant, handles),
+      resume: (jobId: string): Promise<LocalImportResumeResult> => ipcRenderer.invoke(CHANNEL.localImportResume, jobId),
+      release: (jobId: string): Promise<void> => ipcRenderer.invoke(CHANNEL.localImportRelease, jobId),
+      releaseAll: (): Promise<void> => ipcRenderer.invoke(CHANNEL.localImportReleaseAll),
     },
     policy: {
       get: () => policySnapshot,

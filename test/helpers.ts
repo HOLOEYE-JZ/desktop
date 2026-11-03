@@ -15,7 +15,7 @@ export const STALWARTS = [
 ];
 export const ACCOUNT = process.env.BULWARK_TEST_ACCOUNT ?? 'ent-alice@example.org';
 export const ENT_PASSWORD = process.env.IT_ENT_PASSWORD ?? '';
-export const SCREENSHOTS = 'C:\\Users\\info\\Downloads\\jmap-webmail\\local-data\\desktop-offline-screenshots';
+export const SCREENSHOTS = process.env.BULWARK_SCREENSHOTS ?? path.join(tmpdir(), 'bulwark-screenshots');
 
 export function tempProfile(name: string): string {
   // Short, as Cache API fails past MAX_PATH under a long userData path.
