@@ -10,15 +10,29 @@
  * the secrets, written before the first of them, and put back before Chromium reads Local State.
  * The copy is as safe as the original: only DPAPI, for this user on this machine, opens it.
  *
+ * A copy DPAPI won't open any more (a password reset, a profile copied to another user) must not
+ * go back: Chromium would make yet another key at each start, and whatever is under the one in
+ * use would go with it. Only DPAPI can say, and only Chromium asks it, so a run of the app tries
+ * the copy in a folder of its own. That also means it goes back by itself if DPAPI opens it again.
+ *
  * macOS keeps the key in the Keychain and Linux in the secret service, which write at once, so
  * none of this runs there. No Electron here, so tests can load it.
  */
 
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** A run of the app that only gets the key onto the disk, by quitting cleanly. */
 export const KEY_INIT_SWITCH = '--bulwark-init-key';
+/** The same, in the folder below instead of the profile. Takes no path: it can't aim anywhere else. */
+export const KEY_CHECK_SWITCH = `${KEY_INIT_SWITCH}=check`;
+export const KEY_CHECK_FOLDER = 'key-check';
+
+/** What such a run is started with: only what says which profile this is, and which run it is. */
+export function keyInitArgs(argv: readonly string[], isPackaged: boolean, mainScript: string, run: string): string[] {
+  const profile = argv.filter((arg) => arg.startsWith('--bulwark-user-data=') || arg.startsWith('--user-data-dir='));
+  return [...(isPackaged ? [] : [mainScript]), ...profile, run];
+}
 
 export const KEYS_FOLDER = 'keys';
 const SAVED_KEY = 'os-crypt-key.saved';
@@ -68,10 +82,18 @@ export function saveKey(userData: string): void {
   if (key) durableWrite(path.join(userData, KEYS_FOLDER, SAVED_KEY), key);
 }
 
+function list(userData: string, folder: string): string[] {
+  return existsSync(path.join(userData, folder)) ? readdirSync(path.join(userData, folder)) : [];
+}
+
+/** The app lock's keys sit in its records and in the page's database, so main can't try them. */
+export function holdsAppLockRecords(userData: string): boolean {
+  return list(userData, APP_LOCK_FOLDER).length > 0;
+}
+
 /** Anything encrypted with the key that a new key would make unreadable. */
 export function holdsSecrets(userData: string): boolean {
-  const list = (folder: string) => (existsSync(path.join(userData, folder)) ? readdirSync(path.join(userData, folder)) : []);
-  return list(KEYS_FOLDER).some((name) => name.endsWith('.bin')) || list(APP_LOCK_FOLDER).length > 0;
+  return list(userData, KEYS_FOLDER).some((name) => name.endsWith('.bin')) || holdsAppLockRecords(userData);
 }
 
 function putKeyBack(userData: string, key: string): void {
@@ -82,27 +104,60 @@ function putKeyBack(userData: string, key: string): void {
 }
 
 /**
- * Before Chromium reads Local State, which it does once this module has finished loading. Puts
- * back a key that's gone or was replaced, and otherwise gets a first key onto the disk, in a
- * run of its own (about 250 ms) rather than a wait for Chromium's ten seconds. If that run
- * fails, waitForKeyOnDisk still holds everything back.
- *
- * With no secrets, a replaced key stays: cookies are all that's under it, and if the old one
- * can't be opened any more, putting it back would lose them at every start.
+ * Whether DPAPI opens this key, by a run of the app on a copy: Chromium replaces a key it can't
+ * open. If that can't be found out, the answer is yes, as putting the key back protects secrets.
  */
-export function settleKeyBeforeChromium(userData: string, runKeyInit: () => void): void {
-  const onDisk = keyOnDisk(userData);
+export function keyOpens(userData: string, key: string, runCheck: () => void): boolean {
+  const folder = path.join(userData, KEY_CHECK_FOLDER);
+  const clear = () => rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  try {
+    clear();
+    durableWrite(path.join(folder, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: key, audit_enabled: true } }));
+    runCheck();
+    return keyOnDisk(folder) === key;
+  } catch (error) {
+    console.error(error);
+    return true;
+  } finally {
+    try {
+      clear();
+    } catch {
+      // A leftover file of that run. The next check clears the folder.
+    }
+  }
+}
+
+export interface KeySettling {
+  /** A clean run on the profile. About 250 ms, against Chromium's ten seconds. */
+  runKeyInit: () => void;
+  keyOpens: (key: string) => boolean;
+  /** This start may write the profile's first secrets. In instance mode it won't. */
+  firstSecretsMayFollow: boolean;
+}
+
+/**
+ * Before Chromium reads Local State, which it does once this module has finished loading. Puts
+ * back a key that's gone or was replaced, if it still opens.
+ *
+ * Otherwise the clean run is for what can't wait: a first key, and, with no secrets yet, a key
+ * this start hasn't seen proved. If DPAPI won't open that one, Chromium would use a new key from
+ * memory while the old stays on disk for ten seconds, and secrets written in that time would look
+ * safe and be under neither. After the clean run, what's on disk is the key in use. If the run
+ * fails, waitForKeyOnDisk still holds back a first key.
+ */
+export function settleKeyBeforeChromium(userData: string, { runKeyInit, keyOpens: opens, firstSecretsMayFollow }: KeySettling): void {
   const saved = savedKey(userData);
-  if (saved && saved !== onDisk && (!onDisk || holdsSecrets(userData))) {
+  const secrets = holdsSecrets(userData);
+  if (saved && saved !== keyOnDisk(userData) && (!keyOnDisk(userData) || secrets) && opens(saved)) {
     try {
       putKeyBack(userData, saved);
     } catch (error) {
       // The next start tries again. Until then the secrets can't be read, and the error page says so.
       console.error(error);
     }
-    return;
   }
-  if (!onDisk) runKeyInit();
+  const onDisk = keyOnDisk(userData);
+  if (!onDisk || (!secrets && (saved !== onDisk || firstSecretsMayFollow))) runKeyInit();
 }
 
 /** Whether Local State holds the key. False after the wait means the disk isn't taking it. */

@@ -5,10 +5,13 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { _electron as electron, expect, test, type Page } from '@playwright/test';
-import { keyOnDisk, settleKeyBeforeChromium } from '../src/main/key-on-disk';
+import { flipFuses, FuseV1Options, FuseVersion } from '@electron/fuses';
+import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { certificateFitsKey, generateCertificate } from '../src/main/cert';
+import { KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, savedKey, settleKeyBeforeChromium } from '../src/main/key-on-disk';
 import { ENT_PASSWORD, expectMailShown, launch, launchStandalone, removeProfile, shownPage, signIn, STALWARTS, tempProfile, waitForLogin } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -30,10 +33,28 @@ async function hardKill(child: ChildProcess): Promise<void> {
   await exited;
 }
 
+/** Windows lets go of a killed process's files a moment later, and a start before that gives up on the lock. */
+async function waitForProfileFree(profile: string): Promise<void> {
+  await expect
+    .poll(
+      () => {
+        try {
+          rmSync(path.join(profile, 'lockfile'), { force: true });
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: 15_000, intervals: [100] },
+    )
+    .toBe(true);
+}
+
 async function runThenKill(profile: string, afterMs: number, ...args: string[]): Promise<void> {
   const child = start(profile, ...args);
   await new Promise((resolve) => setTimeout(resolve, afterMs));
   await hardKill(child);
+  await waitForProfileFree(profile);
 }
 
 /** Fails at once on an error page, naming it, rather than after the long wait for a login form. */
@@ -107,12 +128,13 @@ test.describe('a hard kill during the first run', () => {
 test.describe('with the fallback, when the separate run gets no key onto the disk', () => {
   test.describe.configure({ mode: 'parallel', timeout: 240_000 });
 
-  for (const afterMs of [1000, 3000, 6000, 9000]) {
+  for (const afterMs of [1000, 3000, 5000, 7000]) {
     test(`a hard kill after ${afterMs} ms leaves no secret behind, and the next start comes up`, async () => {
       const profile = tempProfile('kc4');
       await runThenKill(profile, afterMs, '--standalone', '--bulwark-test-no-key-init');
-      // Nothing under a key that's only in memory.
-      if (!keyOnDisk(profile)) expect(existsSync(secretFile(profile))).toBe(false);
+      // Well before Chromium's ten seconds: the key is only in memory, and nothing is under it.
+      expect(keyOnDisk(profile)).toBeNull();
+      expect(existsSync(secretFile(profile))).toBe(false);
       await expectStartsAndKeepsItsKeys(profile);
       removeProfile(profile);
     });
@@ -125,11 +147,24 @@ test.describe('with the fallback, when the separate run gets no key onto the dis
     const app = await launch(profile, '--standalone');
     const page = await shownPage(app);
     await expect(page.locator('body')).toContainText("couldn't save its key", { timeout: 60_000 });
+    await expect(page.locator('body')).toContainText(/free space/);
+    await expect(page.locator('body')).toContainText(/permission/);
+    await expect(page.locator('body')).toContainText(/antivirus/);
     expect(existsSync(secretFile(profile))).toBe(false);
     await app.close();
     removeProfile(profile);
   });
 });
+
+/** As a profile copied to another Windows user, or after a password reset, has it. */
+const NO_OPEN = Buffer.from('DPAPInot a blob').toString('base64');
+
+function plantKeyThatWontOpen(profile: string, { saved = true, secret = false } = {}): void {
+  writeFileSync(path.join(profile, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: NO_OPEN, audit_enabled: true } }));
+  mkdirSync(path.join(profile, 'keys'), { recursive: true });
+  if (saved) writeFileSync(savedFile(profile), NO_OPEN);
+  if (secret) writeFileSync(secretFile(profile), 'x');
+}
 
 /** The wrapped key of another, new profile: a key DPAPI opens, just not the one in use. */
 async function anotherKey(): Promise<string> {
@@ -197,6 +232,68 @@ test.describe('Local State after the first run', () => {
     removeProfile(profile);
   });
 
+  for (const withSaved of [true, false]) {
+    test(`no secrets yet, a key DPAPI will not open, ${withSaved ? 'also the saved one' : 'nothing saved'}: every start comes up`, async () => {
+      const profile = tempProfile('kc18');
+      plantKeyThatWontOpen(profile, { saved: withSaved });
+      await expectStartsAndKeepsItsKeys(profile);
+      const key = keyOnDisk(profile);
+      expect(key).not.toBe(NO_OPEN);
+      expect(savedKey(profile)).toBe(key);
+      await expectStartsAndKeepsItsKeys(profile);
+      expect(keyOnDisk(profile)).toBe(key);
+      removeProfile(profile);
+    });
+  }
+
+  for (const afterMs of [1000, 3000, 6000]) {
+    test(`no secrets yet, a key DPAPI will not open, a hard kill after ${afterMs} ms: the next start comes up`, async () => {
+      const profile = tempProfile('kc31');
+      plantKeyThatWontOpen(profile);
+      await runThenKill(profile, afterMs, '--standalone');
+      await expectStartsAndKeepsItsKeys(profile);
+      removeProfile(profile);
+    });
+  }
+
+  test('a saved key DPAPI will not open is not put back over the key in use, and stays for when it opens again', async () => {
+    const { profile, secret } = await setUp('kc19');
+    const other = await anotherKey();
+    setKeyInLocalState(profile, other);
+    writeFileSync(savedFile(profile), NO_OPEN);
+    const app = await launch(profile, '--standalone');
+    const page = await shownPage(app);
+    await expect(page.locator('body')).toContainText("can't read its keys");
+    await app.close();
+    expect(keyOnDisk(profile)).toBe(other);
+    expect(readFileSync(savedFile(profile), 'utf8')).toBe(NO_OPEN);
+    expect(readFileSync(secretFile(profile))).toEqual(secret);
+    expect(existsSync(path.join(profile, 'key-check'))).toBe(false);
+    removeProfile(profile);
+  });
+
+  test('a saved key that opens goes back whatever replaced it, so secrets return with DPAPI', async () => {
+    const { profile, secret, saved } = await setUp('kc20');
+    setKeyInLocalState(profile, await anotherKey());
+    const app = await launchStandalone(profile);
+    await expectLogin(app.page);
+    await app.app.close();
+    expect(keyOnDisk(profile)).toBe(saved);
+    expect(readFileSync(secretFile(profile))).toEqual(secret);
+    removeProfile(profile);
+  });
+
+  test('a saved copy that cannot be written stops a start that needs secrets', async () => {
+    const profile = tempProfile('kc21');
+    mkdirSync(path.join(savedFile(profile), 'in-the-way'), { recursive: true });
+    const app = await launch(profile, '--standalone');
+    const page = await shownPage(app);
+    await expect(page.locator('body')).toContainText("couldn't save its key");
+    expect(existsSync(secretFile(profile))).toBe(false);
+    await app.close();
+    removeProfile(profile);
+  });
+
   test('a profile with no saved key yet gets one, once its secrets read', async () => {
     const { profile, saved } = await setUp('kc13');
     rmSync(savedFile(profile));
@@ -227,6 +324,21 @@ test.describe('Local State after the first run', () => {
   });
 });
 
+test.describe('a certificate and its key', () => {
+  const one = generateCertificate('app.bulwark.localhost');
+  const other = generateCertificate('app.bulwark.localhost');
+
+  test('fit when they belong together', () => {
+    expect(certificateFitsKey(one.certPem, one.keyPem)).toBe(true);
+  });
+
+  test('do not fit from different rounds, or with a damaged half', () => {
+    expect(certificateFitsKey(one.certPem, other.keyPem)).toBe(false);
+    expect(certificateFitsKey('', one.keyPem)).toBe(false);
+    expect(certificateFitsKey(one.certPem, '')).toBe(false);
+  });
+});
+
 test.describe('deciding before Chromium reads Local State', () => {
   const KEY = 'RFBBUElrZXk=';
   const OTHER = 'RFBBUElvdGhlcg==';
@@ -240,10 +352,15 @@ test.describe('deciding before Chromium reads Local State', () => {
     return profile;
   }
 
-  function settle(profile: string): boolean {
+  /** Whether the clean run on the profile was asked for. */
+  function settle(profile: string, { opens = true, firstSecretsMayFollow = false } = {}): boolean {
     let ran = false;
-    settleKeyBeforeChromium(profile, () => {
-      ran = true;
+    settleKeyBeforeChromium(profile, {
+      runKeyInit: () => {
+        ran = true;
+      },
+      keyOpens: () => opens,
+      firstSecretsMayFollow,
     });
     return ran;
   }
@@ -270,11 +387,67 @@ test.describe('deciding before Chromium reads Local State', () => {
     removeProfile(profile);
   });
 
-  test('with only cookies under it, a replaced key stays', () => {
+  test('with only cookies under it, a replaced key stays, and gets proved', () => {
     const profile = profileWith({ onDisk: OTHER, saved: KEY });
-    expect(settle(profile)).toBe(false);
+    expect(settle(profile)).toBe(true);
     expect(keyOnDisk(profile)).toBe(OTHER);
     removeProfile(profile);
+  });
+
+  test('a saved key that will not open stays out, with secrets as well', () => {
+    const profile = profileWith({ onDisk: OTHER, saved: KEY, secret: true });
+    expect(settle(profile, { opens: false })).toBe(false);
+    expect(keyOnDisk(profile)).toBe(OTHER);
+    removeProfile(profile);
+  });
+
+  test('a lost key that will not open is made anew', () => {
+    const profile = profileWith({ saved: KEY, secret: true });
+    expect(settle(profile, { opens: false })).toBe(true);
+    expect(keyOnDisk(profile)).toBeNull();
+    removeProfile(profile);
+  });
+
+  test('a start that may write first secrets proves the key first, also one that matches', () => {
+    const profile = profileWith({ onDisk: KEY, saved: KEY });
+    expect(settle(profile, { firstSecretsMayFollow: true })).toBe(true);
+    removeProfile(profile);
+  });
+
+  test('a start with secrets needs no such run', () => {
+    const profile = profileWith({ onDisk: KEY, saved: KEY, secret: true });
+    expect(settle(profile, { firstSecretsMayFollow: true })).toBe(false);
+    removeProfile(profile);
+  });
+
+  test('an ordinary start in instance mode costs no run', () => {
+    const profile = profileWith({ onDisk: KEY, saved: KEY });
+    expect(settle(profile)).toBe(false);
+    removeProfile(profile);
+  });
+
+  test('a key the check leaves alone opens, one it replaces does not, and the folder goes', () => {
+    const profile = profileWith({});
+    const folder = path.join(profile, 'key-check');
+    expect(keyOpens(profile, KEY, () => {})).toBe(true);
+    expect(existsSync(folder)).toBe(false);
+    const replacing = () => writeFileSync(path.join(folder, 'Local State'), JSON.stringify({ os_crypt: { encrypted_key: OTHER } }));
+    expect(keyOpens(profile, KEY, replacing)).toBe(false);
+    expect(existsSync(folder)).toBe(false);
+    removeProfile(profile);
+  });
+
+  test('the separate run is started with the profile and its own switch, and nothing else', () => {
+    const argv = ['app.exe', 'main.mjs', '--bulwark-user-data=C:\\p', '--lang=en-US', '--standalone', '--remote-debugging-port=0'];
+    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_INIT_SWITCH)).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_INIT_SWITCH]);
+    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_CHECK_SWITCH)).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_CHECK_SWITCH]);
+  });
+
+  test('a package names no script: Electron would take it for the app', () => {
+    expect(keyInitArgs(['Bulwark.exe'], true, 'C:\\app\\main.mjs', KEY_INIT_SWITCH)).toEqual([KEY_INIT_SWITCH]);
+    expect(keyInitArgs(['Bulwark.exe', 'x.eml', '--hidden'], true, 'C:\\app\\main.mjs', KEY_CHECK_SWITCH)).toEqual([KEY_CHECK_SWITCH]);
+    // A test package takes this one, and its separate run has to land in the same place.
+    expect(keyInitArgs(['Bulwark.exe', '--user-data-dir=C:\\t'], true, 'C:\\app\\main.mjs', KEY_INIT_SWITCH)).toEqual(['--user-data-dir=C:\\t', KEY_INIT_SWITCH]);
   });
 
   test('the app lock\'s records count as secrets', () => {
@@ -294,39 +467,196 @@ test.describe('deciding before Chromium reads Local State', () => {
   });
 });
 
-test.describe('a hard kill with an account signed in', () => {
+/**
+ * Stock electron.exe has the cookie fuse off, so its cookies are plain text and no key can lose
+ * them. These run on a copy with the fuse on, as in a real package.
+ */
+test.describe('cookies under the key', () => {
   test.describe.configure({ timeout: 300_000 });
-  test.skip(!ENT_PASSWORD, 'needs IT_ENT_PASSWORD, see requireAccount');
 
-  async function signedInThenKilled(name: string, afterMs: number): Promise<string> {
-    const profile = tempProfile(name);
-    const first = await launchStandalone(profile);
-    await signIn(first.page, STALWARTS[0].url, 'ent-dave@example.org', ENT_PASSWORD);
-    await new Promise((resolve) => setTimeout(resolve, afterMs));
-    await hardKill(first.app.process());
-    return profile;
+  const INSTANCE = 'https://mail.example.org';
+  const PARTITION = `persist:instance-${Buffer.from(INSTANCE).toString('base64url')}`;
+  const VALUE = 'bw-cookie-marker';
+  let fused = '';
+  let fusedDir = '';
+
+  test.beforeAll(async () => {
+    test.setTimeout(180_000);
+    fusedDir = mkdtempSync(path.join(tmpdir(), 'bw-fused-'));
+    cpSync(path.dirname(ELECTRON), fusedDir, { recursive: true });
+    fused = path.join(fusedDir, 'electron.exe');
+    await flipFuses(fused, { version: FuseVersion.V1, [FuseV1Options.EnableCookieEncryption]: true });
+  });
+
+  test.afterAll(() => removeProfile(fusedDir));
+
+  function launchFused(profile: string, ...args: string[]): Promise<ElectronApplication> {
+    const env: Record<string, string> = {};
+    for (const [name, value] of Object.entries(process.env)) if (value !== undefined && name !== 'ELECTRON_RUN_AS_NODE') env[name] = value;
+    return electron.launch({ executablePath: fused, args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', ...args], cwd: ROOT, env });
   }
 
-  async function expectStillSignedIn(profile: string): Promise<void> {
-    const app = await launch(profile, '--standalone');
-    const page = await shownPage(app);
-    await expectMailShown(page);
+  /** A start in instance mode. What it read of the cookie, and it sets the cookie if told to. */
+  async function instanceStart(profile: string, { set = false, prompts = '' } = {}): Promise<{ app: ElectronApplication; cookies: string[] }> {
+    const env: Record<string, string> = { BULWARK_TEST_PROMPTS: prompts };
+    for (const [name, value] of Object.entries(process.env)) if (value !== undefined && name !== 'ELECTRON_RUN_AS_NODE') env[name] = value;
+    const hook = prompts ? ['-r', path.join(ROOT, 'test', 'support', 'record-prompts.cjs')] : [];
+    const app = await electron.launch({ executablePath: fused, args: [...hook, MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', `--instance=${INSTANCE}`], cwd: ROOT, env });
+    await shownPage(app);
+    const cookies = await app.evaluate(
+      async ({ session }, { partition, url, value, set: setIt }) => {
+        const jar = session.fromPartition(partition).cookies;
+        const before = (await jar.get({ name: 'sid' })).map((cookie) => cookie.value);
+        if (setIt) {
+          await jar.set({ url, name: 'sid', value, expirationDate: Math.floor(Date.now() / 1000) + 86400, secure: true });
+          await jar.flushStore();
+        }
+        return before;
+      },
+      { partition: PARTITION, url: `${INSTANCE}/`, value: VALUE, set },
+    );
+    return { app, cookies };
+  }
+
+  function promptsIn(file: string): string[] {
+    return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n') : [];
+  }
+
+  test('the copy really encrypts them', async () => {
+    const profile = tempProfile('kc22');
+    const { app } = await instanceStart(profile, { set: true });
     await app.close();
-  }
+    const jar = readFileSync(path.join(profile, 'Partitions', PARTITION.slice('persist:'.length), 'Network', 'Cookies'));
+    expect(jar.includes('sid')).toBe(true);
+    expect(jar.includes(VALUE)).toBe(false);
+    removeProfile(profile);
+  });
 
-  for (const afterMs of [500, 3000]) {
-    test(`${afterMs} ms after signing in on a new profile, the sign-in stays`, async () => {
-      const profile = await signedInThenKilled('kc11', afterMs);
-      await expectStillSignedIn(profile);
+  test('with Local State gone, the saved key keeps a cookie readable', async () => {
+    const profile = tempProfile('kc23');
+    const first = await instanceStart(profile, { set: true });
+    await first.app.close();
+    rmSync(path.join(profile, 'Local State'));
+    const second = await instanceStart(profile);
+    expect(second.cookies).toEqual([VALUE]);
+    await second.app.close();
+    removeProfile(profile);
+  });
+
+  // With secrets the old copy stays, for the day DPAPI opens it again. With none it follows.
+  const leftovers: [string, boolean, (profile: string) => void][] = [
+    ['no secrets', false, () => {}],
+    ['a leftover secret', true, (profile) => writeFileSync(secretFile(profile), 'x')],
+    ['the app lock\'s folder', true, (profile) => {
+      mkdirSync(path.join(profile, 'app-lock'));
+      writeFileSync(path.join(profile, 'app-lock', 'gate.json'), '{}');
+    }],
+  ];
+  for (const [what, keepsCopy, leave] of leftovers) {
+    test(`a key DPAPI will not open, with ${what}: one new sign-in lasts, and the user is told once`, async () => {
+      const profile = tempProfile('kc24');
+      const prompts = path.join(tempProfile('kc25'), 'prompts.txt');
+      plantKeyThatWontOpen(profile);
+      leave(profile);
+
+      // The start that finds out: told while it runs, as soon as Chromium's new key reaches the disk.
+      const first = await instanceStart(profile, { set: true, prompts });
+      await expect.poll(() => promptsIn(prompts), { timeout: 40_000, intervals: [500] }).toEqual(['Please sign in again']);
+      await first.app.close();
+      const key = keyOnDisk(profile);
+      expect(key).not.toBe(NO_OPEN);
+
+      for (let start = 0; start < 2; start += 1) {
+        const next = await instanceStart(profile, { prompts });
+        expect(next.cookies).toEqual([VALUE]);
+        await next.app.close();
+        expect(keyOnDisk(profile)).toBe(key);
+      }
+      expect(promptsIn(prompts)).toEqual(['Please sign in again']);
+      expect(savedKey(profile)).toBe(keepsCopy ? NO_OPEN : key);
+      expect(existsSync(path.join(profile, 'key-check'))).toBe(false);
       removeProfile(profile);
+      removeProfile(path.dirname(prompts));
     });
   }
 
-  test('with Local State gone as well, the saved key keeps the sign-in', async () => {
-    const profile = await signedInThenKilled('kc12', 3000);
-    rmSync(path.join(profile, 'Local State'));
-    await expectStillSignedIn(profile);
+  test('quit before Chromium\'s ten seconds, the next start tells, and the saved key follows the new one', async () => {
+    const profile = tempProfile('kc26');
+    const prompts = path.join(tempProfile('kc27'), 'prompts.txt');
+    plantKeyThatWontOpen(profile);
+    const first = await instanceStart(profile, { prompts });
+    await first.app.close();
+    expect(promptsIn(prompts)).toEqual([]);
+    const key = keyOnDisk(profile);
+    expect(key).not.toBe(NO_OPEN);
+
+    const second = await instanceStart(profile, { prompts });
+    expect(promptsIn(prompts)).toEqual(['Please sign in again']);
+    expect(savedKey(profile)).toBe(key);
+    await second.app.close();
     removeProfile(profile);
+    removeProfile(path.dirname(prompts));
+  });
+
+  test('an ordinary start in instance mode tells nobody anything', async () => {
+    const profile = tempProfile('kc28');
+    const prompts = path.join(tempProfile('kc29'), 'prompts.txt');
+    const first = await instanceStart(profile, { set: true, prompts });
+    await new Promise((resolve) => setTimeout(resolve, 13_000));
+    await first.app.close();
+    const second = await instanceStart(profile, { prompts });
+    expect(second.cookies).toEqual([VALUE]);
+    await second.app.close();
+    expect(promptsIn(prompts)).toEqual([]);
+    removeProfile(profile);
+    removeProfile(path.dirname(prompts));
+  });
+
+  test('a saved copy that cannot be written costs instance mode no page', async () => {
+    const profile = tempProfile('kc30');
+    mkdirSync(path.join(savedFile(profile), 'in-the-way'), { recursive: true });
+    const { app, cookies } = await instanceStart(profile);
+    expect(cookies).toEqual([]);
+    const pages = await Promise.all(app.windows().map((page) => page.locator('body').innerText().catch(() => '')));
+    expect(pages.join('\n')).not.toContain("couldn't save its key");
+    await app.close();
+    removeProfile(profile);
+  });
+
+  test.describe('with an account signed in', () => {
+    test.skip(!ENT_PASSWORD, 'needs IT_ENT_PASSWORD, see requireAccount');
+
+    async function signedInThenKilled(name: string, afterMs: number): Promise<string> {
+      const profile = tempProfile(name);
+      const first = await launchFused(profile, '--standalone');
+      await signIn(await shownPage(first), STALWARTS[0].url, 'ent-dave@example.org', ENT_PASSWORD);
+      await new Promise((resolve) => setTimeout(resolve, afterMs));
+      await hardKill(first.process());
+      await waitForProfileFree(profile);
+      return profile;
+    }
+
+    async function expectStillSignedIn(profile: string): Promise<void> {
+      const app = await launchFused(profile, '--standalone');
+      const page = await shownPage(app);
+      await expectMailShown(page);
+      await app.close();
+    }
+
+    for (const afterMs of [500, 3000]) {
+      test(`a hard kill ${afterMs} ms after signing in on a new profile keeps the sign-in`, async () => {
+        const profile = await signedInThenKilled('kc11', afterMs);
+        await expectStillSignedIn(profile);
+        removeProfile(profile);
+      });
+    }
+
+    test('with Local State gone as well, the saved key keeps the sign-in', async () => {
+      const profile = await signedInThenKilled('kc12', 3000);
+      rmSync(path.join(profile, 'Local State'));
+      await expectStillSignedIn(profile);
+      removeProfile(profile);
+    });
   });
 });
 
