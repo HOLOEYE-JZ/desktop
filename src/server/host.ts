@@ -18,7 +18,7 @@ import path from 'node:path';
 import tls from 'node:tls';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
 import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, type HostMessage, type InitMessage } from './protocol';
-import { isAdminLogin, sanitizeRequest } from './sanitize';
+import { isAdminLogin, isImageOptimizer, sanitizeRequest } from './sanitize';
 
 const TRUST_KEY = Symbol.for('bulwark.desktop.trustedJmapOrigins');
 
@@ -109,6 +109,11 @@ async function start(init: InitMessage): Promise<void> {
       return;
     }
     sanitizeRequest(req);
+    if (isImageOptimizer(req.url)) {
+      res.writeHead(404, { 'content-type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
     if (isJmapRoute(req.url)) {
       void forwardJmap(req, res, isTrusted);
       return;
