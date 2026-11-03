@@ -135,9 +135,4 @@ export class OsHub extends EventEmitter<{
       this.ctx.showMain();
     }
   }
-
-  /** Waiting commands, for a check that a cold start kept them. */
-  pendingCount(): number {
-    return this.pending.length;
-  }
 }

@@ -389,19 +389,17 @@ test.describe('OS integration', () => {
 
   test('a mailto and an .eml on a cold start wait for the page; a second launch delivers at once', async () => {
     const eml = path.join(profile, 'hello.eml');
-    writeFileSync(eml, 'Subject: Hi\r\n\r\nBody');
+    writeFileSync(eml, 'From: Someone <someone@example.org>\r\nTo: me@example.org\r\nSubject: Cold start letter\r\nDate: Tue, 3 Nov 2026 09:00:00 +0000\r\nContent-Type: text/plain\r\n\r\nBody\r\n');
     const app = await launch(profile, '--standalone', '--', 'mailto:a@example.org?subject=Hi', eml);
     const page = await shownPage(app);
     running = { app, page };
     await record(app);
-    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { pendingCount: () => number } } }).__bulwarkOs.hub.pendingCount())).toBe(2);
+
+    // The page wasn't there when these were asked for. It took both once it was, signed in or not.
+    await expect(page.getByRole('heading', { name: 'Cold start letter' })).toBeVisible({ timeout: 60_000 });
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem('bulwark:pending-mailto'))).toContain('a@example.org');
 
     await listen(page);
-    await expect.poll(async () => (await commands(page)).length).toBe(2);
-    const [mailto, file] = await page.evaluate(() => (window as unknown as { __cmds: { type: string; reason?: string; url?: string; files?: { name: string; data: Uint8Array }[] }[] }).__cmds.map((c) => ({ ...c, files: c.files?.map((f) => ({ name: f.name, text: new TextDecoder().decode(f.data) })) })));
-    expect(mailto).toEqual({ type: 'mailto', url: 'mailto:a@example.org?subject=Hi' });
-    expect(file).toMatchObject({ type: 'files', reason: 'open', failed: [], files: [{ name: 'hello.eml', text: 'Subject: Hi\r\n\r\nBody' }] });
-
     // A real second launch, on the same profile, as the OS would start it.
     const require = createRequire(import.meta.url);
     const env = { ...process.env };
