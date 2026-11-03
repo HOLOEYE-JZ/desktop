@@ -188,6 +188,7 @@ bulwarkPoliciesDone:
 
 !macro customInstall
   !insertmacro bulwarkWritePolicies
+!macroend
 
 ; What the app writes at runtime outside its folder goes at a real uninstall. An update runs
 ; this too, with ${isUpdated} set, and those stay: the app keeps its pending download, and
