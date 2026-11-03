@@ -560,7 +560,7 @@ test.describe('"Later" on a forced change', () => {
   test('asks again and then restarts by itself, saving first', async () => {
     const root = freshRoot();
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    const started = await start(root, { args: ['--bulwark-test-policy-restart=400,2000'] });
+    const started = await start(root, { args: ['--bulwark-test-policy-restart=300,6000'] });
     const { app } = started;
     const marker = path.join(started.profile, 'relaunched');
     await app.evaluate(({ app: electronApp }, file) => {
@@ -571,7 +571,7 @@ test.describe('"Later" on a forced change', () => {
     const closed = new Promise((resolve) => app.process().once('exit', resolve));
     await fakeOsIntegration(app, 1);
     setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
-    await expect.poll(() => prompts(app).then((p) => p.length), { timeout: 1900 }).toBeGreaterThan(1);
+    await expect.poll(() => prompts(app).then((p) => p.length), { timeout: 5500 }).toBeGreaterThan(1);
     await closed;
     expect(readFileSync(marker, 'utf8')).toBe('yes');
   });

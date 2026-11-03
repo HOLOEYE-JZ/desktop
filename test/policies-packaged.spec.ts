@@ -136,7 +136,7 @@ test.describe('a production build, with no policy set', () => {
   });
 
   test('none of them reaches any process, in any spelling', async () => {
-    const flags = ['--no-sandbox', '--js-flags=--expose-gc', '--disable-web-security', '--enable-features=BulwarkNoSuchFeature', '/DISABLE-FEATURES=BulwarkNoSuchOther', '-disable-site-isolation-trials', '--load-extension=C:\\nothing', '--allow-running-insecure-content', '--host-rules=MAP bulwarknosuch.example 127.0.0.1', '--ignore-certificate-errors'];
+    const flags = ['--no-sandbox', '--js-flags=--expose-gc', '--disable-web-security', '--enable-features=BulwarkNoSuchFeature', '/DISABLE-FEATURES=BulwarkNoSuchOther', '-disable-site-isolation-trials', '--load-extension=C:\\nothing', '--allow-running-insecure-content', '--host-rules=MAP bulwarknosuch.example 127.0.0.1', '--ignore-certificate-errors', '--user-data-dir=C:\bulwarknosuch'];
     const done = await runStrict(flags);
     try {
       const lines = commandLines('Bulwark.exe').filter((line) => line.includes('release-strict'));
