@@ -39,6 +39,7 @@ await build({ ...common, entryPoints: ['node_modules/electron-updater/out/main.j
 await build({ ...common, entryPoints: ['src/preload/index.ts'], outfile: 'dist/preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist/welcome-preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
+await build({ ...common, entryPoints: ['src/main/crash-scrub-host.ts'], outfile: 'dist/crash-scrub-host.cjs', format: 'cjs', external: ['electron'] });
 
 // Main loads this as a data: page, so the script goes inside it, allowed by its hash.
 // LF: an HTML parser turns CRLF into LF before the hash is checked, so a Windows

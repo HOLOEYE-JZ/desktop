@@ -6,6 +6,33 @@ export const LAUNCH_HEADER = 'x-bulwark-launch';
 /** Only main's own requests carry this. The app session's requests carry the launch header too. */
 export const MAIN_HEADER = 'x-bulwark-main';
 
+/** What a stack has of the disk is the app's folder. A frame under it becomes `/desktop/...`. */
+export function normalizeStack(stack: string, dir: string): string {
+  const base = dir.replace(/\\/g, '/').replace(/\/$/, '');
+  return stack
+    .split('\n')
+    .map((line) => {
+      const forward = line.replace(/\\/g, '/').replace(/file:\/\/\//g, '/');
+      const at = forward.toLowerCase().indexOf(`${base.toLowerCase()}/`);
+      if (at < 0) return line;
+      return `${forward.slice(0, at).replace(/\/$/, '')}/desktop/${forward.slice(at + base.length + 1)}`;
+    })
+    .join('\n');
+}
+
+export interface PrivacyMessage {
+  type: 'privacy';
+  privacy: { telemetry: boolean; crashReports: boolean; appVersion: string; build: string; endpoint?: string };
+}
+
+export interface MainErrorMessage {
+  type: 'main-error';
+  name?: unknown;
+  message?: unknown;
+  stack?: string;
+  mechanism: 'uncaughtexception' | 'unhandledrejection';
+}
+
 export interface InitMessage {
   type: 'init';
   /** The server's root: resources/server.asar in a package, a plain folder in development. */
@@ -19,6 +46,7 @@ export interface InitMessage {
   /** Set on process.env in the utilityProcess before Next loads. */
   secretEnv: Record<string, string>;
   trustedOrigins: string[];
+  privacy: PrivacyMessage['privacy'];
   /** What OS policies say the server has to enforce. */
   policy: ServerPolicyMessage['policy'];
 }
@@ -33,7 +61,7 @@ export interface ServerPolicyMessage {
   policy: { pluginsMode: 'allowed' | 'allowlist' | 'off'; pluginAllowlist: string[]; allowedJmapServers: string[] | null };
 }
 
-export type HostMessage = InitMessage | TrustedMessage | ServerPolicyMessage;
+export type HostMessage = InitMessage | TrustedMessage | ServerPolicyMessage | PrivacyMessage | MainErrorMessage;
 
 export type HostEvent =
   | { type: 'ready'; systemCertificates: number; caError?: string }

@@ -21,6 +21,7 @@ import {
   type KeystoreResult,
   type KeystoreSignScheme,
   type MenuState,
+  type PrivacyState,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -97,6 +98,16 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     policy: {
       get: () => policySnapshot,
       onChange: (listener: (snapshot: PolicySnapshot) => void) => subscribe(CHANNEL.policyChanged, listener),
+    },
+    privacy: {
+      get: () => ipcRenderer.invoke(CHANNEL.privacyGet),
+      setTelemetry: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetTelemetry, on),
+      setCrashReports: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetCrashReports, on),
+      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url),
+      listCrashes: () => ipcRenderer.invoke(CHANNEL.privacyListCrashes),
+      sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
+      deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
+      onChange: (listener: (state: PrivacyState) => void) => subscribe(CHANNEL.privacyChanged, listener),
     },
     lifecycle: {
       /**

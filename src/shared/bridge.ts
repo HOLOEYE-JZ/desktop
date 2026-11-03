@@ -135,6 +135,21 @@ export interface SessionUrls {
   eventSourceUrl?: string;
 }
 
+export interface PrivacyState {
+  telemetry: { on: boolean; forcedOff: boolean };
+  crashReports: { on: boolean; forcedOff: boolean; uploadUrl: string };
+}
+
+export interface CrashFileInfo {
+  id: string;
+  createdAt: number;
+  bytes: number;
+}
+
+export type CrashSendResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -167,6 +182,15 @@ export const CHANNEL = {
   updatesChanged: 'bulwark:updates.changed',
   policyGet: 'bulwark:policy.get',
   policyChanged: 'bulwark:policy.changed',
+  privacyGet: 'bulwark:privacy.get',
+  privacySetTelemetry: 'bulwark:privacy.setTelemetry',
+  privacySetCrashReports: 'bulwark:privacy.setCrashReports',
+  privacySetCrashUploadUrl: 'bulwark:privacy.setCrashUploadUrl',
+  privacyListCrashes: 'bulwark:privacy.listCrashes',
+  privacySendCrash: 'bulwark:privacy.sendCrash',
+  privacyDeleteCrashes: 'bulwark:privacy.deleteCrashes',
+  privacyChanged: 'bulwark:privacy.changed',
+  welcomePrivacy: 'bulwark:welcome.privacy',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

@@ -428,6 +428,9 @@ test.describe('the test root', () => {
     // Dev switches hang on the build, not on the exe's name.
     for (const name of ['bulwark-user-data', 'bulwark-server-dir', 'bulwark-test-wrong-pin']) expect(production).not.toContain(name);
     expect(withHooks).toContain('bulwark-user-data');
+    // A switch can't point telemetry or a crash file anywhere in a real build.
+    expect(withHooks).toContain('--bulwark-test-${name}=');
+    expect(production).not.toContain('--bulwark-test-${name}=');
   });
 });
 
@@ -602,7 +605,7 @@ test.describe('every key has someone acting on it', () => {
 
   test('a key nobody wired yet names who owes it', () => {
     const pending = POLICY_KEYS.filter((key) => 'pendingConsumer' in POLICY_CONSUMERS[key]);
-    expect(pending.sort()).toEqual(['AppLockRequired', 'AppLockTimeoutMinutes', 'AutoSelectCertificateForUrls', 'AutoUpdate', 'CrashReportsAllowed', 'QuickComposeShortcut', 'TelemetryAllowed', 'UpdateChannel'].sort());
+    expect(pending.sort()).toEqual(['AppLockRequired', 'AppLockTimeoutMinutes', 'AutoSelectCertificateForUrls', 'AutoUpdate', 'QuickComposeShortcut', 'UpdateChannel'].sort());
     for (const key of pending) expect((POLICY_CONSUMERS[key] as { pendingConsumer: string }).pendingConsumer).toMatch(/\S{3}/);
   });
 });

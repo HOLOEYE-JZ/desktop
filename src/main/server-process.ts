@@ -7,7 +7,7 @@
 import { createWriteStream, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { app, utilityProcess, type UtilityProcess } from 'electron';
-import type { HostEvent, InitMessage } from '../server/protocol';
+import type { HostEvent, InitMessage, MainErrorMessage, PrivacyMessage } from '../server/protocol';
 
 const READY_TIMEOUT_MS = 90_000;
 
@@ -27,6 +27,8 @@ export interface ServerProcess {
   stopped(): boolean;
   ready: Promise<{ systemCertificates: number; caError?: string }>;
   sendTrusted(origins: string[]): void;
+  sendPrivacy(privacy: PrivacyMessage['privacy']): void;
+  sendMainError(error: MainErrorMessage): void;
   sendPolicy(policy: InitMessage['policy']): void;
   stop(): void;
 }
@@ -94,6 +96,8 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
     stopped: () => stopped,
     ready,
     sendTrusted: (origins) => child.postMessage({ type: 'trusted', origins }),
+    sendPrivacy: (privacy) => child.postMessage({ type: 'privacy', privacy }),
+    sendMainError: (error) => child.postMessage(error),
     sendPolicy: (policy) => child.postMessage({ type: 'policy', policy }),
     stop,
   };
