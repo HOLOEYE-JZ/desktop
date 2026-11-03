@@ -1,21 +1,28 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { appPathOfDeepLink, deepLinkFromArgv, parseDeepLink } from '../src/main/deep-link';
+import { appPathOfDeepLink, deepLinkFromArgv, LinkRateLimit, parseDeepLink } from '../src/main/deep-link';
 import { AltTracker } from '../src/main/features/window-input';
-import { escapeMenuLabel, pdfFileName, pickSpellLanguages, safeFileName } from '../src/main/menu-text';
+import { assignMnemonics, escapeMenuLabel, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName } from '../src/main/menu-text';
 import { accentHex, highContrastColours } from '../src/main/chrome-colours';
 import { nextInCycle, sumAnswers } from '../src/main/window-logic';
 import { nextZoomLevel } from '../src/main/zoom';
-import { APP_ORIGIN, fakeOsIntegration, launchStandalone, prompts, removeProfile, tempProfile, waitForLogin } from './helpers';
+import { closeDictionaryDownloads, DEAD_DICTIONARY_URL } from '../src/main/spellcheck';
+import { APP_ORIGIN, fakeOsIntegration, launch, shownPage, launchStandalone, prompts, removeProfile, tempProfile, waitForLogin } from './helpers';
 import { clickMenuItem, lastMenu, menuCount, menuItem, pageWith, pickNext, recordMenus, type SeenItem } from './native-helpers';
 
 test.describe('the pure parts', () => {
   test('a deep link is parsed down to a message or a folder', () => {
-    expect(parseDeepLink('bulwark://message/abc-123?account=a1&owner=o1')).toEqual({ kind: 'message', emailId: 'abc-123', account: 'a1', owner: 'o1' });
+    // A real login id: generateAccountId in the webmail's lib/account-utils.ts.
+    const login = 'ent-alice@example.org@stalwart-1.internal.bulwarkmail.org';
+    expect(parseDeepLink(`bulwark://message/abc-123?account=${encodeURIComponent(login)}&owner=o1`)).toEqual({ kind: 'message', emailId: 'abc-123', account: login, owner: 'o1' });
+    expect(parseDeepLink(`bulwark://message/abc-123?account=${login}`)).toEqual({ kind: 'message', emailId: 'abc-123', account: login, owner: undefined });
+    expect(parseDeepLink(`bulwark://message/${encodeURIComponent(login)}/abc-123`)).toEqual({ kind: 'message', emailId: 'abc-123', account: login, owner: undefined });
+    expect(parseDeepLink(`bulwark://message/${login}/abc-123`)).toEqual({ kind: 'message', emailId: 'abc-123', account: login, owner: undefined });
     expect(parseDeepLink('bulwark://folder/sent')).toEqual({ kind: 'folder', folder: 'sent' });
+    expect(parseDeepLink('bulwark://mailbox/b3x')).toEqual({ kind: 'folder', folder: 'b3x' });
   });
 
   test('anything else from outside is refused', () => {
@@ -33,13 +40,56 @@ test.describe('the pure parts', () => {
     ]) {
       expect(parseDeepLink(bad), String(bad)).toBeNull();
     }
-    // A hostile query doesn't come along.
+    // A hostile query doesn't come along, and a login that isn't one isn't taken for it.
     expect(parseDeepLink('bulwark://message/a?account=../x')).toEqual({ kind: 'message', emailId: 'a', account: undefined, owner: undefined });
+    expect(parseDeepLink('bulwark://message/a?account=a1')).toEqual({ kind: 'message', emailId: 'a', account: undefined, owner: undefined });
+    expect(parseDeepLink('bulwark://message/a%40b%2F..%2Fc/d')).toBeNull();
+    expect(parseDeepLink('bulwark://message/nologin/d')).toBeNull();
   });
 
   test('a link only ever becomes the app\'s own pop-out or folder address', () => {
-    expect(appPathOfDeepLink({ kind: 'message', emailId: 'a1', account: 'x' })).toBe('/popout/message/a1?account=x');
+    expect(appPathOfDeepLink({ kind: 'message', emailId: 'a1', account: 'u@h' })).toBe('/popout/message/a1?account=u%40h&via=link');
     expect(appPathOfDeepLink({ kind: 'folder', folder: 'sent' })).toBe('/mail/folder/sent');
+  });
+
+  test('every message a link opens says it came from one: it may show, not act', () => {
+    expect(appPathOfDeepLink({ kind: 'message', emailId: 'a1' })).toContain('via=link');
+  });
+
+  test('links are rate limited: a page firing them in a loop gets five', () => {
+    const limit = new LinkRateLimit();
+    const results = Array.from({ length: 7 }, () => limit.allow(1000));
+    expect(results.filter(Boolean)).toHaveLength(5);
+    expect(limit.allow(1000 + 10_001)).toBe(true);
+  });
+
+  test('a hostile image keeps nothing but its base name, and its type decides the extension', () => {
+    expect(safeImageName('invoice.exe', 'image/png')).toBe('invoice.png');
+    expect(safeImageName('..\\..\\evil.bat', 'image/jpeg; charset=x')).toBe('_.._evil.jpg');
+    expect(safeImageName('con.txt', 'image/gif')).toBe('_con.gif');
+    expect(safeImageName('', 'image/webp')).toBe('attachment.webp');
+    // Not an image, whatever it's called: nothing to save.
+    expect(safeImageName('photo.png', 'application/x-msdownload')).toBeNull();
+    expect(safeImageName('photo.png', 'text/html')).toBeNull();
+    expect(safeImageName('photo.png', '')).toBeNull();
+  });
+
+  test('a link gets Open and Copy only if the OS can open it and it leaves the app', () => {
+    const origin = 'https://app.bulwark.localhost';
+    expect(linkOffersOpen('https://example.org/a', origin)).toBe(true);
+    expect(linkOffersOpen('mailto:a@example.org', origin)).toBe(true);
+    expect(linkOffersOpen(`${origin}/settings`, origin)).toBe(false);
+    expect(linkOffersOpen(`blob:${origin}/abc`, origin)).toBe(false);
+    expect(linkOffersOpen('file:///C:/Windows/win.ini', origin)).toBe(false);
+    expect(linkOffersOpen('javascript:alert(1)', origin)).toBe(false);
+    expect(linkOffersOpen('https://user:pw@example.org/', origin)).toBe(false);
+  });
+
+  test('the menu bar gets a letter for Alt in any language, none twice', () => {
+    expect(assignMnemonics(['&File', '&Edit'])).toEqual(['&File', '&Edit']);
+    expect(assignMnemonics(['Datei', 'Bearbeiten', 'Ansicht', 'Nachricht', 'Gehe zu', 'Fenster', 'Hilfe'])).toEqual(['&Datei', '&Bearbeiten', '&Ansicht', '&Nachricht', '&Gehe zu', '&Fenster', '&Hilfe']);
+    expect(assignMnemonics(['Fichier', 'Fenêtre'])).toEqual(['&Fichier', 'F&enêtre']);
+    expect(assignMnemonics(['ファイル', '編集'])).toEqual(['&ファイル', '&編集']);
   });
 
   test('a second launch finds its link among the arguments', () => {
@@ -312,6 +362,14 @@ test.describe('the app menu and windows', () => {
     await other.close();
   });
 
+  test('a page\'s report goes with the page: loading another starts over', async () => {
+    await setState({ 'message.reply': true });
+    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.enabled).toBe(true);
+    await page.reload();
+    await waitForLogin(page);
+    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.enabled).toBe(false);
+  });
+
   test('New Window is a second main window, cascaded from the first', async () => {
     await clickMenuItem(app, 'file.newWindow');
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(2);
@@ -325,22 +383,46 @@ test.describe('the app menu and windows', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
-  test('Save as PDF writes a real PDF of the page, named after the window', async () => {
-    const target = path.join(tmpdir(), `bulwark-test-${Date.now()}.pdf`);
-    const asked = await app.evaluate(({ dialog, Menu, BrowserWindow }, file) => {
-      const g = globalThis as unknown as { __save: { defaultPath?: string } };
-      dialog.showSaveDialog = (async (...args: unknown[]) => {
-        g.__save = args[args.length - 1] as { defaultPath?: string };
-        return { canceled: false, filePath: file };
-      }) as typeof dialog.showSaveDialog;
-      BrowserWindow.getAllWindows()[0].setTitle('A/B report');
-      Menu.getApplicationMenu()!.getMenuItemById('file.savePdf')!.click();
-      return true;
-    }, target);
-    expect(asked).toBe(true);
-    await expect.poll(() => existsSync(target) && readFileSync(target).subarray(0, 5).toString(), { timeout: 30_000 }).toBe('%PDF-');
+  test('Save as PDF prints what the print CSS makes of the page, and names it after the window', async () => {
+    const savePdf = async () => {
+      const target = path.join(tmpdir(), `bulwark-test-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+      await app.evaluate(({ dialog, Menu, BrowserWindow }, file) => {
+        const g = globalThis as unknown as { __save: { defaultPath?: string } };
+        dialog.showSaveDialog = (async (...args: unknown[]) => {
+          g.__save = args[args.length - 1] as { defaultPath?: string };
+          return { canceled: false, filePath: file };
+        }) as typeof dialog.showSaveDialog;
+        BrowserWindow.getAllWindows()[0].setTitle('A/B report');
+        Menu.getApplicationMenu()!.getMenuItemById('file.savePdf')!.click();
+      }, target);
+      await expect.poll(() => existsSync(target) && readFileSync(target).subarray(0, 5).toString(), { timeout: 30_000 }).toBe('%PDF-');
+      // Written in one go, but give it a moment to be whole.
+      await page.waitForTimeout(200);
+      const size = readFileSync(target).length;
+      rmSync(target, { force: true });
+      return size;
+    };
+    // A lot of text that the print CSS takes away, as app/print.css takes the app away.
+    await page.evaluate(() => {
+      const bulk = document.createElement('div');
+      bulk.id = 'not-for-paper';
+      bulk.textContent = Array.from({ length: 4000 }, (_, i) => `line${i * 7919}`).join(' ');
+      document.body.appendChild(bulk);
+    });
+    const withBulk = await savePdf();
+    await page.evaluate(() => {
+      const style = document.createElement('style');
+      style.id = 'print-rule';
+      style.textContent = '@media print { #not-for-paper { display: none !important; } }';
+      document.head.appendChild(style);
+    });
+    const printed = await savePdf();
+    expect(printed).toBeLessThan(withBulk * 0.9);
     expect(await app.evaluate(() => (globalThis as unknown as { __save: { defaultPath?: string } }).__save.defaultPath)).toBe('A B report.pdf');
-    rmSync(target, { force: true });
+    await page.evaluate(() => {
+      document.getElementById('not-for-paper')?.remove();
+      document.getElementById('print-rule')?.remove();
+    });
   });
 
   test('Print and Save as PDF are off under the device policy, and refuse if called anyway', async () => {
@@ -384,6 +466,38 @@ test.describe('the app menu and windows', () => {
     expect((options as { silent?: boolean }).silent).not.toBe(true);
   });
 
+  test('Ctrl+P in a bare preview prints the preview, not the window behind it', async () => {
+    const printed = await app.evaluate(({ BrowserWindow, Menu }) => {
+      const preview = new BrowserWindow({ show: false });
+      const original = BrowserWindow.getFocusedWindow;
+      BrowserWindow.getFocusedWindow = () => preview;
+      const seen: string[] = [];
+      preview.webContents.print = (() => { seen.push('preview'); }) as typeof preview.webContents.print;
+      const main = BrowserWindow.getAllWindows().find((w) => w !== preview)!;
+      const mainPrint = main.webContents.print;
+      main.webContents.print = (() => { seen.push('main'); }) as typeof main.webContents.print;
+      Menu.getApplicationMenu()!.getMenuItemById('file.print')!.click();
+      BrowserWindow.getFocusedWindow = original;
+      main.webContents.print = mainPrint;
+      preview.destroy();
+      return seen;
+    });
+    expect(printed).toEqual(['preview']);
+  });
+
+  test('the menus take the page\'s translations, and keep English for the rest', async () => {
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { shell: { setLanguages: (l: object) => void } } }).bulwarkDesktop.shell.setLanguages({
+      ui: 'fr',
+      labels: { menuReply: 'Répondre', menuFile: 'Fichier', evil: 'x', windowNames: 'x', menuForward: 42 },
+    }));
+    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.label).toBe('Répondre');
+    expect((await menuItem(app, 'message.forward'))?.label).toBe('Forward');
+    const names = await app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.items.map((item) => item.label));
+    expect(names[0]).toBe('&Fichier');
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { shell: { setLanguages: (l: object) => void } } }).bulwarkDesktop.shell.setLanguages({ ui: 'en' }));
+    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.label).toBe('Reply');
+  });
+
   test.describe('right-click', () => {
     test('a real right-click in a field gets cut, copy, paste', async () => {
       const count = await menuCount(app);
@@ -391,7 +505,7 @@ test.describe('the app menu and windows', () => {
       await page.click('#username', { button: 'right' });
       await expect.poll(() => menuCount(app)).toBeGreaterThan(count);
       const labels = (await lastMenu(app))!.map((item: SeenItem) => item.label);
-      expect(labels).toEqual(expect.arrayContaining(['Cut', 'Copy', 'Paste', 'Select All']));
+      expect(labels).toEqual(expect.arrayContaining(['Cut', 'Copy', 'Paste', 'Select all']));
     });
 
     test('nothing on bare chrome, where a native app shows nothing', async () => {
@@ -408,7 +522,7 @@ test.describe('the app menu and windows', () => {
     }, params);
 
     test('a misspelled word has suggestions and goes in the dictionary', async () => {
-      await pickNext(app, 'Add "teh" to Dictionary');
+      await pickNext(app, 'Add "teh" to dictionary');
       await contextMenuAt({ isEditable: true, misspelledWord: 'teh', dictionarySuggestions: ['the', 'tea'], editFlags: { canPaste: true } });
       const labels = (await lastMenu(app))!.map((item) => item.label);
       expect(labels.slice(0, 2)).toEqual(['the', 'tea']);
@@ -417,23 +531,79 @@ test.describe('the app menu and windows', () => {
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.session.removeWordFromSpellCheckerDictionary('teh'));
     });
 
-    test('a link: Open goes to the browser, Copy Link to the clipboard', async () => {
-      await pickNext(app, 'Copy Link');
+    test('Open Link goes to the page, past its checks, when the page has them', async () => {
+      await page.evaluate(() => {
+        const w = window as unknown as { __links: string[]; bulwarkDesktop: { menu: { onCommand: (l: (id: string) => void) => void } } };
+        w.__links = [];
+        w.bulwarkDesktop.menu.onCommand((id) => w.__links.push(id));
+      });
+      await setState({ 'link.check': true });
+      await pickNext(app, 'Open link');
+      await contextMenuAt({ linkURL: 'https://example.org/open', linkText: 'click here' });
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __links: string[] }).__links.at(-1))).toBe(`link.open:${JSON.stringify({ url: 'https://example.org/open', text: 'click here' })}`);
+      // And the page's own path does the rest, once.
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened.at(-1))).toBe('https://example.org/open');
+      await setState({});
+    });
+
+    test('an older page with no such path: straight to the browser, by the same rules', async () => {
+      await setState({});
+      await pickNext(app, 'Open link');
+      await contextMenuAt({ linkURL: 'https://example.org/open2' });
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened.at(-1))).toBe('https://example.org/open2');
+    });
+
+    test('Copy Link copies', async () => {
+      await pickNext(app, 'Copy link');
       await contextMenuAt({ linkURL: 'https://example.org/a?b=1' });
       expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('https://example.org/a?b=1');
-      await pickNext(app, 'Open Link');
-      await contextMenuAt({ linkURL: 'https://example.org/open' });
-      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened.at(-1))).toBe('https://example.org/open');
+    });
+
+    test('no link section for a link inside the app, or a blob', async () => {
+      for (const linkURL of [`${APP_ORIGIN}/settings`, `blob:${APP_ORIGIN}/abc`, 'file:///C:/Windows/win.ini', 'javascript:alert(1)']) {
+        const count = await menuCount(app);
+        await contextMenuAt({ linkURL });
+        await page.waitForTimeout(100);
+        expect(await menuCount(app), linkURL).toBe(count);
+      }
+    });
+
+    test('Save Image: the type decides, whatever the sender called it', async () => {
+      const run = (filename: string, mime: string) => app.evaluate(({ BrowserWindow, session }, [name, type, partition]) => {
+        const { webContents } = BrowserWindow.getAllWindows()[0];
+        const original = webContents.downloadURL;
+        webContents.downloadURL = (() => {}) as typeof webContents.downloadURL;
+        const url = `https://mail.example.org/${Math.random()}`;
+        const seen: { cancelled: boolean; options?: { defaultPath?: string } } = { cancelled: false };
+        (globalThis as unknown as { __pick: string }).__pick = 'Save image…';
+        webContents.emit('context-menu', {}, { x: 1, y: 1, linkURL: '', linkText: '', srcURL: url, pageURL: '', frameURL: '', selectionText: '', mediaType: 'image', hasImageContents: true, isEditable: false, misspelledWord: '', dictionarySuggestions: [], editFlags: {} });
+        webContents.session.emit('will-download', {}, {
+          getURL: () => url,
+          getFilename: () => name,
+          getMimeType: () => type,
+          cancel: () => { seen.cancelled = true; },
+          setSaveDialogOptions: (options: { defaultPath?: string }) => { seen.options = options; },
+        });
+        webContents.downloadURL = original;
+        void session;
+        void partition;
+        return seen;
+      }, [filename, mime, ''] as const);
+      expect((await run('invoice.exe', 'image/png')).options?.defaultPath).toBe('invoice.png');
+      expect((await run('..\\..\\evil.bat', 'image/jpeg')).options?.defaultPath).toBe('_.._evil.jpg');
+      const notAnImage = await run('photo.png', 'application/x-msdownload');
+      expect(notAnImage.cancelled).toBe(true);
+      expect(notAnImage.options).toBeUndefined();
     });
 
     test('a mail address copies as an address', async () => {
-      await pickNext(app, 'Copy Address');
+      await pickNext(app, 'Copy address');
       await contextMenuAt({ linkURL: 'mailto:someone@example.org?subject=x' });
       expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('someone@example.org');
     });
 
     test('a link with a scheme the OS shouldn\'t run stays closed', async () => {
-      await pickNext(app, 'Open Link');
+      await pickNext(app, 'Open link');
       const before = await app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened.length);
       await contextMenuAt({ linkURL: 'file:///C:/Windows/win.ini' });
       await page.waitForTimeout(150);
@@ -442,7 +612,7 @@ test.describe('the app menu and windows', () => {
 
     test('an image: Save and Copy, unless the organisation turned downloads off', async () => {
       await contextMenuAt({ mediaType: 'image', hasImageContents: true, srcURL: `${APP_ORIGIN}/x.png` });
-      expect((await lastMenu(app))!.map((item) => item.label)).toEqual(['Save Image…', 'Copy Image']);
+      expect((await lastMenu(app))!.map((item) => item.label)).toEqual(['Save image…', 'Copy image']);
       const count = await menuCount(app);
       await setState({ 'policy.download': false });
       await expect.poll(() => app.evaluate(() => true)).toBe(true);
@@ -608,6 +778,50 @@ test.describe('closing', () => {
     await gone;
   });
 
+  test('a hidden main window asking shows itself first, so Stay leaves something on screen', async () => {
+    await fakeOsIntegration(app, 1);
+    await onFlush(page, { failed: 1 });
+    const other = await openPopout('h1');
+    await closeFirst();
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))?.isVisible())).toBe(false);
+    // The last pop-out goes, so the hidden main goes too, and its save failed.
+    await other.close();
+    await expect.poll(async () => (await prompts(app)).length).toBe(1);
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/login'))?.isVisible())).toBe(true);
+    await fakeOsIntegration(app, 0);
+  });
+
+  test('the OS ending the session saves every window, with no question', async () => {
+    await page.evaluate(() => {
+      (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (h: () => Promise<unknown>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(async () => {
+        localStorage.setItem('saved-at-end', 'yes');
+        return { failed: 1 };
+      });
+    });
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].emit('session-end', {});
+    });
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('saved-at-end'))).toBe('yes');
+    await page.waitForTimeout(200);
+    expect(await prompts(app)).toEqual([]);
+  });
+
+  test('a pop-out whose page dies comes back, and one that keeps dying goes', async () => {
+    const other = await openPopout('crash1');
+    const crash = () => app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('crash1'))?.webContents.forcefullyCrashRenderer();
+    });
+    await other.waitForLoadState();
+    await crash();
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('crash1'))?.webContents.isCrashed()), { timeout: 15_000 }).toBe(false);
+    await page.waitForTimeout(1500);
+    await crash();
+    await page.waitForTimeout(1500);
+    await crash();
+    await expect.poll(windowCount, { timeout: 15_000 }).toBe(1);
+    expect(page.isClosed()).toBe(false);
+  });
+
   test('a window that asks to close itself isn\'t asked to save again', async () => {
     const other = await openPopout('m4');
     await other.evaluate(() => {
@@ -704,44 +918,69 @@ test.describe('closing', () => {
   });
 });
 
-test('a deep link at start and from a second launch opens the right window', async () => {
+test('a deep link waits for a session, opens through the window manager, and is rate limited', async () => {
   const profile = tempProfile('deep');
-  const { app, page } = await launchStandalone(profile, 'bulwark://message/abc1?account=a1');
+  const login = 'ent-alice@example.org@stalwart-1.internal.bulwarkmail.org';
+  const { app, page } = await launchStandalone(profile, `bulwark://message/${login}/abc1`);
+  const types = () => page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<{ type: string }[]> } } }).bulwarkDesktop.windows.list().then((list) => list.map((w) => w.type).sort()));
+  const urls = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()));
+  const secondLaunch = (link: string) => app.evaluate(({ app: electronApp }, url) => {
+    electronApp.emit('second-instance', {}, ['bulwark.exe', url], '');
+  }, link);
   try {
     await waitForLogin(page);
     // Nobody signed in: a pop-out would have no session to borrow, so the link waits.
     await page.waitForTimeout(500);
-    expect(app.windows().some((w) => w.url().includes('abc1'))).toBe(false);
-    // One from a second launch waits too.
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://message/abc1?account=a1'], '');
-    });
+    expect(await types()).toEqual(['main']);
+    // One from a second launch waits too, and takes the place of the first.
+    await secondLaunch(`bulwark://message/${login}/abc1`);
     await page.waitForTimeout(500);
-    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+    expect(await types()).toEqual(['main']);
+
+    const opening = app.evaluate(({ BrowserWindow }) => new Promise<string>((resolve) => {
+      const known = new Set(BrowserWindow.getAllWindows().map((w) => w.id));
+      const timer = setInterval(() => {
+        const fresh = BrowserWindow.getAllWindows().find((w) => !known.has(w.id));
+        if (!fresh) return;
+        clearInterval(timer);
+        fresh.webContents.once('did-start-navigation', (details) => resolve(details.url));
+        const pending = fresh.webContents.getURL();
+        if (pending) resolve(pending);
+      }, 5);
+    }));
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { sessionReady: () => void } } }).bulwarkDesktop.windows.sessionReady());
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 10_000 }).toBe(2);
-    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()).some((u) => u.includes('abc1') || u.includes('popout') || u.includes('login')))).toBe(true);
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://message/abc1?account=a1'], '');
-    });
-    await page.waitForTimeout(400);
-    // The same message: that window, focused, no second one.
-    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(2);
+    const opened = await opening;
+    // A message window, on the login the link names, marked as coming from a link.
+    expect(opened).toContain('/popout/message/abc1');
+    expect(opened).toContain(`account=${encodeURIComponent(login)}`);
+    expect(opened).toContain('via=link');
+    await expect.poll(types).toEqual(['main', 'message']);
+
+    // The same message: that window, no second one.
+    await secondLaunch(`bulwark://message/${login}/abc1`);
+    await page.waitForTimeout(300);
+    expect(await types()).toEqual(['main', 'message']);
+
+    // A folder: the page's router, no load of the window.
     await page.evaluate(() => {
       const w = window as unknown as { __links: string[]; bulwarkDesktop: { menu: { onCommand: (l: (id: string) => void) => void } } };
       w.__links = [];
       w.bulwarkDesktop.menu.onCommand((id) => w.__links.push(id));
     });
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://folder/sent'], '');
-    });
-    // No load of the main window: the webmail's router goes there.
+    await secondLaunch('bulwark://folder/sent');
     await expect.poll(() => page.evaluate(() => (window as unknown as { __links: string[] }).__links)).toEqual(['link.folder:sent']);
-    await app.evaluate(({ app: electronApp }) => {
-      electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://evil/../../x'], '');
-    });
-    await page.waitForTimeout(300);
-    expect(app.windows().some((w) => w.url().includes('evil'))).toBe(false);
+    await secondLaunch('bulwark://mailbox/b7');
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __links: string[] }).__links.at(-1))).toBe('link.folder:b7');
+
+    // Something else from outside goes nowhere.
+    await secondLaunch('bulwark://evil/../../x');
+    await page.waitForTimeout(200);
+    expect((await urls()).some((u) => u.includes('evil'))).toBe(false);
+
+    // A page firing links in a loop: five in ten seconds, counting those above.
+    for (let i = 0; i < 8; i += 1) await secondLaunch(`bulwark://message/${login}/flood${i}`);
+    await page.waitForTimeout(800);
+    expect((await types()).filter((type) => type === 'message').length).toBeLessThan(3);
   } finally {
     await app.close();
     removeProfile(profile);
@@ -784,4 +1023,150 @@ test('the tray\'s hook: a last window closing leaves the app running, hidden', a
     await app.close().catch(() => {});
     removeProfile(profile);
   }
+});
+
+test.describe('spellcheck makes no silent call to Google', () => {
+  test('the address goes nowhere before anything else happens on the session', () => {
+    const calls: string[] = [];
+    closeDictionaryDownloads({
+      setSpellCheckerDictionaryDownloadURL: (url: string) => calls.push(`url ${url}`),
+      on: () => {
+        calls.push('listen');
+        return undefined;
+      },
+    });
+    expect(calls[0]).toBe(`url ${DEAD_DICTIONARY_URL}`);
+    expect(new URL(DEAD_DICTIONARY_URL).hostname.endsWith('.invalid')).toBe(true);
+  });
+
+  test('in the app: a language with no dictionary fails instead of fetching one, and says so', async () => {
+    test.skip(process.platform === 'darwin', 'macOS has its own checker');
+    const profile = tempProfile('spell');
+    const { app, page } = await launchStandalone(profile);
+    try {
+      await waitForLogin(page);
+      const outcome = await app.evaluate(({ BrowserWindow }) => new Promise<string>((resolve) => {
+        const { session } = BrowserWindow.getAllWindows()[0].webContents;
+        const language = session.availableSpellCheckerLanguages.find((l) => l.startsWith('pt')) ?? 'fr-FR';
+        session.once('spellcheck-dictionary-download-success', () => resolve('downloaded'));
+        session.once('spellcheck-dictionary-download-failure', () => resolve('refused'));
+        setTimeout(() => resolve('nothing'), 25_000);
+        session.setSpellCheckerLanguages([language]);
+      }));
+      expect(outcome).not.toBe('downloaded');
+      if (outcome === 'refused') {
+        const missing = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { spellcheck: { missing: () => Promise<string[]> } } }).bulwarkDesktop.spellcheck.missing());
+        expect(missing.length).toBeGreaterThan(0);
+      }
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
+  });
+});
+
+test.describe('coming back after a crash', () => {
+  function seedSession(profile: string, extra: Record<string, unknown> = {}): void {
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({
+      mode: 'standalone',
+      session: [{ type: 'message', url: `${APP_ORIGIN}/popout/message/back1`, key: 'bulwark-message-back1' }],
+      ...extra,
+    }));
+  }
+  const readState = (profile: string) => JSON.parse(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')) as { restoreAttempts?: number; session?: unknown[]; restoreWindows?: boolean };
+  const sessionReady = (page: Page) => page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { sessionReady: () => void } } }).bulwarkDesktop.windows.sessionReady());
+  const windowCount = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+
+  test('two starts that die while restoring: the third goes without, and the app stays up', async () => {
+    const profile = tempProfile('loop');
+    // A clean first run: its keys are only safe once Chromium has written its own
+    // state, some seconds in. A kill before that is another matter (see the decisions).
+    const first = await launchStandalone(profile);
+    await waitForLogin(first.page);
+    await first.app.close();
+    seedSession(profile);
+    // The dead app's other processes hold the profile for a moment, and a launch then
+    // takes itself for a second copy and leaves.
+    const launchWhenFree = async (): Promise<{ app: ElectronApplication; page: Page }> => {
+      for (let tries = 0; ; tries += 1) {
+        let started: ElectronApplication;
+        try {
+          started = await launch(profile, '--standalone');
+        } catch (error) {
+          if (tries > 8) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 3000));
+          continue;
+        }
+        return { app: started, page: await shownPage(started) };
+      }
+    };
+    for (const expected of [1, 2]) {
+      const { app, page } = await launchWhenFree();
+      await waitForLogin(page);
+      await sessionReady(page);
+      // Written before the first window opens: a crash leaves no time after.
+      await expect.poll(() => readState(profile).restoreAttempts).toBe(expected);
+      // The real main process: what Playwright started is only a launcher on Windows.
+      const pid = await app.evaluate(() => process.pid);
+      process.kill(pid, 'SIGKILL');
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    }
+    const { app, page } = await launchWhenFree();
+    try {
+      await waitForLogin(page);
+      await sessionReady(page);
+      await page.waitForTimeout(1000);
+      expect(await windowCount(app)).toBe(1);
+      await expect.poll(() => readState(profile).restoreAttempts).toBeUndefined();
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
+  });
+
+  test('a quit before anyone signed in keeps what was to come back', async () => {
+    const profile = tempProfile('early');
+    seedSession(profile);
+    const { app, page } = await launchStandalone(profile);
+    await waitForLogin(page);
+    await app.close();
+    expect(readState(profile).session).toHaveLength(1);
+    removeProfile(profile);
+  });
+
+  test('with the setting off the list is gone and nothing is written', async () => {
+    const profile = tempProfile('off');
+    seedSession(profile, { restoreWindows: false });
+    const { app, page } = await launchStandalone(profile);
+    await waitForLogin(page);
+    // The page holds the setting. The shell has its copy of it.
+    await page.evaluate(() => {
+      localStorage.setItem('bulwark-desktop-window-prefs', JSON.stringify({ restoreWindows: false }));
+      window.dispatchEvent(new StorageEvent('storage', { key: 'bulwark-desktop-window-prefs' }));
+    });
+    await expect.poll(() => readState(profile).restoreWindows, { timeout: 10_000 }).toBe(false);
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: '/popout/message/x1', emailId: 'x1' }));
+    await expect.poll(() => windowCount(app)).toBe(2);
+    await app.close();
+    expect(readState(profile).session).toBeUndefined();
+    removeProfile(profile);
+  });
+
+  test('windows wait for a main window started hidden', async () => {
+    const profile = tempProfile('hidden');
+    seedSession(profile);
+    const { app, page } = await launchStandalone(profile);
+    try {
+      await waitForLogin(page);
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+      await sessionReady(page);
+      await page.waitForTimeout(600);
+      expect(await windowCount(app)).toBe(1);
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].show());
+      await expect.poll(() => windowCount(app), { timeout: 10_000 }).toBe(2);
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
+  });
 });

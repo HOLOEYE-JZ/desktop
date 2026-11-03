@@ -30,13 +30,14 @@ import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
-import { strings } from './strings';
+import { strings, unsentDetail } from './strings';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
 import { ZoomController } from './zoom';
 import { printWindow, saveWindowAsPdf } from './print';
 import { navigateHistory } from './features/window-input';
-import { appPathOfDeepLink, deepLinkFromArgv, parseDeepLink, DEEP_LINK_SCHEME, type DeepLink } from './deep-link';
+import { appPathOfDeepLink, deepLinkFromArgv, deepLinkWindowKey, LinkRateLimit, parseDeepLink, DEEP_LINK_SCHEME, type DeepLink } from './deep-link';
+import { closeDictionaryDownloads } from './spellcheck';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PRELOAD = path.join(HERE, 'preload.cjs');
@@ -89,7 +90,7 @@ const zoom = new ZoomController(stateFile);
 /** A bulwark:// link from before anyone was signed in: a pop-out borrows the main window's session. */
 let pendingDeepLink: DeepLink | null = null;
 let sessionReady = false;
-let extraMainWindows = 0;
+const linkLimit = new LinkRateLimit();
 
 function serverDirectory(): string {
   if (app.isPackaged) return path.join(process.resourcesPath, 'server');
@@ -145,6 +146,7 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     preloadPath: PRELOAD,
     devTools,
     spare: !(DEV && process.argv.includes('--bulwark-no-spare')),
+    spareIdleMs: DEV && argValue('bulwark-test-spare-idle') ? Number(argValue('bulwark-test-spare-idle')) : undefined,
     attachGuards: (window) => attachWindowGuards(window, guard),
   });
   zoom.attach(windowManager);
@@ -300,6 +302,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
 async function bootInstance(instanceUrl: string, theme: ThemeController): Promise<void> {
   const origin = new URL(instanceUrl).origin;
   const session = electronSession.fromPartition(instancePartition(origin));
+  closeDictionaryDownloads(session);
   applyPermissionPolicy(session, origin);
   const windows = createWindowManager('instance', origin, session, theme);
   const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, menu: menu!, zoom, ...createChannels(origin) };
@@ -393,6 +396,7 @@ function finishSwitch(): void {
 let quitFlushed = false;
 
 function openDeepLink(link: DeepLink): void {
+  if (!linkLimit.allow(Date.now())) return;
   const windows = windowManager;
   if (!windows || !sessionReady) {
     pendingDeepLink = link;
@@ -401,7 +405,7 @@ function openDeepLink(link: DeepLink): void {
   }
   const target = `${windows.originUrl()}${appPathOfDeepLink(link)}`;
   if (link.kind === 'message') {
-    windows.open({ type: 'message', url: target, key: `bulwark-message-${link.emailId.replace(/\W/g, '_')}` });
+    windows.open({ type: 'message', url: target, key: deepLinkWindowKey(link.emailId) });
     return;
   }
   const main = windows.mainWindow();
@@ -433,8 +437,8 @@ function buildMenu(): MenuController {
     switchMode,
     devTools,
     newWindow: () => {
-      extraMainWindows += 1;
-      windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${extraMainWindows}` });
+      // Unique across runs: one restored from last time may hold a low number.
+      windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
     },
     openSettings: () => {
       const windows = windowManager;
@@ -504,7 +508,7 @@ if (gotLock) {
           type: 'warning',
           title: 'Bulwark',
           message: summary.failed > 0 ? text.unsavedTitle : text.unsentTitle,
-          detail: summary.failed > 0 ? text.unsavedDetail : text.unsentDetail(summary.unsent),
+          detail: summary.failed > 0 ? text.unsavedDetail : unsentDetail(text, summary.unsent),
           buttons: [summary.failed > 0 ? text.closeAnyway : text.closeNow, text.stay],
           defaultId: 1,
           cancelId: 1,

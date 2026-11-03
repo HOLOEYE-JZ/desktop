@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launchStandalone, prompts, removeProfile, requireAccount, shownPage, STALWARTS, tempProfile, launch } from './helpers';
@@ -266,6 +266,34 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => page.url(), { timeout: 30_000 }).not.toContain('drafts');
   });
 
+  test('a message opened from a link shows, and stays unread with no receipt', async () => {
+    const subject = `${TAG} linked`;
+    const id = await seed(subject);
+    const login = `${ACCOUNT}@${new URL(SERVER).hostname}`;
+    await app.evaluate(({ app: electronApp }, url) => {
+      electronApp.emit('second-instance', {}, ['bulwark.exe', url], '');
+    }, `bulwark://message/${login}/${id}`);
+    const message = await pageWith(app, `/popout/message/${encodeURIComponent(id)}`);
+    await expect(message.locator('body')).toContainText(`Body of ${subject}`, { timeout: 60_000 });
+    // Longer than the instant the default marks it in.
+    await message.waitForTimeout(3000);
+    expect(await flagged(id, '$seen')).toBe(false);
+    // The same message opened from the app marks it, so this isn't only a slow server.
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('via=link'))!.close();
+    });
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+    await page.evaluate(
+      (emailId) => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: `/popout/message/${encodeURIComponent(emailId)}`, emailId }),
+      id,
+    );
+    await expect.poll(() => flagged(id, '$seen'), { timeout: 30_000 }).toBe(true);
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/message/'))!.close();
+    });
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+  });
+
   test('Alt shows the menu strip in the title bar, and a name opens that menu natively', async () => {
     test.skip(process.platform !== 'win32', 'the strip is for Windows; macOS has its bar, Linux a native frame');
     const alt = (type: 'keyDown' | 'keyUp') => app.evaluate(({ BrowserWindow }, t) => {
@@ -279,7 +307,7 @@ test.describe('windows, signed in', () => {
     const before = await menuCount(app);
     await strip.getByRole('menuitem', { name: 'File' }).click();
     await expect.poll(() => menuCount(app)).toBeGreaterThan(before);
-    expect(labels(await lastMenu(app))).toEqual(expect.arrayContaining(['New Message', 'Print…', 'Close']));
+    expect(labels(await lastMenu(app))).toEqual(expect.arrayContaining(['New message', 'Print…', 'Close']));
     // It goes when its menu does.
     await expect(strip).toBeHidden({ timeout: 5000 });
     // And Escape, without a menu.
@@ -419,6 +447,31 @@ test.describe('composers', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), { timeout: 30_000 }).toBe(1);
   });
 
+  test('an entry naming mail that is no draft opens nothing and touches nothing', async () => {
+    const subject = `${TAG} not a draft`;
+    const id = await seed(subject);
+    const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+    await app.evaluate(({ app: electronApp }) => electronApp.quit());
+    await gone;
+    const file = path.join(profile, 'shell-state.json');
+    const state = JSON.parse(readFileSync(file, 'utf8'));
+    const login = `${ACCOUNT}@${new URL(SERVER).hostname}`;
+    state.session = [{ type: 'composer', url: `https://app.bulwark.localhost/popout/compose?draft=${id}&account=${encodeURIComponent(login)}`, key: 'restored:x' }];
+    writeFileSync(file, JSON.stringify(state));
+
+    app = await launch(profile, '--standalone');
+    await shownPage(app);
+    page = app.windows().find((w) => !w.url().includes('/popout/'))!;
+    await fakeOsIntegration(app);
+    await recordMenus(app);
+    await expectMailShown(page);
+    // It may come up for a moment to look. It goes without a composer.
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().filter((w) => w.webContents.getURL().includes('/popout/compose')).length), { timeout: 30_000 }).toBe(0);
+    await page.waitForTimeout(1500);
+    const [[, answer]] = await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Email/get', { ids: [id], properties: ['subject'] }, 'g']]);
+    expect((answer as { list: { subject: string }[] }).list[0]?.subject).toBe(subject);
+  });
+
   test('with the setting off, nothing comes back', async () => {
     const subject = `${TAG} not-restored`;
     await page.evaluate(() => {
@@ -462,13 +515,29 @@ test.describe('the warm spare', () => {
 
   const spareId = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/spare'))?.id ?? null);
 
-  test('sits hidden, and holds no session', async () => {
+  test('none at the start for someone who hasn\'t used a pop-out', async () => {
+    await page.waitForTimeout(9000);
+    expect(await spareId()).toBeNull();
+  });
+
+  test('the first pop-out brings one, hidden, that has asked for no session', async () => {
+    const first = await seed(`${TAG} first`);
+    await page.evaluate(
+      (id) => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: `/popout/message/${encodeURIComponent(id)}`, emailId: id }),
+      first,
+    );
+    const firstWindow = await pageWith(app, `/popout/message/${encodeURIComponent(first)}`);
     await expect.poll(spareId, { timeout: 40_000 }).not.toBeNull();
     const spare = await pageWith(app, '/popout/spare');
     await expect(spare.locator('[data-popout-spare]')).toBeAttached({ timeout: 30_000 });
     expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/spare'))!.isVisible())).toBe(false);
+    // Nothing reached the mail server from it, and the shell doesn't list it as a window.
+    const server = new URL(SERVER).host;
+    expect(await spare.evaluate((host) => performance.getEntriesByType('resource').filter((entry) => entry.name.includes(host) || entry.name.includes('/__jmap/') || entry.name.includes('/jmap')).length, server)).toBe(0);
+    expect(await spare.evaluate(() => document.querySelectorAll('[data-popout-window]').length)).toBe(0);
     const list = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<unknown[]> } } }).bulwarkDesktop.windows.list());
-    expect(list).toHaveLength(1);
+    expect(list).toHaveLength(2);
+    await firstWindow.close();
   });
 
   test('a message opens in it, without loading a page, and the right message shows', async () => {
@@ -516,5 +585,55 @@ test.describe('the warm spare', () => {
       for (const window of BrowserWindow.getAllWindows()) if (!window.webContents.getURL().includes('/popout/spare')) window.close();
     });
     await gone;
+  });
+});
+
+test.describe('the warm spare over time', () => {
+  const spareId = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/spare'))?.id ?? null);
+
+  test('someone who used a pop-out this week has one from the start; it goes when unused, and when all windows are hidden', async () => {
+    const profile = tempProfile('spare2');
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone', lastPopoutAt: Date.now() - 3600_000 }));
+    const app = await launch(profile, '--standalone', '--bulwark-test-spare', '--bulwark-test-spare-idle=4000');
+    try {
+      await shownPage(app);
+      await expect.poll(() => spareId(app), { timeout: 40_000 }).not.toBeNull();
+      // Half an hour in real life.
+      await expect.poll(() => spareId(app), { timeout: 40_000 }).toBeNull();
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
+  });
+
+  test('last used long ago: none', async () => {
+    const profile = tempProfile('spare3');
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone', lastPopoutAt: Date.now() - 30 * 24 * 3600_000 }));
+    const app = await launch(profile, '--standalone', '--bulwark-test-spare');
+    try {
+      const page = await shownPage(app);
+      await page.waitForTimeout(10_000);
+      expect(await spareId(app)).toBeNull();
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
+  });
+
+  test('all windows hidden to the tray: it goes', async () => {
+    const profile = tempProfile('spare4');
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone', lastPopoutAt: Date.now() - 3600_000 }));
+    const app = await launch(profile, '--standalone', '--bulwark-test-spare');
+    try {
+      await shownPage(app);
+      await expect.poll(() => spareId(app), { timeout: 40_000 }).not.toBeNull();
+      await app.evaluate(({ BrowserWindow }) => {
+        BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/spare'))!.hide();
+      });
+      await expect.poll(() => spareId(app), { timeout: 10_000 }).toBeNull();
+    } finally {
+      await app.close();
+      removeProfile(profile);
+    }
   });
 });

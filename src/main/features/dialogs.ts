@@ -7,7 +7,7 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { app, clipboard, dialog } from 'electron';
+import { app, clipboard, dialog, powerMonitor } from 'electron';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
 import { safeFileName } from '../menu-text';
 import type { Feature } from './index';
@@ -19,6 +19,8 @@ function writeClipboardBuffer(format: string, data: Buffer): void {
 
 const MAX_TEXT = 2000;
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
+/** Long enough to go and paste it. An attachment shouldn't sit around in the clear. */
+const CLIPBOARD_FILE_MS = 10 * 60_000;
 
 /** Files handed to the clipboard live here until the next start: a paste can come any time. */
 function clipboardFolder(): string {
@@ -66,6 +68,9 @@ export const dialogsFeature: Feature = {
   modes: ['standalone', 'instance'],
   setup(ctx) {
     emptyClipboardFolder();
+    app.on('will-quit', emptyClipboardFolder);
+    powerMonitor.on('lock-screen', emptyClipboardFolder);
+    ctx.on(CHANNEL.clipboardClearFiles, () => emptyClipboardFolder());
 
     ctx.handle(CHANNEL.dialogsConfirm, async (_event, window, options) => {
       const { message, detail, buttons, defaultId, type } = (options ?? {}) as Partial<ConfirmOptions>;
@@ -95,6 +100,7 @@ export const dialogsFeature: Feature = {
       mkdirSync(folder, { recursive: true });
       const file = path.join(folder, safeFileName(name));
       writeFileSync(file, bytes);
+      setTimeout(() => rmSync(folder, { recursive: true, force: true }), CLIPBOARD_FILE_MS).unref?.();
       return putFileOnClipboard(file);
     });
   },

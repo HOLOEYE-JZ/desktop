@@ -109,6 +109,13 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),
       setLanguages: (languages: LanguagesUpdate) => ipcRenderer.send(CHANNEL.shellSetLanguages, languages),
     },
+    spellcheck: {
+      /** Languages with neither an OS checker nor a dictionary here. */
+      missing: (): Promise<string[]> => ipcRenderer.invoke(CHANNEL.spellListMissing),
+      onMissing: (listener: (language: string) => void) => subscribe(CHANNEL.spellMissing, listener),
+      /** The user said yes: dictionaries may come from Google. Never with no-third-party mode on. */
+      allowDownload: () => ipcRenderer.send(CHANNEL.spellAllowDownload),
+    },
     dialogs: {
       /** A native question. Answers with the index of the button chosen. */
       confirm: (options: ConfirmOptions): Promise<number> => ipcRenderer.invoke(CHANNEL.dialogsConfirm, options),
@@ -116,6 +123,8 @@ if (allowedOrigin && window.location.protocol === 'https:' && window.location.or
     clipboard: {
       /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */
       copyFile: (name: string, data: ArrayBuffer): Promise<boolean> => ipcRenderer.invoke(CHANNEL.clipboardCopyFile, name, data),
+      /** Signed out: nothing copied from that account stays on disk. */
+      clearFiles: () => ipcRenderer.send(CHANNEL.clipboardClearFiles),
     },
     lifecycle: {
       /**

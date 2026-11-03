@@ -11,10 +11,11 @@ const en = {
   unsavedDetail: 'If you close now, what you wrote since the last save is lost.',
   closeAnyway: 'Close anyway',
   unsentTitle: 'Some mail has not been sent yet',
-  unsentDetail: (count: number) => (count === 1 ? 'One message is waiting to be sent. It goes out the next time you open Bulwark.' : `${count} messages are waiting to be sent. They go out the next time you open Bulwark.`),
+  unsentOne: 'One message is waiting to be sent. It goes out the next time you open Bulwark.',
+  unsentMany: '{count} messages are waiting to be sent. They go out the next time you open Bulwark.',
   closeNow: 'Quit',
-  menuNewMessage: 'New Message',
-  menuNewWindow: 'New Window',
+  menuNewMessage: 'New message',
+  menuNewWindow: 'New window',
   menuPrint: 'Print…',
   menuSavePdf: 'Save as PDF…',
   menuClose: 'Close',
@@ -24,37 +25,37 @@ const en = {
   menuCut: 'Cut',
   menuCopy: 'Copy',
   menuPaste: 'Paste',
-  menuSelectAll: 'Select All',
-  menuSearch: 'Search Mail',
+  menuSelectAll: 'Select all',
+  menuSearch: 'Search mail',
   menuView: '&View',
-  menuRefresh: 'Check for New Mail',
-  menuReadingPane: 'Reading Pane',
-  menuPaneRight: 'On the Right',
-  menuPaneBelow: 'Below the List',
+  menuRefresh: 'Check for new mail',
+  menuReadingPane: 'Reading pane',
+  menuPaneRight: 'On the right',
+  menuPaneBelow: 'Below the list',
   menuPaneOff: 'Off',
-  menuZoomIn: 'Zoom In',
-  menuZoomOut: 'Zoom Out',
-  menuZoomReset: 'Actual Size',
-  menuFullScreen: 'Full Screen',
+  menuZoomIn: 'Zoom in',
+  menuZoomOut: 'Zoom out',
+  menuZoomReset: 'Actual size',
+  menuFullScreen: 'Full screen',
   menuMessage: '&Message',
   menuReply: 'Reply',
-  menuReplyAll: 'Reply All',
+  menuReplyAll: 'Reply all',
   menuForward: 'Forward',
-  menuMarkRead: 'Mark as Read',
-  menuMarkUnread: 'Mark as Unread',
+  menuMarkRead: 'Mark as read',
+  menuMarkUnread: 'Mark as unread',
   menuStar: 'Star',
-  menuMove: 'Move To…',
+  menuMove: 'Move to…',
   menuArchive: 'Archive',
-  menuSpam: 'Mark as Spam',
+  menuSpam: 'Mark as spam',
   menuDelete: 'Delete',
-  menuOpenInWindow: 'Open in New Window',
+  menuOpenInWindow: 'Open in new window',
   menuGo: '&Go',
   menuGoInbox: 'Inbox',
   menuGoSent: 'Sent',
   menuGoDrafts: 'Drafts',
-  menuGoNext: 'Next Message',
-  menuGoPrevious: 'Previous Message',
-  menuGoNextUnread: 'Next Unread Message',
+  menuGoNext: 'Next message',
+  menuGoPrevious: 'Previous message',
+  menuGoNextUnread: 'Next unread message',
   menuGoMail: 'Mail',
   menuGoCalendar: 'Calendar',
   menuGoContacts: 'Contacts',
@@ -62,9 +63,9 @@ const en = {
   menuGoBack: 'Back',
   menuGoForward: 'Forward',
   menuMinimize: 'Minimize',
-  menuCycle: 'Next Window',
+  menuCycle: 'Next window',
   menuHelp: '&Help',
-  menuShortcuts: 'Keyboard Shortcuts',
+  menuShortcuts: 'Keyboard shortcuts',
   menuDocs: 'Documentation',
   menuSettings: 'Settings…',
   menuAbout: 'About Bulwark',
@@ -72,14 +73,14 @@ const en = {
   contextCut: 'Cut',
   contextCopy: 'Copy',
   contextPaste: 'Paste',
-  contextSelectAll: 'Select All',
-  contextAddToDictionary: (word: string) => `Add "${word}" to Dictionary`,
-  contextNoSuggestions: 'No Suggestions',
-  contextOpenLink: 'Open Link',
-  contextCopyLink: 'Copy Link',
-  contextCopyAddress: 'Copy Address',
-  contextSaveImage: 'Save Image…',
-  contextCopyImage: 'Copy Image',
+  contextSelectAll: 'Select all',
+  contextAddToDictionary: 'Add "{word}" to dictionary',
+  contextNoSuggestions: 'No suggestions',
+  contextOpenLink: 'Open link',
+  contextCopyLink: 'Copy link',
+  contextCopyAddress: 'Copy address',
+  contextSaveImage: 'Save image…',
+  contextCopyImage: 'Copy image',
   allow: 'Allow',
   cancel: 'Cancel',
   install: 'Install',
@@ -116,7 +117,7 @@ const en = {
   menuFile: '&File',
   menuEdit: '&Edit',
   menuWindow: '&Window',
-  menuSwitchMode: 'Change Connection…',
+  menuSwitchMode: 'Change connection…',
   keystoreAllowSession: 'Allow for this session',
   keystoreAllowOnce: 'Allow once',
   keystoreDeny: 'Deny',
@@ -139,7 +140,8 @@ const de: typeof en = {
   unsavedDetail: 'Wenn Sie jetzt schließen, geht verloren, was Sie seit dem letzten Speichern geschrieben haben.',
   closeAnyway: 'Trotzdem schließen',
   unsentTitle: 'Einige E-Mails wurden noch nicht gesendet',
-  unsentDetail: (count) => (count === 1 ? 'Eine Nachricht wartet auf den Versand. Sie wird gesendet, wenn Sie Bulwark das nächste Mal öffnen.' : `${count} Nachrichten warten auf den Versand. Sie werden gesendet, wenn Sie Bulwark das nächste Mal öffnen.`),
+  unsentOne: 'Eine Nachricht wartet auf den Versand. Sie wird gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
+  unsentMany: '{count} Nachrichten warten auf den Versand. Sie werden gesendet, wenn Sie Bulwark das nächste Mal öffnen.',
   closeNow: 'Beenden',
   menuNewMessage: 'Neue Nachricht',
   menuNewWindow: 'Neues Fenster',
@@ -201,7 +203,7 @@ const de: typeof en = {
   contextCopy: 'Kopieren',
   contextPaste: 'Einfügen',
   contextSelectAll: 'Alles auswählen',
-  contextAddToDictionary: (word) => `„${word}“ zum Wörterbuch hinzufügen`,
+  contextAddToDictionary: '„{word}“ zum Wörterbuch hinzufügen',
   contextNoSuggestions: 'Keine Vorschläge',
   contextOpenLink: 'Link öffnen',
   contextCopyLink: 'Link kopieren',
@@ -263,12 +265,38 @@ const de: typeof en = {
 };
 
 let uiLanguage: string | null = null;
+let labels: Partial<typeof en> = {};
 
-/** The webmail's language, once it has said. Until then, the OS's. */
-export function setUiLanguage(language: string): void {
+/** Plain text keys the webmail may translate, so the menus speak all its languages. */
+const LABEL_KEY = /^(menu|context|leave|stay|closeAnyway|closeNow|unsaved|unsent)/;
+
+/** Keeps what fits: a known key with text, of a sane length, and no function replaced. */
+export function cleanLabels(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!LABEL_KEY.test(key) || typeof value !== 'string' || !value.trim() || value.length > 300) continue;
+    if (typeof (en as Record<string, unknown>)[key] === 'string') out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * The webmail's language, once it has said, with its translations of the menus and
+ * dialogs. Until then the OS's language, for what shows in early start-up: English
+ * or German, built in.
+ */
+export function setUiLanguage(language: string, translated?: unknown): void {
   uiLanguage = language;
+  labels = cleanLabels(translated) as Partial<typeof en>;
+}
+
+/** The line about mail waiting at quit. */
+export function unsentDetail(text: Pick<typeof en, 'unsentOne' | 'unsentMany'>, count: number): string {
+  return count === 1 ? text.unsentOne : text.unsentMany.replaceAll('{count}', String(count));
 }
 
 export function strings(): typeof en {
-  return (uiLanguage ?? app.getLocale()).toLowerCase().startsWith('de') ? de : en;
+  const built = (uiLanguage ?? app.getLocale()).toLowerCase().startsWith('de') ? de : en;
+  return { ...built, ...labels };
 }

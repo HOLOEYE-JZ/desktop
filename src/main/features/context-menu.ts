@@ -9,13 +9,16 @@
  * own HTML menu back and hands it over through `menu.popup`, so the contents are the
  * ones the browser shows and the two can't drift (lib/desktop/native-menu.ts).
  *
- * Spellcheck languages follow what the webmail says about the interface and composer.
+ * Opening a link goes back to the page, which runs it past the same checks as a click
+ * on it (plugins, mailto in the app's composer). Spellcheck languages follow what the
+ * webmail says about the interface and composer.
  */
 
-import { clipboard, Menu, type ContextMenuParams, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
+import { clipboard, Menu, type BrowserWindow, type ContextMenuParams, type DownloadItem, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import { CHANNEL, type LanguagesUpdate, type MenuBarEntry, type MenuState } from '../../shared/bridge';
-import { escapeMenuLabel, pickSpellLanguages, toMenuTemplate } from '../menu-text';
+import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toMenuTemplate } from '../menu-text';
 import { openExternally } from '../navigation';
+import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads } from '../spellcheck';
 import { setUiLanguage, strings } from '../strings';
 import type { Feature } from './index';
 
@@ -25,14 +28,16 @@ export interface ContextTarget {
   params: ContextMenuParams;
   /** The page reported `policy.download: false`. */
   downloadsOff: boolean;
-  /** The page's own spellcheck dictionary can take words. */
-  session?: Session;
+  origin: string;
+  /** Opens a link, past the page's checks if it has them. */
+  openLink: (url: string, text: string) => void;
+  saveImage: (url: string) => void;
 }
 
 /** The menu for what's under the pointer, or nothing where a native app shows nothing. */
 export function contextTemplate(contents: WebContents, target: ContextTarget): MenuItemConstructorOptions[] {
   const text = strings();
-  const { params, downloadsOff } = target;
+  const { params, downloadsOff, origin, openLink, saveImage } = target;
   const { editFlags } = params;
   const sections: MenuItemConstructorOptions[][] = [];
 
@@ -45,16 +50,17 @@ export function contextTemplate(contents: WebContents, target: ContextTarget): M
       { type: 'separator' },
       {
         id: 'context.addToDictionary',
-        label: escapeMenuLabel(text.contextAddToDictionary(params.misspelledWord)),
+        label: escapeMenuLabel(text.contextAddToDictionary.replaceAll('{word}', params.misspelledWord)),
         click: () => contents.session.addWordToSpellCheckerDictionary(params.misspelledWord),
       },
     ]);
   }
 
-  if (params.linkURL) {
+  // Not for a link inside the app, or a blob: the page has its own way to those.
+  if (params.linkURL && linkOffersOpen(params.linkURL, origin)) {
     const mail = params.linkURL.toLowerCase().startsWith('mailto:');
     sections.push([
-      { id: 'context.openLink', label: text.contextOpenLink, click: () => openExternally(params.linkURL) },
+      { id: 'context.openLink', label: text.contextOpenLink, click: () => openLink(params.linkURL, params.linkText) },
       {
         id: 'context.copyLink',
         label: mail ? text.contextCopyAddress : text.contextCopyLink,
@@ -63,15 +69,11 @@ export function contextTemplate(contents: WebContents, target: ContextTarget): M
     ]);
   }
 
-  if (params.mediaType === 'image' && params.hasImageContents) {
-    const image: MenuItemConstructorOptions[] = [];
-    if (!downloadsOff) {
-      image.push(
-        { id: 'context.saveImage', label: text.contextSaveImage, click: () => contents.downloadURL(params.srcURL) },
-        { id: 'context.copyImage', label: text.contextCopyImage, click: () => contents.copyImageAt(params.x, params.y) },
-      );
-    }
-    if (image.length) sections.push(image);
+  if (params.mediaType === 'image' && params.hasImageContents && !downloadsOff) {
+    sections.push([
+      { id: 'context.saveImage', label: text.contextSaveImage, click: () => saveImage(params.srcURL) },
+      { id: 'context.copyImage', label: text.contextCopyImage, click: () => contents.copyImageAt(params.x, params.y) },
+    ]);
   }
 
   if (params.isEditable) {
@@ -92,17 +94,48 @@ function policyAllowsDownload(state: MenuState | undefined): boolean {
   return state?.['policy.download'] !== false;
 }
 
+/** A sender names an image's file and says what type it is. Only an image is saved, as one. */
+export function guardImageDownload(session: Session, pending: Set<string>): void {
+  session.on('will-download', (_event, item: DownloadItem) => {
+    const url = item.getURL();
+    if (!pending.delete(url)) return;
+    const name = safeImageName(item.getFilename(), item.getMimeType());
+    if (!name) {
+      item.cancel();
+      return;
+    }
+    item.setSaveDialogOptions({ defaultPath: name, filters: [{ name: 'Image', extensions: [name.slice(name.lastIndexOf('.') + 1)] }] });
+  });
+}
+
 export const contextMenuFeature: Feature = {
   name: 'context-menu',
   modes: ['standalone', 'instance'],
   setup(ctx) {
-    const { windows, menu, session } = ctx;
+    const { windows, menu, session, origin } = ctx;
+    const pendingImages = new Set<string>();
+    guardImageDownload(session, pendingImages);
+
+    /** The page's link path where it has one: an older instance has none. */
+    const openLink = (window: BrowserWindow, url: string, text: string) => {
+      if (menu.commandState(window)?.['link.check'] === true) {
+        window.webContents.send(CHANNEL.menuCommand, `link.open:${JSON.stringify({ url, text })}`);
+      } else {
+        openExternally(url);
+      }
+    };
 
     windows.on('created', ({ window }) => {
       window.webContents.on('context-menu', (_event, params) => {
         const template = contextTemplate(window.webContents, {
           params,
+          origin,
           downloadsOff: !policyAllowsDownload(menu.commandState(window)),
+          openLink: (url, text) => openLink(window, url, text),
+          saveImage: (url) => {
+            pendingImages.add(url);
+            window.webContents.downloadURL(url);
+          },
         });
         if (template.length === 0) return;
         Menu.buildFromTemplate(template).popup({ window });
@@ -149,16 +182,30 @@ export const contextMenuFeature: Feature = {
       }
     });
 
-    ctx.on(CHANNEL.shellSetLanguages, (_event, _window, update) => {
-      const { ui, composer } = (update ?? {}) as Partial<LanguagesUpdate>;
-      if (typeof ui !== 'string') return;
-      setUiLanguage(ui);
-      menu.refresh();
-      const wanted = [ui, ...(Array.isArray(composer) ? composer.filter((l): l is string => typeof l === 'string') : [])];
-      const languages = pickSpellLanguages(wanted, session.availableSpellCheckerLanguages);
+    let languageNow = '';
+    let wantedLanguages: string[] = [];
+    const applySpellLanguages = () => {
+      const languages = pickSpellLanguages(wantedLanguages, session.availableSpellCheckerLanguages);
       // macOS has no such setting: its own spellchecker detects the language.
       if (languages.length && process.platform !== 'darwin') session.setSpellCheckerLanguages(languages);
+    };
+    ctx.on(CHANNEL.shellSetLanguages, (_event, _window, update) => {
+      const { ui, composer, labels } = (update ?? {}) as Partial<LanguagesUpdate>;
+      if (typeof ui !== 'string') return;
+      setUiLanguage(ui, labels);
+      menu.refresh();
+      // A warm spare rendered in the language it was made with.
+      if (languageNow && languageNow !== ui) windows.dropSpare();
+      languageNow = ui;
+      wantedLanguages = [ui, ...(Array.isArray(composer) ? composer.filter((l): l is string => typeof l === 'string') : [])];
+      applySpellLanguages();
     });
 
+    onDictionaryMissing((language) => windows.broadcast(CHANNEL.spellMissing, language));
+    ctx.handle(CHANNEL.spellListMissing, () => missingDictionaries());
+    ctx.on(CHANNEL.spellAllowDownload, () => {
+      openDictionaryDownloads(session);
+      applySpellLanguages();
+    });
   },
 };

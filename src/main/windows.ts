@@ -20,7 +20,7 @@ import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, ty
 import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { SessionWindow, StateFile } from './state';
 import { native } from './native';
-import { strings } from './strings';
+import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
 import { fitInto, isOnSomeDisplay, placeWindow, type Rect } from './window-placement';
 import { nextInCycle, sumAnswers } from './window-logic';
@@ -45,15 +45,28 @@ const MIN_SIZE: Record<WindowType, { minWidth: number; minHeight: number }> = {
 const SHOW_FALLBACK_MS = 6000;
 /** How long a closing window waits for its page to save. The page's own limit is shorter. */
 const FLUSH_TIMEOUT_MS = 4000;
-/** After the main window paints, when a spare gets made: nothing at start-up competes with it. */
+/** After the main window paints, for someone who used pop-outs lately: nothing at start-up competes with it. */
 const SPARE_FIRST_DELAY_MS = 8000;
 const SPARE_NEXT_DELAY_MS = 1500;
+/** A spare costs a renderer: only for someone who used a pop-out in this long. */
+const SPARE_RECENT_USE_MS = 7 * 24 * 3600_000;
+/** And it goes when it sat unused this long. The next pop-out loads, and brings it back. */
+const SPARE_IDLE_LIMIT_MS = 30 * 60_000;
 /** A page that doesn't know about spares (an older instance) never says it's ready. */
 const SPARE_READY_LIMIT_MS = 30_000;
 /** A spare that didn't answer shows the pop-out by loading it. */
 const SPARE_TAKEN_LIMIT_MS = 1500;
 /** Windows from last time open only this long after the start: a sign-in later is a new day. */
 const RESTORE_LIMIT_MS = 60_000;
+/** One window at a time, so a dozen don't fight the main window for the server. */
+const RESTORE_STAGGER_MS = 250;
+/** Still running this long after restoring: those windows didn't take the app down. */
+const RESTORE_STABLE_MS = 30_000;
+/** Two starts in a row that didn't get that far: the third goes without them. */
+const RESTORE_MAX_ATTEMPTS = 2;
+/** A page that keeps dying isn't reloaded forever. */
+const CRASH_WINDOW_MS = 60_000;
+const MAX_CRASH_RELOADS = 2;
 
 /** The window type a same-origin URL belongs in. Locale prefix optional. */
 export function windowTypeOf(pathname: string): WindowType {
@@ -76,6 +89,7 @@ export interface OpenOptions {
   noSpare?: boolean;
   /** Come up behind the window in use: one coming back from last time. */
   inactive?: boolean;
+  maximized?: boolean;
 }
 
 export interface ManagedWindow {
@@ -91,6 +105,8 @@ export interface ManagedWindow {
   flushed?: boolean;
   /** What this window's open drafts come back as next time. */
   restoreUrls?: string[];
+  /** When its page died lately. */
+  crashes?: number[];
 }
 
 export interface FlushSummary {
@@ -112,6 +128,8 @@ export interface WindowManagerOptions {
   devTools: boolean;
   /** Keep a warm spare. Off in tests that count windows. */
   spare?: boolean;
+  /** How long an unused spare stays. For a test: the real wait is half an hour. */
+  spareIdleMs?: number;
   /** Navigation and window-open guards, applied to every window including pop-ups. */
   attachGuards: (window: BrowserWindow) => void;
 }
@@ -120,6 +138,7 @@ interface Spare {
   window: BrowserWindow;
   ready: boolean;
   limit: NodeJS.Timeout;
+  idle?: NodeJS.Timeout;
 }
 
 export class WindowManager extends EventEmitter<{
@@ -130,6 +149,8 @@ export class WindowManager extends EventEmitter<{
   stayed: [];
   /** A main window is signed in, with a session to lend. */
   sessionReady: [];
+  /** A window went to another document: what its old page said no longer holds. */
+  navigated: [BrowserWindow];
 }> {
   private readonly windows = new Map<number, ManagedWindow>();
   private lastFocused: number | null = null;
@@ -142,6 +163,8 @@ export class WindowManager extends EventEmitter<{
   /** No more tries this run: the page has no spare route. */
   private spareUnsupported = false;
   private savedSession: SessionWindow[];
+  private restoring = false;
+  private restoreDeferred = false;
   private readonly startedAt = Date.now();
 
   constructor(private readonly options: WindowManagerOptions) {
@@ -154,6 +177,10 @@ export class WindowManager extends EventEmitter<{
     });
     const { state } = options;
     this.savedSession = state.data.restoreWindows === false ? [] : (state.data.session ?? []);
+    if (state.data.restoreWindows === false && state.data.session) {
+      delete state.data.session;
+      state.touch();
+    }
   }
 
   /** What every window with the bridge runs on. Also used for window.open pop-ups. */
@@ -240,6 +267,7 @@ export class WindowManager extends EventEmitter<{
         return existing.window;
       }
     }
+    if (options.type === 'message' || options.type === 'composer') this.notePopoutUse();
     if (!options.noSpare) {
       const warm = this.activateSpare(options, key);
       if (warm) return warm;
@@ -250,7 +278,7 @@ export class WindowManager extends EventEmitter<{
     window.setBounds(place);
     const managed = this.adopt(window, options.type, key, options.url, false, options.inactive);
     managed.initialBounds = window.getNormalBounds();
-    if (options.type === 'main' && this.options.state.data.windowBounds.main?.maximized) window.maximize();
+    if (options.maximized || (options.type === 'main' && this.options.state.data.windowBounds.main?.maximized)) window.maximize();
     void window.loadURL(options.url).catch(() => {
       // A failed load shows Chromium's error page; the guards and ready-to-show still apply.
     });
@@ -273,7 +301,11 @@ export class WindowManager extends EventEmitter<{
       this.lastFocused = window.id;
       this.emitChanged();
     });
-    window.on('hide', () => this.emitChanged());
+    window.on('hide', () => {
+      this.emitChanged();
+      // Everything is in the tray: nobody is about to open a pop-out.
+      if (this.noneVisible()) this.destroySpare();
+    });
     window.on('show', () => this.emitChanged());
     for (const event of ['resize', 'move', 'maximize', 'unmaximize'] as const) {
       window.on(event as 'resize', () => {
@@ -298,6 +330,12 @@ export class WindowManager extends EventEmitter<{
         window.close();
       });
     });
+    // The OS is ending the session: there's no time for questions, only for saving.
+    window.on('session-end', () => this.saveForSessionEnd());
+    webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) this.emit('navigated', window);
+    });
+    if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
     webContents.on('will-prevent-unload', (event) => {
       const text = strings();
@@ -337,12 +375,15 @@ export class WindowManager extends EventEmitter<{
   /** True if the window may go. A prompt only when something would be lost. */
   private confirmLeaving(window: BrowserWindow, failed: number, unsent: number): boolean {
     if (failed === 0 && unsent === 0) return true;
+    // A hidden main window asking would leave Stay with nothing on screen.
+    if (window.isMinimized()) window.restore();
+    if (!window.isVisible()) window.show();
     const text = strings();
     const choice = dialog.showMessageBoxSync(window, {
       type: 'warning',
       title: 'Bulwark',
       message: failed > 0 ? text.unsavedTitle : text.unsentTitle,
-      detail: failed > 0 ? text.unsavedDetail : text.unsentDetail(unsent),
+      detail: failed > 0 ? text.unsavedDetail : unsentDetail(text, unsent),
       buttons: [failed > 0 ? text.closeAnyway : text.closeNow, text.stay],
       defaultId: 1,
       cancelId: 1,
@@ -378,6 +419,31 @@ export class WindowManager extends EventEmitter<{
     return managed.type !== 'main' || managed.window.isVisible();
   }
 
+  /** A pop-out's page died. It comes back from its address, unless it keeps doing that. */
+  private onPageGone(managed: ManagedWindow, reason: string): void {
+    const { window } = managed;
+    if (reason === 'clean-exit' || window.isDestroyed()) return;
+    const now = Date.now();
+    managed.crashes = [...(managed.crashes ?? []).filter((at) => now - at < CRASH_WINDOW_MS), now];
+    if (managed.crashes.length > MAX_CRASH_RELOADS) {
+      managed.flushable = false;
+      window.close();
+      return;
+    }
+    window.webContents.reload();
+  }
+
+  private savingForSessionEnd = false;
+
+  /** Whichever window hears first saves them all. The list of windows stays as it is. */
+  private saveForSessionEnd(): void {
+    if (this.savingForSessionEnd) return;
+    this.savingForSessionEnd = true;
+    this.quitting = true;
+    this.options.state.save();
+    void this.flushAll();
+  }
+
   /** A pop-out closed. If only a hidden main is left and nothing keeps the app running, it goes too. */
   private afterClosed(): void {
     if (this.windows.size === 0) {
@@ -400,6 +466,12 @@ export class WindowManager extends EventEmitter<{
 
   /** From here on closing a window closes it. Undone by choosing Stay in a prompt. */
   beginQuit(): void {
+    const { state } = this.options;
+    // Quit before anyone signed in, or halfway through: what was to come back still is.
+    if (this.restoring) this.storeSession();
+    else if (this.savedSession.length > 0) state.data.session = this.savedSession;
+    // A clean quit is no crash, however soon after the start.
+    delete state.data.restoreAttempts;
     this.quitting = true;
     this.destroySpare();
     this.options.state.save();
@@ -425,7 +497,7 @@ export class WindowManager extends EventEmitter<{
       if (window.isDestroyed()) return;
       void this.checkOverlay(managed).then((replaced) => {
         if (!replaced && !window.isDestroyed() && !window.isVisible()) show();
-        if (!replaced && managed.type === 'main') this.scheduleSpare(SPARE_FIRST_DELAY_MS);
+        if (!replaced && managed.type === 'main' && this.popoutsUsedLately()) this.scheduleSpare(SPARE_FIRST_DELAY_MS);
       });
     });
   }
@@ -497,6 +569,23 @@ export class WindowManager extends EventEmitter<{
 
   // ─── The warm spare ─────────────────────────────────────────
 
+  private popoutsUsedLately(): boolean {
+    const last = this.options.state.data.lastPopoutAt;
+    return typeof last === 'number' && Date.now() - last < SPARE_RECENT_USE_MS;
+  }
+
+  private notePopoutUse(): void {
+    this.options.state.data.lastPopoutAt = Date.now();
+    this.options.state.touch();
+    this.scheduleSpare(SPARE_NEXT_DELAY_MS);
+  }
+
+  /** The page's language changed: a spare holds the old one, and its strings. */
+  dropSpare(): void {
+    this.destroySpare();
+    if (this.popoutsUsedLately()) this.scheduleSpare(SPARE_NEXT_DELAY_MS);
+  }
+
   private scheduleSpare(delay: number): void {
     if (this.options.spare === false || this.spareUnsupported || this.spare || this.spareTimer || this.quitting) return;
     this.spareTimer = setTimeout(() => {
@@ -528,6 +617,11 @@ export class WindowManager extends EventEmitter<{
     if (this.spare?.window !== window) return;
     clearTimeout(this.spare.limit);
     this.spare.ready = true;
+    const held = this.spare;
+    held.idle = setTimeout(() => {
+      if (this.spare === held) this.destroySpare();
+    }, this.options.spareIdleMs ?? SPARE_IDLE_LIMIT_MS);
+    held.idle.unref?.();
   }
 
   private destroySpare(): void {
@@ -535,6 +629,7 @@ export class WindowManager extends EventEmitter<{
     this.spareTimer = null;
     const spare = this.spare;
     this.spare = null;
+    if (spare?.idle) clearTimeout(spare.idle);
     if (spare && !spare.window.isDestroyed()) spare.window.destroy();
   }
 
@@ -548,6 +643,7 @@ export class WindowManager extends EventEmitter<{
     const spare = this.spare;
     if (!spare?.ready || spare.window.isDestroyed()) return null;
     this.spare = null;
+    if (spare.idle) clearTimeout(spare.idle);
     const { window } = spare;
     const place = options.place ?? this.placeFor(options.type, options.size);
     const { minWidth, minHeight } = MIN_SIZE[options.type];
@@ -556,9 +652,13 @@ export class WindowManager extends EventEmitter<{
     const managed = this.adopt(window, options.type, key, options.url, true);
     managed.initialBounds = window.getNormalBounds();
     let taken = false;
-    window.webContents.once('ipc-message', (_event, channel) => {
-      if (channel === CHANNEL.windowsSpareTaken) taken = true;
-    });
+    // The page says other things first (its theme, its menu state).
+    const onMessage = (_event: unknown, channel: string) => {
+      if (channel !== CHANNEL.windowsSpareTaken) return;
+      taken = true;
+      window.webContents.removeListener('ipc-message', onMessage);
+    };
+    window.webContents.on('ipc-message', onMessage);
     window.webContents.send(CHANNEL.windowsSpareActivate, options.url);
     window.show();
     setTimeout(() => {
@@ -635,12 +735,12 @@ export class WindowManager extends EventEmitter<{
         } catch {
           // Still loading: what it was opened with.
         }
-        entries.push({ type, url, key: key ?? undefined, bounds });
+        entries.push({ type, url, key: key ?? undefined, bounds, maximized: window.isMaximized() });
       } else if (type === 'main' && key !== 'main') {
-        entries.push({ type, url: managed.url, key: key ?? undefined, bounds });
+        entries.push({ type, url: managed.url, key: key ?? undefined, bounds, maximized: window.isMaximized() });
       }
       for (const url of managed.restoreUrls ?? []) {
-        entries.push({ type: 'composer', url, key: `restored:${url}`, bounds: type === 'composer' ? bounds : undefined });
+        entries.push({ type: 'composer', url, key: `restored:${url}`, bounds: type === 'composer' ? bounds : undefined, maximized: type === 'composer' && window.isMaximized() });
       }
     }
     return entries;
@@ -649,14 +749,21 @@ export class WindowManager extends EventEmitter<{
   private storeSession(): void {
     // Quitting closes the windows one by one, which would forget them.
     if (this.quitting) return;
-    this.options.state.data.session = this.sessionWindows();
-    this.options.state.touch();
+    // With the setting off nothing is written. Before the restore, the old list stands.
+    const { state } = this.options;
+    if (state.data.restoreWindows === false || (this.savedSession.length > 0 && !this.restoring)) return;
+    state.data.session = [...this.sessionWindows(), ...this.savedSession];
+    state.touch();
   }
 
   setRestoreEnabled(enabled: boolean): void {
-    this.options.state.data.restoreWindows = enabled;
-    this.options.state.touch();
-    if (!enabled) this.savedSession = [];
+    const { state } = this.options;
+    state.data.restoreWindows = enabled;
+    if (!enabled) {
+      this.savedSession = [];
+      delete state.data.session;
+    }
+    state.touch();
   }
 
   /**
@@ -664,14 +771,57 @@ export class WindowManager extends EventEmitter<{
    * Once, and only near the start.
    */
   restoreSession(): void {
-    const saved = this.savedSession;
-    this.savedSession = [];
-    if (saved.length === 0 || Date.now() - this.startedAt > RESTORE_LIMIT_MS) return;
-    for (const entry of saved) {
-      if (!this.validSessionEntry(entry)) continue;
-      const bounds = entry.bounds && isOnSomeDisplay(entry.bounds, screen.getAllDisplays()) ? fitInto(entry.bounds, screen.getDisplayMatching(entry.bounds).workArea) : undefined;
-      this.open({ type: entry.type, url: entry.url, key: entry.key, place: bounds, noSpare: true, inactive: true });
+    if (this.savedSession.length === 0 || this.restoring) return;
+    // Started hidden, for the tray: they come when the main window does.
+    const main = this.mainWindow();
+    if (main && !main.isVisible()) {
+      if (!this.restoreDeferred) {
+        this.restoreDeferred = true;
+        main.once('show', () => this.restoreSession());
+      }
+      return;
     }
+    const { state } = this.options;
+    const saved = this.savedSession;
+    if (!this.restoreDeferred && Date.now() - this.startedAt > RESTORE_LIMIT_MS) {
+      this.savedSession = [];
+      this.storeSession();
+      return;
+    }
+    // Two starts that crashed doing this: not a third. Written before the first
+    // window opens, since a crash leaves no time for it after.
+    const attempts = state.data.restoreAttempts ?? 0;
+    if (attempts >= RESTORE_MAX_ATTEMPTS) {
+      this.savedSession = [];
+      delete state.data.restoreAttempts;
+      this.storeSession();
+      state.save();
+      return;
+    }
+    state.data.restoreAttempts = attempts + 1;
+    state.save();
+    setTimeout(() => {
+      delete state.data.restoreAttempts;
+      state.touch();
+    }, RESTORE_STABLE_MS).unref?.();
+
+    this.restoring = true;
+    const valid = saved.filter((entry) => this.validSessionEntry(entry));
+    const openNext = (index: number) => {
+      if (this.quitting) return;
+      if (index >= valid.length) {
+        this.restoring = false;
+        this.savedSession = [];
+        this.storeSession();
+        return;
+      }
+      const entry = valid[index];
+      this.savedSession = valid.slice(index + 1);
+      const bounds = entry.bounds && isOnSomeDisplay(entry.bounds, screen.getAllDisplays()) ? fitInto(entry.bounds, screen.getDisplayMatching(entry.bounds).workArea) : undefined;
+      this.open({ type: entry.type, url: entry.url, key: entry.key, place: bounds, noSpare: true, inactive: true, maximized: entry.maximized });
+      setTimeout(() => openNext(index + 1), RESTORE_STAGGER_MS);
+    };
+    openNext(0);
   }
 
   private validSessionEntry(entry: SessionWindow): boolean {

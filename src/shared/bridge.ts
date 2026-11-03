@@ -95,6 +95,8 @@ export interface LanguagesUpdate {
   ui: string;
   /** What the composer's text is in, if it says. */
   composer?: string[];
+  /** The shell's menu and dialog text in that language, by the keys of `src/main/strings.ts`. */
+  labels?: Record<string, string>;
 }
 export type KeystoreHash = 'SHA-1' | 'SHA-256' | 'SHA-384' | 'SHA-512';
 
@@ -183,6 +185,10 @@ export const CHANNEL = {
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',
   clipboardCopyFile: 'bulwark:clipboard.copyFile',
+  clipboardClearFiles: 'bulwark:clipboard.clearFiles',
+  spellMissing: 'bulwark:spell.missing',
+  spellListMissing: 'bulwark:spell.listMissing',
+  spellAllowDownload: 'bulwark:spell.allowDownload',
   serversPrepare: 'bulwark:servers.prepare',
   serversNoteSession: 'bulwark:servers.noteSession',
   serversForget: 'bulwark:servers.forget',

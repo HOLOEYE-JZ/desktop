@@ -26,6 +26,7 @@ export interface SessionWindow {
   url: string;
   key?: string;
   bounds?: { x: number; y: number; width: number; height: number };
+  maximized?: boolean;
 }
 
 export interface ShellState {
@@ -42,6 +43,10 @@ export interface ShellState {
   /** What was open at quit. Off by the setting in the webmail. */
   session?: SessionWindow[];
   restoreWindows?: boolean;
+  /** Starts in a row that began restoring and didn't get far. */
+  restoreAttempts?: number;
+  /** When a pop-out last opened: whether a warm spare is worth its memory. */
+  lastPopoutAt?: number;
   /** Chromium's zoom level: 0 is 100%. */
   zoomLevel?: number;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
