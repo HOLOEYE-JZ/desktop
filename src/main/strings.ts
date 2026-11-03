@@ -113,6 +113,10 @@ const en = {
   stay: 'Stay',
   errorSecretMissingTitle: "Bulwark's key file is missing",
   errorSecretMissingBody: (dir: string) => `This profile was set up before, but the key that protects your sign-ins is gone from ${dir}. Bulwark won't make a new one, because that would sign out every account and remove their offline mail. Restore the file from a backup and start Bulwark again. To start over instead, delete the folder above the keys folder.`,
+  errorKeyNotSavedTitle: "Bulwark couldn't save its key",
+  errorKeyNotSavedBody: "Bulwark needs to save an encryption key before it can keep your sign-ins, and the system did not let it. Nothing was changed or deleted. Check that the disk has free space, that you have permission to write to Bulwark's folder, and that no antivirus program is blocking it. Then restart Bulwark.",
+  signInsLostTitle: 'Please sign in again',
+  signInsLostDetail: 'Windows can no longer open the key that protected your sign-ins. This happens after a password reset, or when a profile moves to another user. Your mail on the server is not affected.',
   errorSecretsTitle: "Bulwark can't read its keys",
   errorSecretsBody:
     'The key that protects your sign-ins is encrypted with your system account, and this system can\'t decrypt it right now. Nothing was changed or deleted, so your accounts and offline mail are still there. Check that you are signed in to the same system account, and that the system key store is unlocked, then start Bulwark again.',
@@ -320,6 +324,10 @@ const de: typeof en = {
   stay: 'Bleiben',
   errorSecretMissingTitle: 'Die Schlüsseldatei von Bulwark fehlt',
   errorSecretMissingBody: (dir) => `Dieses Profil wurde schon eingerichtet, aber der Schlüssel, der Ihre Anmeldungen schützt, fehlt in ${dir}. Bulwark erstellt keinen neuen, denn das würde alle Konten abmelden und ihre Offline-E-Mails entfernen. Stellen Sie die Datei aus einer Sicherung wieder her und starten Sie Bulwark neu. Um neu zu beginnen, löschen Sie den Ordner über dem Schlüsselordner.`,
+  errorKeyNotSavedTitle: 'Bulwark konnte seinen Schlüssel nicht speichern',
+  errorKeyNotSavedBody: 'Bulwark muss einen Schlüssel speichern, bevor es Ihre Anmeldungen aufbewahren kann, und das System hat es nicht zugelassen. Es wurde nichts geändert oder gelöscht. Prüfen Sie, ob auf dem Datenträger Platz frei ist, ob Sie in den Ordner von Bulwark schreiben dürfen und ob ein Antivirenprogramm ihn blockiert. Starten Sie Bulwark dann neu.',
+  signInsLostTitle: 'Bitte melden Sie sich erneut an',
+  signInsLostDetail: 'Windows kann den Schlüssel, der Ihre Anmeldungen geschützt hat, nicht mehr öffnen. Das passiert nach dem Zurücksetzen eines Passworts oder wenn ein Profil zu einem anderen Benutzer wechselt. Ihre E-Mails auf dem Server sind davon nicht betroffen.',
   errorSecretsTitle: 'Bulwark kann seine Schlüssel nicht lesen',
   errorSecretsBody:
     'Der Schlüssel, der Ihre Anmeldungen schützt, ist mit Ihrem Systemkonto verschlüsselt, und das System kann ihn gerade nicht entschlüsseln. Es wurde nichts geändert oder gelöscht, Ihre Konten und Offline-E-Mails sind also noch da. Prüfen Sie, ob Sie mit demselben Systemkonto angemeldet sind und der Schlüsselspeicher des Systems entsperrt ist, und starten Sie Bulwark dann neu.',

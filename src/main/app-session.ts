@@ -36,6 +36,21 @@ export function setupAppSession(fingerprint: string, launchSecret: string, onPin
   return session;
 }
 
+/**
+ * Chromium writes cookies every 30 seconds and local storage every few, so a crash in that time
+ * loses a sign-in that looked done. A sign-in is a cookie change, and those are few.
+ */
+export function keepSignInsOnDisk(session: Session): void {
+  let timer: NodeJS.Timeout | null = null;
+  session.cookies.on('changed', () => {
+    timer ??= setTimeout(() => {
+      timer = null;
+      session.flushStorageData();
+      session.cookies.flushStore().catch(() => {});
+    }, 200);
+  });
+}
+
 export function instancePartition(origin: string): string {
   // One session per instance, so instances don't share cookies or storage.
   return `persist:instance-${Buffer.from(origin).toString('base64url')}`;

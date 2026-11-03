@@ -7,8 +7,9 @@
  * loading. So: never await `app.whenReady()` at the top level here. It deadlocks.
  */
 
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -16,8 +17,8 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { APP_PARTITION, instancePartition, setupAppSession } from './app-session';
-import { fingerprintOf, generateCertificate } from './cert';
+import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
+import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { holdEarlyLaunches } from './features/os-launch';
@@ -25,6 +26,7 @@ import { setToastActivator } from './features/os-toasts';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
+import { durableWrite, holdsAppLockRecords, KEY_CHECK_FOLDER, KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
 import { addWipeStep, notePartition } from './features/local-wipe';
 import { native } from './native';
 import { LocalAdmin } from './local-admin';
@@ -112,11 +114,12 @@ function reservePort(): Promise<number> {
   });
 }
 
-const SERVER_PORT = await reservePort();
-app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.exit(0);
+const keyInitOnly = process.argv.includes(KEY_INIT_SWITCH) || process.argv.includes(KEY_CHECK_SWITCH);
+if (process.argv.includes(KEY_CHECK_SWITCH)) app.setPath('userData', path.join(app.getPath('userData'), KEY_CHECK_FOLDER));
+const gotLock = !keyInitOnly && app.requestSingleInstanceLock();
+// A clean quit is the one thing that makes Chromium write Local State at once.
+if (keyInitOnly) void app.whenReady().then(() => app.quit());
+else if (!gotLock) app.exit(0);
 
 // Before `ready`: Chromium takes the auth lists from its command line at start.
 if (gotLock) {
@@ -128,6 +131,29 @@ if (gotLock) {
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
 policies.attachState(stateFile);
 if (gotLock) privacy.start(stateFile);
+
+/** A production build has refused the switches that move the profile by now. */
+function runKeyInit(run: string): void {
+  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
+}
+
+// Holding the lock, so no other run of the app is making a key for this profile.
+if (gotLock && process.platform === 'win32') {
+  const userData = app.getPath('userData');
+  settleKeyBeforeChromium(userData, {
+    // A development switch for the test of what happens if that run gets nothing onto the disk.
+    runKeyInit: () => {
+      if (!(__BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-test-no-key-init'))) runKeyInit(KEY_INIT_SWITCH);
+    },
+    keyOpens: (key) => keyOpens(userData, key, () => runKeyInit(KEY_CHECK_SWITCH)),
+    firstSecretsMayFollow: startDecision().kind !== 'instance',
+  });
+}
+
+// After those runs, so another program has as little time as possible to take the port.
+const SERVER_PORT = await reservePort();
+app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
+
 let windowManager: WindowManager | null = null;
 let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
@@ -223,17 +249,76 @@ async function tlsMaterial(secrets: SecretStore, dir: string): Promise<{ keyPem:
   }
   if (keyPem && existsSync(certFile)) {
     const certPem = readFileSync(certFile, 'utf8');
-    return { keyPem, certPem, fingerprint: fingerprintOf(certPem) };
+    if (certificateFitsKey(certPem, keyPem)) return { keyPem, certPem, fingerprint: fingerprintOf(certPem) };
   }
   const fresh = generateCertificate(APP_HOST);
   await secrets.set('tls-key', fresh.keyPem);
-  writeFileSync(certFile, fresh.certPem);
+  durableWrite(certFile, fresh.certPem);
   return fresh;
+}
+
+/**
+ * In instance mode a replaced key costs no error page: the page just asks for a sign-in, with
+ * nothing to say why. So it's said here, once for each key lost. A standalone profile shows the
+ * error page instead, since its secrets went too.
+ */
+function tellSignInsLost(lostKey: string): void {
+  const told = createHash('sha256').update(lostKey).digest('base64url');
+  if (stateFile.data.keyLossTold === told) return;
+  stateFile.data.keyLossTold = told;
+  stateFile.save();
+  const text = strings();
+  void dialog.showMessageBox({ type: 'info', title: 'Bulwark', message: text.signInsLostTitle, detail: text.signInsLostDetail }).catch(() => {});
+}
+
+/**
+ * Nothing that encrypts runs before this: not the secrets, the server, the pages or their
+ * cookies. The saved copy of the key goes before the first secret, and isn't changed while
+ * secrets can't be read, as then it's the only copy that opens them.
+ *
+ * Instance mode has no secrets to protect, so it always goes on. All it risks is a sign-in.
+ */
+async function keySafeOnDisk(instance: boolean): Promise<boolean> {
+  if (process.platform !== 'win32') return true;
+  const userData = app.getPath('userData');
+  const saveIfReadable = async () => {
+    // What the app lock holds can't be tried from here, so the copy that may open it stays.
+    if (savedKey(userData) && holdsAppLockRecords(userData)) return;
+    if (await new SecretStore(path.join(userData, KEYS_FOLDER)).allReadable()) saveKey(userData);
+  };
+  try {
+    if (!(await waitForKeyOnDisk(userData))) return instance;
+    const onDisk = keyOnDisk(userData);
+    const saved = savedKey(userData);
+    if (instance && saved && saved !== onDisk) tellSignInsLost(saved);
+    if (saved === onDisk && stateFile.data.keyLossTold) {
+      stateFile.data.keyLossTold = undefined;
+      stateFile.save();
+    }
+    if (instance) {
+      // Chromium's new key reaches the disk within its ten seconds, if this start was given one.
+      const deadline = Date.now() + 30_000;
+      const watch = setInterval(() => {
+        const now = keyOnDisk(userData);
+        if (now && onDisk && now !== onDisk) {
+          tellSignInsLost(onDisk);
+          void saveIfReadable().catch((error) => console.error(error));
+        }
+        if ((now && now !== onDisk) || Date.now() >= deadline) clearInterval(watch);
+      }, 1000);
+      watch.unref();
+    }
+    if (saved !== onDisk) await saveIfReadable();
+    return true;
+  } catch (error) {
+    console.error(error);
+    return instance;
+  }
 }
 
 async function bootStandalone(theme: ThemeController): Promise<void> {
   const userData = app.getPath('userData');
-  const secretsDir = path.join(userData, 'keys');
+  const secretsDir = path.join(userData, KEYS_FOLDER);
   mkdirSync(secretsDir, { recursive: true });
   const secrets = new SecretStore(secretsDir);
   const profile = profilePaths(userData);
@@ -247,10 +332,9 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     // without one lost it. A new one would sign out every account just the same.
     const seeded = existsSync(path.join(profile.adminConfig, 'config.json'));
     sessionSecret = await secrets.getOrCreate('session-secret', () => randomSecret(48), { mustExist: seeded });
-    const admin = await secrets.getOrReplace('admin-credential', () => randomSecret(32));
-    adminPassword = admin.value;
     // A new credential only takes if the stored hash goes with the old one.
-    if (admin.created) rmSync(path.join(profile.adminConfig, 'admin.json'), { force: true });
+    const admin = await secrets.getOrReplace('admin-credential', () => randomSecret(32), () => rmSync(path.join(profile.adminConfig, 'admin.json'), { force: true }));
+    adminPassword = admin.value;
     tlsPair = await tlsMaterial(secrets, secretsDir);
   } catch (error) {
     if (error instanceof SecretStoreError) {
@@ -271,6 +355,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const session = setupAppSession(pin, launchSecret, () => {
     pinFailed = true;
   });
+  keepSignInsOnDisk(session);
   notePartition(stateFile, APP_PARTITION);
   applyPermissionPolicy(session, APP_ORIGIN);
 
@@ -372,6 +457,7 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const origin = new URL(instanceUrl).origin;
   const partition = instancePartition(origin);
   const session = electronSession.fromPartition(partition);
+  keepSignInsOnDisk(session);
   notePartition(stateFile, partition);
   closeDictionaryDownloads(session);
   applyPermissionPolicy(session, origin);
@@ -478,9 +564,10 @@ async function boot(theme: ThemeController): Promise<void> {
   bootedDecision = decision;
   menu?.allowSwitchingMode(decision.canSwitch ? switchMode : undefined);
   if (decision.kind === 'policy-error') await showPolicyError(decision);
+  else if (decision.kind === 'welcome') showWelcome(theme, decision);
+  else if (!(await keySafeOnDisk(decision.kind === 'instance'))) await showErrorPage(strings().errorKeyNotSavedTitle, strings().errorKeyNotSavedBody);
   else if (decision.kind === 'instance') await bootInstance(decision.url, theme);
-  else if (decision.kind === 'standalone') await bootStandalone(theme);
-  else showWelcome(theme, decision);
+  else await bootStandalone(theme);
 }
 
 function restartNow(): void {
