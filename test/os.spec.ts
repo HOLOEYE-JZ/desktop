@@ -278,9 +278,9 @@ test.describe('OS integration', () => {
     await listen(page);
     const locked = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
     const pressDelete = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { toastAction: (a: string, c: string) => void } } }).__bulwarkOs.hub.toastAction('delete', 'ctx'));
-    // Whatever the page does at its start, a new page reports. This one hasn't had a say from us:
+    // A new page reports as it starts, which is later than its load. Past that, our word is the last one.
     await page.reload();
-    await page.waitForLoadState('domcontentloaded');
+    await expect.poll(locked).toBe(false);
 
     await os(page, 'setLocked(true)');
     await expect.poll(locked).toBe(true);
