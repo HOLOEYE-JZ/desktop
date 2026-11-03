@@ -145,8 +145,10 @@ export type LocalImportScanResult =
       /** Thunderbird calendars seen, which aren't read. */
       calendars: number;
       thunderbirdRunning: boolean;
+      /** The search took too long and was stopped: this is what it found until then. */
+      incomplete?: boolean;
     }
-  | { ok: false; reason: 'declined' | 'busy' };
+  | { ok: false; reason: 'declined' | 'busy' | 'failed' };
 
 /** A file the user confirmed. `url` takes Range requests; a Maildir's messages are at `url/<position>`. */
 export interface LocalImportFile {
@@ -174,7 +176,8 @@ export type LocalImportGrantResult =
 
 export type LocalImportResumeResult =
   | Extract<LocalImportGrantResult, { ok: true }>
-  | { ok: false; reason: 'later' | 'stopped' | 'busy' | 'invalid' | 'unknown'; refused?: string[] };
+  /** `in-use`: none can be read right now, which may pass, so the job stays. `invalid`: they're gone, and so is the job. */
+  | { ok: false; reason: 'later' | 'stopped' | 'busy' | 'invalid' | 'in-use' | 'unknown'; refused?: string[] };
 
 export interface PrivacyState {
   telemetry: { on: boolean; forcedOff: boolean };

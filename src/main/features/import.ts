@@ -14,6 +14,8 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, protocol } from 'electron';
 import {
   CHANNEL,
@@ -22,11 +24,13 @@ import {
   type LocalImportResumeResult,
   type LocalImportScanResult,
 } from '../../shared/bridge';
-import { countContacts, readVCards } from '../import-books';
-import { IMPORT_SCHEME, ImportGrants, validateConfirmed, validateContent, type ConfirmedFile } from '../import-files';
-import { scanForMailData, thunderbirdRunning, type FoundBook, type FoundFile, type ScanEnv } from '../import-scan';
+import { IMPORT_SCHEME, ImportGrants, type ConfirmedFile } from '../import-files';
+import type { FoundBook, FoundFile, ScanEnv } from '../import-scan';
+import { runImportWorker, type WorkerOutcome } from '../import-worker-client';
+import type { WorkerScan } from '../import-worker';
 import type { StoredImportJob } from '../state';
 import { strings } from '../strings';
+import { addWipeStep } from './local-wipe';
 import type { Feature } from './index';
 
 /** A job not touched for this long is forgotten: the file has likely changed or been forgotten. */
@@ -34,6 +38,17 @@ const JOB_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 /** After a no, a page asking again gets a no without a dialog, so it can't nag. */
 const QUIET_AFTER_NO_MS = 5000;
 const NAMES_IN_PROMPT = 12;
+/** How long the worker may look. Past that it goes, and what it found so far is the answer. */
+const SCAN_TIMEOUT_MS = 60_000;
+/** How long it may look at confirmed files and read address books. */
+const PREPARE_TIMEOUT_MS = 120_000;
+
+declare const __BULWARK_TEST_BUILD__: boolean;
+
+/** A test's stand-in for a file that never answers. */
+const TEST_HANG = __BULWARK_TEST_BUILD__ && process.argv.includes('--bulwark-test-import-hang');
+
+const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'import-worker.cjs');
 
 /** Before `ready`, or the scheme isn't privileged. bypassCSP: an instance's own CSP has no reason to name it. */
 export function registerImportScheme(): void {
@@ -96,6 +111,17 @@ export const importFeature: Feature = {
     };
     saveJobs(stored().filter((job) => Date.now() - job.touchedAt < JOB_MAX_AGE_MS));
 
+    // A wipe takes the paths the user confirmed and every way to read them, for all origins:
+    // the state file is the profile's, whichever page is open.
+    addWipeStep(async () => {
+      await grants.releaseAll();
+      candidates = new Map();
+      bookHandles = new Map();
+      profiles = [];
+      ctx.state.data.importJobs = [];
+      ctx.state.save();
+    });
+
     /** One dialog at a time, and quiet for a moment after a no. */
     const question = async <T>(busy: T, declined: T, run: () => Promise<T>): Promise<T> => {
       if (asking) return busy;
@@ -127,21 +153,18 @@ export const importFeature: Feature = {
           noLink: true,
         });
         if (response !== 0) return declined;
-        const found = scanForMailData(scanEnv());
+        const outcome: WorkerOutcome = await runImportWorker(
+          WORKER,
+          { op: 'scan', env: scanEnv(), hangAfterFirstProfile: TEST_HANG },
+          TEST_HANG ? 3000 : SCAN_TIMEOUT_MS,
+        );
+        let found: WorkerScan | null = null;
+        if (outcome.done && outcome.message.type === 'scan') found = outcome.message.scan;
+        else if (!outcome.done) found = outcome.partial;
+        if (!found) return { ok: false, reason: 'failed' };
         candidates = new Map(found.files.map((file) => [randomBytes(16).toString('base64url'), file]));
         profiles = found.profiles;
-        const books = await Promise.all(
-          found.books.map(async (book) => {
-            try {
-              return { book, contacts: await countContacts(book.path) };
-            } catch {
-              // No node:sqlite here, a locked file, or not an address book.
-              return null;
-            }
-          }),
-        );
-        const usable = books.filter((entry): entry is { book: FoundBook; contacts: number } => !!entry && entry.contacts > 0);
-        const bookEntries = usable.map((entry) => ({ handle: randomBytes(16).toString('base64url'), ...entry }));
+        const bookEntries = found.books.map((book) => ({ handle: randomBytes(16).toString('base64url'), book }));
         bookHandles = new Map(bookEntries.map((entry) => [entry.handle, entry.book]));
         return {
           ok: true,
@@ -157,24 +180,40 @@ export const importFeature: Feature = {
             lastModified: file.lastModified,
             messages: file.messages,
           })),
-          books: bookEntries.map((entry) => ({ handle: entry.handle, group: entry.book.group, name: entry.book.name, contacts: entry.contacts })),
+          books: bookEntries.map((entry) => ({ handle: entry.handle, group: entry.book.group, name: entry.book.name, contacts: entry.book.contacts })),
           refused: found.refused,
           calendars: found.calendars,
-          thunderbirdRunning: await thunderbirdRunning(profiles),
+          thunderbirdRunning: found.thunderbirdRunning,
+          ...(outcome.done ? {} : { incomplete: true }),
         };
       });
     });
 
-    /** The files that pass, as grants of a job. What doesn't pass is named. */
-    const openJob = async (jobId: string, files: ConfirmedFile[]): Promise<{ granted: LocalImportFile[]; refused: string[] }> => {
+    /**
+     * The files that pass, as grants of a job. What doesn't pass is named. Null when the worker
+     * didn't come back: nothing is known about any of them.
+     */
+    const openJob = async (jobId: string, files: ConfirmedFile[], books: FoundBook[], jobProfiles: string[]) => {
+      const outcome = await runImportWorker(
+        WORKER,
+        { op: 'prepare', files, books: books.map((book) => book.path), profiles: jobProfiles, platform: process.platform },
+        PREPARE_TIMEOUT_MS,
+      );
+      if (!outcome.done || outcome.message.type !== 'prepared') return null;
+      const { message } = outcome;
       const granted: LocalImportFile[] = [];
       const refused: string[] = [];
-      for (const file of files) {
-        const failure = validateConfirmed(file) ?? (await validateContent(file));
-        if (failure) refused.push(file.name);
-        else granted.push(grants.add(jobId, file));
-      }
-      return { granted, refused };
+      let inUse = false;
+      message.files.forEach((answer, index) => {
+        if ('prepared' in answer) {
+          granted.push(grants.add(jobId, files[index], answer.prepared));
+          return;
+        }
+        refused.push(files[index].name);
+        if (answer.failure === 'in-use') inUse = true;
+      });
+      const refusedBooks = books.filter((book) => message.refusedBooks.includes(book.path)).map((book) => book.name);
+      return { granted, refused: [...refused, ...refusedBooks], inUse, contacts: message.contacts, thunderbirdRunning: message.thunderbirdRunning };
     };
 
     ctx.handle(CHANNEL.localImportGrant, (_event, window, handles): Promise<LocalImportGrantResult> => {
@@ -190,19 +229,11 @@ export const importFeature: Feature = {
         const files = wanted.flatMap((handle) => candidates.get(handle) ?? []);
         const books = wanted.flatMap((handle) => bookHandles.get(handle) ?? []);
         const confirmed = files.map(toConfirmed);
-        // Before asking, so the dialog doesn't list what can't be read.
-        const usable: ConfirmedFile[] = [];
-        const refused: string[] = [];
-        for (const file of confirmed) {
-          if (validateConfirmed(file) ?? (await validateContent(file))) refused.push(file.name);
-          else usable.push(file);
-        }
-        if (usable.length === 0 && books.length === 0) return { ok: false, reason: 'invalid', refused };
-        const size = files.filter((file) => !refused.includes(file.name)).reduce((total, file) => total + file.size, 0);
+        const size = files.reduce((total, file) => total + file.size, 0);
         const response = await ask(window, {
           type: 'question',
-          message: text.importReadTitle(host, usable.length + books.length),
-          detail: `${text.importReadDetail(formatBytes(size))}\n\n${pathList([...usable.map((file) => file.path), ...books.map((book) => book.path)])}`,
+          message: text.importReadTitle(host, confirmed.length + books.length),
+          detail: `${text.importReadDetail(formatBytes(size))}\n\n${pathList([...confirmed.map((file) => file.path), ...books.map((book) => book.path)])}`,
           buttons: [text.allow, text.importDeny],
           defaultId: 1,
           cancelId: 1,
@@ -210,24 +241,15 @@ export const importFeature: Feature = {
         });
         if (response !== 0) return declined;
         const jobId = randomBytes(16).toString('base64url');
-        const { granted, refused: late } = await openJob(jobId, usable);
-        const contacts: string[] = [];
-        for (const book of books) {
-          // The address book only ever comes from the file main found.
-          if (validateConfirmed({ path: book.path, root: book.root, kind: 'mbox', name: book.name, folder: [] })) {
-            refused.push(book.name);
-            continue;
-          }
-          try {
-            contacts.push(...(await readVCards(book.path)));
-          } catch {
-            refused.push(book.name);
-          }
-        }
+        const opened = await openJob(jobId, confirmed, books, profiles);
+        if (!opened) return { ok: false, reason: 'invalid', refused: [...confirmed.map((file) => file.name), ...books.map((book) => book.name)] };
+        const { granted, refused, contacts, thunderbirdRunning } = opened;
+        if (granted.length === 0 && contacts.length === 0) return { ok: false, reason: 'invalid', refused };
         if (granted.length > 0) {
-          saveJobs([...stored(), { id: jobId, origin: ctx.origin, touchedAt: Date.now(), profiles, files: usable.filter((file) => !late.includes(file.name)) }]);
+          const grantedNames = new Set(granted.map((file) => file.name));
+          saveJobs([...stored(), { id: jobId, origin: ctx.origin, touchedAt: Date.now(), profiles, files: confirmed.filter((file) => grantedNames.has(file.name)) }]);
         }
-        return { ok: true, jobId, files: granted, contacts, refused: [...refused, ...late], thunderbirdRunning: await thunderbirdRunning(profiles) };
+        return { ok: true, jobId, files: granted, contacts, refused, thunderbirdRunning };
       });
     });
 
@@ -254,11 +276,19 @@ export const importFeature: Feature = {
         }
         if (response !== 0) return later;
         await grants.release(job.id);
-        const { granted, refused } = await openJob(job.id, job.files);
-        if (granted.length === 0) return { ok: false, reason: 'invalid', refused };
+        const opened = await openJob(job.id, job.files, [], job.profiles);
+        const names = job.files.map((file) => file.name);
+        // Nothing known about any of them: they may well come back.
+        if (!opened) return { ok: false, reason: 'in-use', refused: names };
+        if (opened.granted.length === 0) {
+          if (opened.inUse) return { ok: false, reason: 'in-use', refused: opened.refused };
+          // All gone for good. Nothing can come of this job, so it doesn't keep their paths either.
+          saveJobs(stored().filter((entry) => entry.id !== job.id));
+          return { ok: false, reason: 'invalid', refused: opened.refused };
+        }
         job.touchedAt = Date.now();
         saveJobs(stored());
-        return { ok: true, jobId: job.id, files: granted, contacts: [], refused, thunderbirdRunning: await thunderbirdRunning(job.profiles) };
+        return { ok: true, jobId: job.id, files: opened.granted, contacts: [], refused: opened.refused, thunderbirdRunning: opened.thunderbirdRunning };
       });
     });
 
@@ -269,7 +299,7 @@ export const importFeature: Feature = {
       saveJobs(stored().filter((job) => job.id !== jobId));
     });
     ctx.handle(CHANNEL.localImportReleaseAll, async () => {
-      await Promise.all(stored().map((job) => grants.release(job.id)));
+      await grants.releaseAll();
       candidates = new Map();
       bookHandles = new Map();
       saveJobs([]);

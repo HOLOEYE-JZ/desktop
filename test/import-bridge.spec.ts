@@ -109,7 +109,7 @@ test.describe('window.bulwarkDesktop.localImport', () => {
     scan = await bridgeCall<Scan>(page, 'scan');
     expect(scan.ok).toBe(true);
     const folders = scan.candidates.map((c) => `${c.kind}:${c.folder.join('/')}`).sort();
-    expect(folders).toEqual(['maildir:Maildir-BRIDGE', 'mbox:Fixture-BRIDGE', 'mbox:Fixture-BRIDGE/Year 2020', 'mbox:Inbox', 'mbox:Sent', 'pst:']);
+    expect(folders).toEqual(['maildir:Maildir-BRIDGE', 'mbox:Drafts', 'mbox:Entwürfe-BRIDGE', 'mbox:Entwürfe-BRIDGE/Grün', 'mbox:Fixture-BRIDGE', 'mbox:Fixture-BRIDGE/Year 2020', 'mbox:Inbox', 'mbox:Sent', 'pst:']);
     expect(scan.refused).toEqual([{ name: 'me@example.org.ost', reason: 'ost' }]);
     expect(scan.calendars).toBe(1);
     expect(scan.books[0].contacts).toBe(2);
@@ -260,6 +260,8 @@ test.describe('window.bulwarkDesktop.localImport', () => {
       // And a resume after a restart would refuse it as well.
       const resumed = await bridgeCall<Result>(page, 'resume', again.jobId);
       expect(resumed).toMatchObject({ ok: false, reason: 'invalid' });
+      // Nothing can come of it any more, so main doesn't keep the paths either.
+      expect(await bridgeCall<Result>(page, 'resume', again.jobId)).toEqual({ ok: false, reason: 'unknown' });
     } finally {
       unlinkSync(fixture.localFolders);
       renameSync(moved, fixture.localFolders);

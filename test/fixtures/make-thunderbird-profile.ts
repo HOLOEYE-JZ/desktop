@@ -66,8 +66,15 @@ export function makeThunderbirdProfile(base: string, tag: string): FixtureProfil
   };
   writeFolder('Inbox', mbox(tag, ['in-1', 'in-2', { name: 'in-deleted', status: '0009' }]));
   writeFolder('Sent', mbox(tag, ['sent-1']));
+  writeFolder('Drafts', mbox(tag, ['draft-1']));
   writeFolder(`Fixture-${tag}`, mbox(tag, ['top-1']));
   writeFolder(`Fixture-${tag}.sbd/Year 2020`, mbox(tag, ['deep-1', 'deep-2']));
+  // What IMAP folders look like on the disk: modified UTF-7, and what isn't a mailbox next to it.
+  const imap = path.join(profileDir, 'ImapMail', 'imap.example.org');
+  mkdirSync(path.join(imap, `Entw&APw-rfe-${tag}.sbd`), { recursive: true });
+  writeFileSync(path.join(imap, `Entw&APw-rfe-${tag}`), mbox(tag, ['imap-top']));
+  writeFileSync(path.join(imap, `Entw&APw-rfe-${tag}.sbd`, 'Gr&APw-n'), mbox(tag, ['imap-deep']));
+  writeFileSync(path.join(imap, 'imapfilterlog.html'), '<html></html>');
   // Empty folders stay off the list.
   writeFolder('Trash', '');
   // Files that aren't mail, next to it.
@@ -103,6 +110,9 @@ export function makeThunderbirdProfile(base: string, tag: string): FixtureProfil
     expected: {
       Inbox: ['in-1', 'in-2'],
       Sent: ['sent-1'],
+      Drafts: ['draft-1'],
+      [`Entwürfe-${tag}`]: ['imap-top'],
+      [`Entwürfe-${tag}/Grün`]: ['imap-deep'],
       [`Fixture-${tag}`]: ['top-1'],
       [`Fixture-${tag}/Year 2020`]: ['deep-1', 'deep-2'],
       [`Maildir-${tag}`]: ['maildir-1', 'maildir-2'],

@@ -2,10 +2,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { expect, test } from '@playwright/test';
 import { readVCards, countContacts, vCardFromProperties } from '../src/main/import-books';
-import { ImportGrants, validateConfirmed, validateContent, type ConfirmedFile } from '../src/main/import-files';
-import { dataFileType, parseProfilesIni, profileInUse, scanForMailData, thunderbirdHomes, type ScanEnv } from '../src/main/import-scan';
+import { ImportGrants, prepareFile, validateConfirmed, validateContent, type ConfirmedFile } from '../src/main/import-files';
+import { dataFileType, decodeModifiedUtf7, parseProfilesIni, profileInUse, readFolderCache, scanForMailData, thunderbirdHomes, type ScanEnv, type ScanResult } from '../src/main/import-scan';
 import { makeThunderbirdProfile } from './fixtures/make-thunderbird-profile';
 
 const PST = path.join(import.meta.dirname, 'fixtures', 'Outlook.pst');
@@ -25,6 +26,25 @@ function workspace(): { base: string; env: ScanEnv; done: () => void } {
 }
 
 const link = (target: string, at: string) => symlinkSync(target, at, 'junction');
+
+/** What the feature does in two steps, the first of them in the worker. */
+async function grantOf(grants: ImportGrants, file: ConfirmedFile) {
+  const answer = await prepareFile(file);
+  if ('failure' in answer) throw new Error(answer.failure);
+  return grants.add('job', file, answer.prepared);
+}
+
+/** Holds a file with no sharing, as a virus scanner or Thunderbird can. Resolves once it's held. */
+async function holdFile(file: string): Promise<ChildProcess> {
+  const holder = spawn('powershell.exe', ['-NoProfile', '-Command', `$f=[IO.File]::Open('${file}','Open','ReadWrite','None'); Write-Output held; Start-Sleep 60`], { stdio: ['ignore', 'pipe', 'ignore'] });
+  await new Promise<void>((resolve) => holder.stdout!.once('data', () => resolve()));
+  return holder;
+}
+
+async function letGo(holder: ChildProcess): Promise<void> {
+  holder.kill();
+  await new Promise((resolve) => setTimeout(resolve, 600));
+}
 
 test.describe('finding Thunderbird profiles', () => {
   test('profiles.ini: relative and absolute paths, only profile sections', () => {
@@ -52,8 +72,8 @@ test.describe('finding Thunderbird profiles', () => {
       makeThunderbirdProfile(base, 'T1');
       const found = scanForMailData(env);
       const folders = found.files.map((file) => `${file.kind}:${file.folder.join('/')}`).sort();
-      expect(folders).toEqual(['maildir:Maildir-T1', 'mbox:Fixture-T1', 'mbox:Fixture-T1/Year 2020', 'mbox:Inbox', 'mbox:Sent']);
-      expect(found.files.every((file) => file.group === 'default' && file.account === 'Local Folders' && file.app === 'thunderbird')).toBe(true);
+      expect(folders).toEqual(['maildir:Maildir-T1', 'mbox:Drafts', 'mbox:Entwürfe-T1', 'mbox:Entwürfe-T1/Grün', 'mbox:Fixture-T1', 'mbox:Fixture-T1/Year 2020', 'mbox:Inbox', 'mbox:Sent']);
+      expect(found.files.every((file) => file.group === 'default' && file.app === 'thunderbird')).toBe(true);
       // Stable across scans and different per folder: the checkpoint's key uses it.
       expect(new Set(found.files.map((file) => file.name)).size).toBe(found.files.length);
       expect(found.files.find((file) => file.kind === 'maildir')?.messages).toBe(3);
@@ -71,7 +91,7 @@ test.describe('finding Thunderbird profiles', () => {
       const imap = path.join(profileDir, 'ImapMail', 'imap.example.org');
       mkdirSync(path.join(imap, 'INBOX.sbd'), { recursive: true });
       writeFileSync(path.join(imap, 'INBOX.sbd', 'Work'), 'From - Tue May 05 10:00:00 2020\r\nSubject: x\r\n\r\nbody\r\n\r\n');
-      const file = scanForMailData(env).files.find((entry) => entry.account === 'imap.example.org');
+      const file = scanForMailData(env).files.find((entry) => entry.account === 'imap.example.org' && entry.folder[0] === 'INBOX');
       expect(file?.folder).toEqual(['INBOX', 'Work']);
     } finally {
       done();
@@ -105,6 +125,7 @@ test.describe('finding Thunderbird profiles', () => {
       const outside = path.join(base, 'SecretMail');
       mkdirSync(path.join(outside, 'acct'), { recursive: true });
       writeFileSync(path.join(outside, 'acct', 'Stolen'), 'From - Tue May 05 10:00:00 2020\r\nSubject: secret\r\n\r\nbody\r\n\r\n');
+      rmSync(path.join(profileDir, 'ImapMail'), { recursive: true });
       link(outside, path.join(profileDir, 'ImapMail'));
       const found = scanForMailData(env).files.map((file) => file.folder.join('/'));
       expect(found).not.toContain('Stolen');
@@ -190,6 +211,108 @@ test.describe('finding Outlook files', () => {
   });
 });
 
+test.describe('folder names', () => {
+  test('modified UTF-7 is decoded, and what is not valid stays as it is', () => {
+    expect(decodeModifiedUtf7('Entw&APw-rfe')).toBe('Entwürfe');
+    expect(decodeModifiedUtf7('Gesch&AOQ-ftliches')).toBe('Geschäftliches');
+    expect(decodeModifiedUtf7('Tom &- Jerry')).toBe('Tom & Jerry');
+    expect(decodeModifiedUtf7('&ZeVnLIqe-')).toBe('日本語');
+    expect(decodeModifiedUtf7('Plain')).toBe('Plain');
+    expect(decodeModifiedUtf7('R&D')).toBe('R&D');
+    expect(decodeModifiedUtf7('&A-')).toBe('&A-');
+  });
+
+  test('only ImapMail is decoded: a local folder can really have such a name', () => {
+    const { base, env, done } = workspace();
+    try {
+      const { localFolders, profileDir } = makeThunderbirdProfile(base, 'U7');
+      writeFileSync(path.join(localFolders, 'Local &APw-'), 'From - Tue May 05 10:00:00 2020\r\nSubject: x\r\n\r\nbody\r\n\r\n');
+      const found = scanForMailData(env).files;
+      const folderOf = (account: string) => found.filter((file) => file.account === account).map((file) => file.folder.join('/'));
+      expect(folderOf('Local Folders')).toContain('Local &APw-');
+      expect(folderOf('imap.example.org')).toEqual(['Entwürfe-U7', 'Entwürfe-U7/Grün']);
+      // The checkpoint's key keeps the names on the disk.
+      expect(found.find((file) => file.folder.join('/') === 'Entwürfe-U7/Grün')?.name).toBe('default/imap.example.org/Entw&APw-rfe-U7/Gr&APw-n');
+      expect(profileDir).toBeTruthy();
+    } finally {
+      done();
+    }
+  });
+
+  test('a hashed name becomes the real one through folderCache.json, by a path that survives moving the profile', () => {
+    const { base, env, done } = workspace();
+    try {
+      const { localFolders, profileDir } = makeThunderbirdProfile(base, 'FC');
+      const hashed = 'a1b2c3d4';
+      writeFileSync(path.join(localFolders, hashed), 'From - Tue May 05 10:00:00 2020\r\nSubject: x\r\n\r\nbody\r\n\r\n');
+      mkdirSync(path.join(localFolders, `${hashed}.sbd`));
+      writeFileSync(path.join(localFolders, `${hashed}.sbd`, 'Child'), 'From - Tue May 05 10:00:00 2020\r\nSubject: y\r\n\r\nbody\r\n\r\n');
+      writeFileSync(path.join(profileDir, 'folderCache.json'), JSON.stringify({
+        [`D:\\Elsewhere\\Profiles\\x\\Mail\\Local Folders\\${hashed}.msf`]: { folderName: 'A name / too odd for a file', flags: 4 },
+        'not a path': { folderName: 'nothing' },
+      }));
+      expect([...readFolderCache(profileDir).values()]).toEqual(['A name / too odd for a file']);
+      const found = scanForMailData(env).files.map((file) => file.folder);
+      expect(found).toContainEqual(['A name / too odd for a file']);
+      expect(found).toContainEqual(['A name / too odd for a file', 'Child']);
+    } finally {
+      done();
+    }
+  });
+
+  test('a damaged folderCache.json only means the file names stay', () => {
+    const { base, env, done } = workspace();
+    try {
+      const { profileDir } = makeThunderbirdProfile(base, 'FD');
+      writeFileSync(path.join(profileDir, 'folderCache.json'), '{ not json');
+      expect(scanForMailData(env).files.map((file) => file.folder[0])).toContain('Inbox');
+    } finally {
+      done();
+    }
+  });
+
+  test('only .msf is left out by name: anything else by what it starts with', () => {
+    const { base, env, done } = workspace();
+    try {
+      const { localFolders } = makeThunderbirdProfile(base, 'NM');
+      const mail = 'From - Tue May 05 10:00:00 2020\r\nSubject: x\r\n\r\nbody\r\n\r\n';
+      // Real folders called like files Thunderbird also keeps: mail is mail.
+      writeFileSync(path.join(localFolders, 'Reports.txt'), mail);
+      writeFileSync(path.join(localFolders, 'Backup.bak'), mail);
+      writeFileSync(path.join(localFolders, 'notes.txt'), 'not mail at all');
+      writeFileSync(path.join(localFolders, 'Fake.msf'), mail);
+      const folders = scanForMailData(env).files.map((file) => file.folder[0]);
+      expect(folders).toContain('Reports.txt');
+      expect(folders).toContain('Backup.bak');
+      expect(folders).not.toContain('notes.txt');
+      expect(folders).not.toContain('Fake.msf');
+      expect(folders).not.toContain('msgFilterRules.dat');
+    } finally {
+      done();
+    }
+  });
+});
+
+test.describe('a scan that gets stuck', () => {
+  test('says what it has after each profile, and leaves a network path for last', () => {
+    const { base, env, done } = workspace();
+    try {
+      makeThunderbirdProfile(base, 'PR');
+      const ini = path.join(env.appData, 'Thunderbird', 'profiles.ini');
+      writeFileSync(ini, ['[Profile0]', 'Name=far', 'IsRelative=0', 'Path=\\\\127.0.0.1\\nosuchshare\\tb', '', '[Profile1]', 'Name=default', 'IsRelative=1', 'Path=Profiles/abc123.default', ''].join('\r\n'));
+      const seen: { files: ScanResult['files']; onlyNetworkLeft: boolean }[] = [];
+      scanForMailData(env, (soFar, onlyNetworkLeft) => seen.push({ files: [...soFar.files], onlyNetworkLeft }));
+      // The first word is about the local profile, though the network one comes first in the file.
+      expect(seen[0].files.some((file) => file.folder[0] === 'Inbox')).toBe(true);
+      expect(seen[0].onlyNetworkLeft).toBe(false);
+      // After what's on this computer it says only the far one is left, so it gets a short leash.
+      expect(seen[1].onlyNetworkLeft).toBe(true);
+    } finally {
+      done();
+    }
+  });
+});
+
 test.describe('a PST that Outlook holds open', () => {
   test('is named as in use, not silently left out', async () => {
     test.skip(process.platform !== 'win32', "Windows' share modes");
@@ -231,6 +354,33 @@ test.describe('address books', () => {
     }
   });
 
+  test('a view is refused, however it was built, and a table is capped', async () => {
+    const { base, done } = workspace();
+    try {
+      const view = path.join(base, 'view.sqlite');
+      const db = new DatabaseSync(view);
+      db.exec(`CREATE VIEW properties AS WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT 'c' || x AS card, 'n' AS name, 'v' AS value FROM c`);
+      db.close();
+      await expect(countContacts(view)).rejects.toThrow('not an address book');
+      await expect(readVCards(view)).rejects.toThrow('not an address book');
+
+      const none = path.join(base, 'none.sqlite');
+      new DatabaseSync(none).close();
+      await expect(countContacts(none)).rejects.toThrow();
+
+      const big = path.join(base, 'big.sqlite');
+      const table = new DatabaseSync(big);
+      table.exec(`CREATE TABLE properties (card TEXT, name TEXT, value TEXT);
+        WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 250000)
+        INSERT INTO properties SELECT 'c' || x, 'DisplayName', 'N' || x FROM c`);
+      table.close();
+      expect(await countContacts(big)).toBe(200_000);
+      expect(await readVCards(big)).toHaveLength(200_000);
+    } finally {
+      done();
+    }
+  });
+
   test('values are escaped, and a card with nothing on it is left out', () => {
     expect(vCardFromProperties(new Map([['DisplayName', 'A, B;C']]))).toContain('FN:A\\, B\\;C');
     expect(vCardFromProperties(new Map([['Custom1', 'x']]))).toBeNull();
@@ -254,7 +404,7 @@ test.describe('reading confirmed files', () => {
     try {
       const grants = new ImportGrants(ORIGIN);
       const file = confirmed(base);
-      const granted = grants.add('job', file);
+      const granted = await grantOf(grants, file);
       expect(granted.url).toMatch(/^bulwark-import:\/\/f\/[\w-]{43}$/);
       const answer = await grants.serve(request(granted.url, 'bytes=0-5'));
       expect(answer.status).toBe(206);
@@ -280,7 +430,7 @@ test.describe('reading confirmed files', () => {
     const { base, done } = workspace();
     try {
       const grants = new ImportGrants(ORIGIN);
-      const granted = grants.add('job', confirmed(base));
+      const granted = await grantOf(grants, confirmed(base));
       expect((await grants.serve(request(granted.url, 'bytes=0-5'))).status).toBe(206);
       await grants.release('job');
       expect((await grants.serve(request(granted.url, 'bytes=0-5'))).status).toBe(404);
@@ -294,13 +444,13 @@ test.describe('reading confirmed files', () => {
     try {
       const file = confirmed(base);
       const grants = new ImportGrants(ORIGIN);
-      const granted = grants.add('job', file);
+      const granted = await grantOf(grants, file);
       const secret = path.join(base, 'secret');
       mkdirSync(secret);
       writeFileSync(path.join(secret, 'Inbox'), 'From - secret '.repeat(100));
       renameSync(file.root, `${file.root}.moved`);
       link(secret, file.root);
-      expect(validateConfirmed(file)).toBe('moved');
+      expect(await validateConfirmed(file)).toBe('moved');
       const answer = await grants.serve(request(granted.url, 'bytes=0-5'));
       expect(answer.status).toBe(403);
       unlinkSync(file.root);
@@ -314,7 +464,7 @@ test.describe('reading confirmed files', () => {
     try {
       const file = confirmed(base);
       const grants = new ImportGrants(ORIGIN);
-      const granted = grants.add('job', file);
+      const granted = await grantOf(grants, file);
       writeFileSync(file.path, `${readFileSync(file.path, 'latin1')}From - later\r\n`);
       expect((await grants.serve(request(granted.url, `bytes=${granted.size}-${granted.size + 5}`))).status).toBe(416);
       writeFileSync(file.path, 'From - short');
@@ -333,7 +483,7 @@ test.describe('reading confirmed files', () => {
       writeFileSync(path.join(dir, 'cur', '1'), 'first');
       writeFileSync(path.join(dir, 'cur', '2'), 'second');
       const grants = new ImportGrants(ORIGIN);
-      const granted = grants.add('job', { path: dir, root, kind: 'maildir', name: 'Box', folder: ['Box'] });
+      const granted = await grantOf(grants, { path: dir, root, kind: 'maildir', name: 'Box', folder: ['Box'] });
       expect(granted.entrySizes).toEqual([5, 6]);
       expect(await (await grants.serve(request(`${granted.url}/0`))).text()).toBe('first');
       expect(await (await grants.serve(request(`${granted.url}/1`))).text()).toBe('second');
@@ -356,6 +506,52 @@ test.describe('reading confirmed files', () => {
     }
   });
 
+  test('a message held by another program is no deleted message: 503, then it reads, and only a real absence is a 404', async () => {
+    test.skip(process.platform !== 'win32', "Windows' share modes");
+    const { base, done } = workspace();
+    let holder: ChildProcess | null = null;
+    try {
+      const root = path.join(base, 'root');
+      const dir = path.join(root, 'Box');
+      mkdirSync(path.join(dir, 'cur'), { recursive: true });
+      writeFileSync(path.join(dir, 'cur', '1'), 'first');
+      writeFileSync(path.join(dir, 'cur', '2'), 'second');
+      const grants = new ImportGrants(ORIGIN);
+      const granted = await grantOf(grants, { path: dir, root, kind: 'maildir', name: 'Box', folder: ['Box'] });
+      holder = await holdFile(path.join(dir, 'cur', '1'));
+      expect((await grants.serve(request(`${granted.url}/0`))).status).toBe(503);
+      await letGo(holder);
+      holder = null;
+      expect(await (await grants.serve(request(`${granted.url}/0`))).text()).toBe('first');
+      rmSync(path.join(dir, 'cur', '2'));
+      expect((await grants.serve(request(`${granted.url}/1`))).status).toBe(404);
+    } finally {
+      if (holder) await letGo(holder);
+      done();
+    }
+  });
+
+  test('an mbox held by another program answers 503 too, not 404', async () => {
+    test.skip(process.platform !== 'win32', "Windows' share modes");
+    const { base, done } = workspace();
+    let holder: ChildProcess | null = null;
+    try {
+      const file = confirmed(base);
+      const grants = new ImportGrants(ORIGIN);
+      const granted = await grantOf(grants, file);
+      holder = await holdFile(file.path);
+      expect((await grants.serve(request(granted.url, 'bytes=0-5'))).status).toBe(503);
+      // And a job asked to go on hears it is in use, not gone.
+      expect(await prepareFile(file)).toEqual({ failure: 'in-use' });
+      await letGo(holder);
+      holder = null;
+      expect((await grants.serve(request(granted.url, 'bytes=0-5'))).status).toBe(206);
+    } finally {
+      if (holder) await letGo(holder);
+      done();
+    }
+  });
+
   test('validation: a path outside the root, an .ost and a file that stopped being mail are refused', async () => {
     const { base, done } = workspace();
     try {
@@ -363,11 +559,11 @@ test.describe('reading confirmed files', () => {
       const other = path.join(base, 'other');
       mkdirSync(other);
       writeFileSync(path.join(other, 'Inbox'), 'From - x\r\n');
-      expect(validateConfirmed({ ...file, path: path.join(other, 'Inbox') })).toBe('outside');
-      expect(validateConfirmed({ ...file, path: path.join(file.root, 'gone') })).toBe('gone');
+      expect(await validateConfirmed({ ...file, path: path.join(other, 'Inbox') })).toBe('outside');
+      expect(await validateConfirmed({ ...file, path: path.join(file.root, 'gone') })).toBe('gone');
       const ost = path.join(file.root, 'x.ost');
       writeFileSync(ost, 'x');
-      expect(validateConfirmed({ ...file, path: ost, kind: 'pst' })).toBe('ost');
+      expect(await validateConfirmed({ ...file, path: ost, kind: 'pst' })).toBe('ost');
       expect(await validateContent(file)).toBeNull();
       writeFileSync(file.path, 'not mail any more');
       expect(await validateContent(file)).toBe('not-mail');

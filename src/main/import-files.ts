@@ -16,6 +16,10 @@
  * - Before a file is first opened, and again after a handle was closed, its realpath must
  *   be the path that was confirmed, inside its root. Swapping a folder for a link after
  *   confirming gets 403.
+ * - A 404 is only for what is really gone, since the import moves past it for good. A file
+ *   that can't be read right now gets a 503, and the page tries again.
+ * - Nothing in the request path touches the disk synchronously: a network path must not be
+ *   able to hold main.
  * - Maildir messages are looked up by position in the confirmed folder's own listing.
  *
  * Chromium's protocol handler sees no Origin or Sec-Fetch headers here, so a request
@@ -24,8 +28,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { lstatSync, realpathSync, statSync } from 'node:fs';
-import { open, readFile, type FileHandle } from 'node:fs/promises';
+import { lstat, open, readFile, realpath, stat, type FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { dataFileType, isInside, looksLikeMbox, maildirEntries, type ImportKind, type MaildirEntry } from './import-scan';
 
@@ -55,6 +58,13 @@ export interface GrantedFile {
   entrySizes?: number[];
 }
 
+/** What a read needs to know about a file, found out in the import worker. */
+export interface PreparedFile {
+  size: number;
+  lastModified: number;
+  entries?: MaildirEntry[];
+}
+
 interface Grant {
   token: string;
   jobId: string;
@@ -64,27 +74,32 @@ interface Grant {
   entries?: MaildirEntry[];
 }
 
-export type ValidationFailure = 'gone' | 'moved' | 'outside' | 'ost' | 'not-mail';
+/** `in-use`: it's there and can't be read right now, which may pass. `gone` won't. */
+export type ValidationFailure = 'gone' | 'in-use' | 'moved' | 'outside' | 'ost' | 'not-mail';
+
+function failureOf(error: unknown): ValidationFailure {
+  return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'gone' : 'in-use';
+}
 
 /** Throws nothing: says why a confirmed file can't be read, or null if it can. */
-export function validateConfirmed(file: ConfirmedFile): ValidationFailure | null {
+export async function validateConfirmed(file: ConfirmedFile): Promise<ValidationFailure | null> {
   let real: string;
   let root: string;
   try {
-    real = realpathSync(file.path);
-    root = realpathSync(file.root);
-  } catch {
-    return 'gone';
+    real = await realpath(file.path);
+    root = await realpath(file.root);
+  } catch (error) {
+    return failureOf(error);
   }
   // Both were realpaths when confirmed, so a difference means a link came in between.
   if (real !== file.path || root !== file.root) return 'moved';
   if (!isInside(root, real)) return 'outside';
   if (/\.ost$/i.test(real)) return 'ost';
   try {
-    if (file.kind === 'maildir') return lstatSync(path.join(real, 'cur')).isDirectory() ? null : 'not-mail';
-    if (!statSync(real).isFile()) return 'not-mail';
-  } catch {
-    return 'gone';
+    if (file.kind === 'maildir') return (await lstat(path.join(real, 'cur'))).isDirectory() ? null : 'not-mail';
+    if (!(await stat(real)).isFile()) return 'not-mail';
+  } catch (error) {
+    return failureOf(error);
   }
   return null;
 }
@@ -109,8 +124,25 @@ export async function validateContent(file: ConfirmedFile): Promise<ValidationFa
     const type = dataFileType(head);
     if (type === 'ost') return 'ost';
     return type === 'pst' ? null : 'not-mail';
-  } catch {
-    return 'gone';
+  } catch (error) {
+    return failureOf(error);
+  }
+}
+
+/** Runs in the import worker: a Maildir folder can be a million files, on a slow disk. */
+export async function prepareFile(file: ConfirmedFile): Promise<{ failure: ValidationFailure } | { prepared: PreparedFile }> {
+  const failure = (await validateConfirmed(file)) ?? (await validateContent(file));
+  if (failure) return { failure };
+  try {
+    if (file.kind === 'maildir') {
+      const entries = maildirEntries(file.path);
+      const stats = await stat(path.join(file.path, 'cur'));
+      return { prepared: { size: entries.reduce((total, entry) => total + entry.size, 0), lastModified: stats.mtimeMs, entries } };
+    }
+    const stats = await stat(file.path);
+    return { prepared: { size: stats.size, lastModified: stats.mtimeMs } };
+  } catch (error) {
+    return { failure: failureOf(error) };
   }
 }
 
@@ -120,22 +152,24 @@ export class ImportGrants {
 
   constructor(private readonly origin: string) {}
 
-  /** Call with a file validateConfirmed and validateContent passed. */
-  add(jobId: string, file: ConfirmedFile): GrantedFile {
+  /** Call with what prepareFile found out about the file. No disk here: main must not wait for one. */
+  add(jobId: string, file: ConfirmedFile, prepared: PreparedFile): GrantedFile {
     const token = randomBytes(32).toString('base64url');
-    const entries = file.kind === 'maildir' ? maildirEntries(file.path) : undefined;
-    const stat = statSync(file.kind === 'maildir' ? path.join(file.path, 'cur') : file.path);
-    const size = entries ? entries.reduce((total, entry) => total + entry.size, 0) : stat.size;
-    this.tokens.set(token, { token, jobId, file, size, entries });
+    this.tokens.set(token, { token, jobId, file, size: prepared.size, entries: prepared.entries });
     return {
       url: `${IMPORT_SCHEME}://f/${token}`,
       name: file.name,
       kind: file.kind,
       folder: file.folder,
-      size,
-      lastModified: stat.mtimeMs,
-      entrySizes: entries?.map((entry) => entry.size),
+      size: prepared.size,
+      lastModified: prepared.lastModified,
+      entrySizes: prepared.entries?.map((entry) => entry.size),
     };
+  }
+
+  /** Every token of every job stops working: a wipe. */
+  async releaseAll(): Promise<void> {
+    await Promise.all([...new Set([...this.tokens.values()].map((grant) => grant.jobId))].map((jobId) => this.release(jobId)));
   }
 
   /** Every token of a job stops working. */
@@ -177,7 +211,7 @@ export class ImportGrants {
       this.handles.set(grant.token, known);
       return known;
     }
-    if (validateConfirmed(grant.file)) return null;
+    if (await validateConfirmed(grant.file)) return null;
     const handle = await open(grant.file.path, 'r');
     this.handles.set(grant.token, handle);
     if (this.handles.size > MAX_OPEN) {
@@ -213,15 +247,18 @@ export class ImportGrants {
   private async serveEntry(grant: Grant, index: number): Promise<Response> {
     const entry = grant.entries?.[index];
     if (!entry) return this.refuse(404);
-    if (validateConfirmed(grant.file)) return this.refuse(403);
+    const failure = await validateConfirmed(grant.file);
+    if (failure === 'in-use') return this.refuse(503);
+    if (failure) return this.refuse(403);
     const target = path.join(grant.file.path, 'cur', entry.name);
     try {
       // A message replaced by a link is not a message.
-      if (!lstatSync(target).isFile() || !isInside(grant.file.path, realpathSync(target))) return this.refuse(403);
+      if (!(await lstat(target)).isFile() || !isInside(grant.file.path, await realpath(target))) return this.refuse(403);
       return new Response(await readFile(target), { status: 200, headers: this.headers() });
-    } catch {
-      // Thunderbird deleted it since. The source counts it as a message that's gone.
-      return this.refuse(404);
+    } catch (error) {
+      // 404 says Thunderbird deleted it, and the import moves past it for good. Only that may
+      // say so: a file a virus scanner holds for a moment is still a message to import.
+      return this.refuse((error as NodeJS.ErrnoException).code === 'ENOENT' ? 404 : 503);
     }
   }
 
@@ -236,7 +273,7 @@ export class ImportGrants {
       if (grant.file.kind === 'maildir') return this.refuse(404);
       return await this.serveRange(grant, request.headers.get('range'));
     } catch {
-      return this.refuse(500);
+      return this.refuse(503);
     }
   }
 }

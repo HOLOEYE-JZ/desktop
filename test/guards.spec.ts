@@ -188,6 +188,34 @@ test.describe('window prefs', () => {
     expect(denied).toEqual({ subframe: 'Not allowed', foreign: 'Not allowed', main: 'allowed' });
   });
 
+  test('each of the import channels goes through the same check', async () => {
+    // A raw ipcMain.handle in the feature would answer a frame. These can read files.
+    const channels = ['scan', 'grant', 'resume', 'release', 'releaseAll'].map((name) => `bulwark:localImport.${name}`);
+    const refused = await app.evaluate(async ({ BrowserWindow, ipcMain }, { origin, channels: names }) => {
+      const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, (e: unknown) => unknown> })._invokeHandlers;
+      const window = BrowserWindow.getAllWindows()[0];
+      const outcome = async (name: string, senderFrame: unknown) => {
+        const handler = handlers.get(name);
+        if (!handler) return 'no handler';
+        try {
+          await handler({ sender: window.webContents, senderFrame });
+          return 'allowed';
+        } catch (error) {
+          return (error as Error).message;
+        }
+      };
+      const out: Record<string, string[]> = {};
+      for (const name of names) {
+        out[name] = [
+          await outcome(name, { url: `${origin}/en/login`, parent: { url: origin } }),
+          await outcome(name, { url: 'https://evil.example/', parent: null }),
+        ];
+      }
+      return out;
+    }, { origin: APP_ORIGIN, channels });
+    for (const name of channels) expect(refused[name], name).toEqual(['Not allowed', 'Not allowed']);
+  });
+
   test('no reload or devtools from the keyboard', async () => {
     await page.evaluate(() => ((window as unknown as { __marker: number }).__marker = 1));
     for (const key of ['F5', 'Control+R', 'Control+Shift+R', 'Control+Shift+I', 'F12']) await page.keyboard.press(key);

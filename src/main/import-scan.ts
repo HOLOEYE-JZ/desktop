@@ -63,14 +63,18 @@ export interface ScanResult {
   calendars: number;
   /** Profile folders, for thunderbirdRunning. */
   profiles: string[];
+  /** A profile found so far is in use. Not on macOS, where it takes a process: see thunderbirdRunning. */
+  running: boolean;
 }
 
 /** A profile can hold many folders, but no reason to read without end. */
 const MAX_ENTRIES = 50_000;
 const MAX_DEPTH = 32;
 
-/** Files Thunderbird keeps next to its mail. Others are told apart by their first bytes. */
-const NOT_MAIL = /\.(msf|dat|html|json|sqlite|sqlite-wal|sqlite-shm|bak|tmp|log|txt|js|mab|sdb|wdseml)$/i;
+/** Thunderbird's index next to each folder. Everything else is told apart by its first bytes. */
+const NOT_MAIL = /\.msf$/i;
+/** More than any folderCache.json: a bigger one isn't worth reading for the names in it. */
+const MAX_FOLDER_CACHE_BYTES = 32 * 1024 * 1024;
 
 function readHead(file: string, length = 512): Buffer {
   const fd = openSync(file, 'r');
@@ -154,16 +158,71 @@ function isMaildir(dir: string): boolean {
   }
 }
 
+/**
+ * IMAP folder names on the disk are in modified UTF-7 (RFC 3501): `Entw&APw-rfe` is Entwürfe,
+ * `&-` is an ampersand, and the base64 uses a comma for the slash. Left as it is when it isn't
+ * valid, since a local folder can have such a name for real.
+ */
+export function decodeModifiedUtf7(name: string): string {
+  try {
+    return name.replace(/&([A-Za-z0-9+,]*)-/g, (_all, encoded: string) => {
+      if (!encoded) return '&';
+      const bytes = Buffer.from(encoded.replace(/,/g, '/'), 'base64');
+      if (bytes.length === 0 || bytes.length % 2 !== 0) throw new Error('not UTF-16');
+      return new TextDecoder('utf-16be', { fatal: true }).decode(bytes);
+    });
+  } catch {
+    return name;
+  }
+}
+
+/** The part of an .msf's path a moved profile keeps: `mail/local folders/inbox.msf`. */
+function folderCacheKey(file: string): string | null {
+  const match = /[\\/]((?:Mail|ImapMail)[\\/].*\.msf)$/i.exec(file);
+  return match ? match[1].replace(/\\/g, '/').toLowerCase() : null;
+}
+
+/**
+ * Thunderbird hashes a folder name it can't use as a file name. folderCache.json, where a
+ * profile has one, gives the real name by the path of the folder's .msf. Without it the
+ * hashed name stays. Reading the Mork in the .msf for this isn't cheap enough.
+ */
+export function readFolderCache(profile: string): Map<string, string> {
+  const names = new Map<string, string>();
+  try {
+    const file = path.join(profile, 'folderCache.json');
+    if (statSync(file).size > MAX_FOLDER_CACHE_BYTES) return names;
+    const cache = JSON.parse(readFileSync(file, 'utf8')) as Record<string, { folderName?: unknown }>;
+    for (const [key, entry] of Object.entries(cache)) {
+      const shortKey = folderCacheKey(key);
+      if (shortKey && typeof entry?.folderName === 'string' && entry.folderName) names.set(shortKey, entry.folderName);
+    }
+  } catch {
+    // None, or not what it should be: the file names it is.
+  }
+  return names;
+}
+
 interface WalkContext {
   root: string;
   group: string;
   account: string;
+  area: string;
+  folderNames: Map<string, string>;
   seen: { entries: number };
   out: FoundFile[];
 }
 
+/** What a folder is called, from the file `name` in `dir`. */
+function folderLabel(dir: string, name: string, ctx: WalkContext): string {
+  const key = folderCacheKey(path.join(dir, `${name}.msf`));
+  const cached = key ? ctx.folderNames.get(key) : undefined;
+  if (cached) return cached;
+  return ctx.area === 'ImapMail' ? decodeModifiedUtf7(name) : name;
+}
+
 /** One account's folder tree: an mbox file, or a Maildir folder, and `<name>.sbd` for what's under it. */
-function walkMailFolder(dir: string, parents: string[], ctx: WalkContext, depth = 0): void {
+function walkMailFolder(dir: string, parents: string[], names: string[], ctx: WalkContext, depth = 0): void {
   if (depth > MAX_DEPTH) return;
   for (const entry of entriesOf(dir)) {
     if (ctx.seen.entries++ >= MAX_ENTRIES) return;
@@ -172,13 +231,14 @@ function walkMailFolder(dir: string, parents: string[], ctx: WalkContext, depth 
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (entry.name.endsWith('.sbd')) {
-        walkMailFolder(full, [...parents, entry.name.slice(0, -'.sbd'.length)], ctx, depth + 1);
+        const base = entry.name.slice(0, -'.sbd'.length);
+        walkMailFolder(full, [...parents, folderLabel(dir, base, ctx)], [...names, base], ctx, depth + 1);
       } else if (isMaildir(full)) {
         const real = resolvedInside(ctx.root, full);
         if (!real) continue;
         const messages = maildirEntries(real);
         if (messages.length === 0) continue;
-        const folder = [...parents, entry.name];
+        const folder = [...parents, folderLabel(dir, entry.name, ctx)];
         ctx.out.push({
           path: real,
           root: ctx.root,
@@ -187,7 +247,8 @@ function walkMailFolder(dir: string, parents: string[], ctx: WalkContext, depth 
           group: ctx.group,
           account: ctx.account,
           folder,
-          name: [ctx.group, ctx.account, ...folder].join('/'),
+          // The names on disk: a checkpoint must not depend on how a name was decoded.
+          name: [ctx.group, ctx.account, ...names, entry.name].join('/'),
           size: messages.reduce((total, message) => total + message.size, 0),
           lastModified: statSync(path.join(real, 'cur')).mtimeMs,
           messages: messages.length,
@@ -201,7 +262,7 @@ function walkMailFolder(dir: string, parents: string[], ctx: WalkContext, depth 
     try {
       const stat = statSync(real);
       if (stat.size === 0 || !looksLikeMbox(readHead(real))) continue;
-      const folder = [...parents, entry.name];
+      const folder = [...parents, folderLabel(dir, entry.name, ctx)];
       ctx.out.push({
         path: real,
         root: ctx.root,
@@ -210,7 +271,7 @@ function walkMailFolder(dir: string, parents: string[], ctx: WalkContext, depth 
         group: ctx.group,
         account: ctx.account,
         folder,
-        name: [ctx.group, ctx.account, ...folder].join('/'),
+        name: [ctx.group, ctx.account, ...names, entry.name].join('/'),
         size: stat.size,
         lastModified: stat.mtimeMs,
       });
@@ -282,12 +343,14 @@ function scanProfile(profile: IniProfile, result: ScanResult): void {
   }
   if (!statSync(root).isDirectory() || result.profiles.includes(root)) return;
   result.profiles.push(root);
+  if (profileInUse(root)) result.running = true;
+  const folderNames = readFolderCache(root);
   const seen = { entries: 0 };
   for (const area of ['Mail', 'ImapMail']) {
     const areaDir = path.join(root, area);
     for (const account of entriesOf(areaDir)) {
       if (!account.isDirectory() || account.isSymbolicLink()) continue;
-      walkMailFolder(path.join(areaDir, account.name), [], { root, group: profile.name, account: account.name, seen, out: result.files });
+      walkMailFolder(path.join(areaDir, account.name), [], [], { root, group: profile.name, account: account.name, area, folderNames, seen, out: result.files });
     }
   }
   for (const entry of entriesOf(root)) {
@@ -344,24 +407,38 @@ function scanOutlook(env: ScanEnv, result: ScanResult): void {
   }
 }
 
-export function scanForMailData(env: ScanEnv): ScanResult {
-  const result: ScanResult = { files: [], books: [], refused: [], calendars: 0, profiles: [] };
+/** A network path can take minutes to say it isn't there. */
+function isNetworkPath(file: string): boolean {
+  return /^(\\\\|\/\/)/.test(file);
+}
+
+/**
+ * `onProgress` hears what's found so far after each profile and after the Outlook files, so a
+ * path that never answers only costs what comes after it. Network paths come last for that.
+ */
+export function scanForMailData(env: ScanEnv, onProgress?: (soFar: ScanResult, onlyNetworkLeft: boolean) => void): ScanResult {
+  const result: ScanResult = { files: [], books: [], refused: [], calendars: 0, profiles: [], running: false };
+  const profiles: IniProfile[] = [];
   for (const home of thunderbirdHomes(env)) {
-    let ini: string;
     try {
-      ini = readFileSync(path.join(home, 'profiles.ini'), 'utf8');
+      profiles.push(...parseProfilesIni(readFileSync(path.join(home, 'profiles.ini'), 'utf8'), home));
     } catch {
-      continue;
-    }
-    for (const profile of parseProfilesIni(ini, home)) {
-      try {
-        scanProfile(profile, result);
-      } catch {
-        // One unreadable profile doesn't take the others with it.
-      }
+      // No Thunderbird here.
     }
   }
+  const scanOne = (profile: IniProfile) => {
+    try {
+      scanProfile(profile, result);
+    } catch {
+      // One unreadable profile doesn't take the others with it.
+    }
+    onProgress?.(result, false);
+  };
+  profiles.filter((profile) => !isNetworkPath(profile.path)).forEach(scanOne);
   scanOutlook(env, result);
+  const far = profiles.filter((profile) => isNetworkPath(profile.path));
+  onProgress?.(result, far.length > 0);
+  far.forEach(scanOne);
   return result;
 }
 

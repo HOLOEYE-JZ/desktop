@@ -4,9 +4,17 @@
  * only single properties, so a card is built from those. Read through Node's own
  * node:sqlite, opened read-only. Calendars stay out: local.sqlite spreads an event over
  * several tables, which is a converter of its own (the UI says so).
+ *
+ * This file comes from the disk and can be anything: `properties` as a view over an endless
+ * query, or a table with billions of rows. It only ever runs in the import worker, under a
+ * timeout, and asks sqlite_master first and stops at MAX_ROWS and MAX_BYTES.
  */
 
 type Row = { card: string; name: string; value: string | null };
+
+/** Far more than anyone's address book. */
+const MAX_ROWS = 200_000;
+const MAX_BYTES = 64 * 1024 * 1024;
 
 function escapeValue(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/\r?\n/g, '\\n').replace(/([,;])/g, '\\$1');
@@ -40,32 +48,54 @@ export function vCardFromProperties(properties: Map<string, string>): string | n
   return lines.join('\r\n');
 }
 
-async function openReadOnly(file: string) {
-  // Dynamic, so a build of Electron without it only loses the address books.
-  const { DatabaseSync } = await import('node:sqlite');
-  return new DatabaseSync(file, { readOnly: true });
+type Sqlite = typeof import('node:sqlite');
+
+/** Dynamic, so a build of Electron without it only loses the address books. */
+export function loadSqlite(): Promise<Sqlite> {
+  return import('node:sqlite');
 }
 
-export async function countContacts(file: string): Promise<number> {
-  const db = await openReadOnly(file);
+function openBook({ DatabaseSync }: Sqlite, file: string) {
+  const db = new DatabaseSync(file, { readOnly: true });
+  // A view can run any query at all. Only a real table is an address book.
+  const kind = db.prepare("SELECT type FROM sqlite_master WHERE name = 'properties'").get() as { type?: string } | undefined;
+  if (kind?.type !== 'table') {
+    db.close();
+    throw new Error('not an address book');
+  }
+  return db;
+}
+
+/** Synchronous, for a scan that reports as it goes: a promise wouldn't get its turn while the scan blocks. */
+export function countContactsWith(sqlite: Sqlite, file: string): number {
+  const db = openBook(sqlite, file);
   try {
-    const row = db.prepare('SELECT COUNT(DISTINCT card) AS n FROM properties').get() as { n: number };
+    const row = db.prepare('SELECT COUNT(DISTINCT card) AS n FROM (SELECT card FROM properties LIMIT ?)').get(MAX_ROWS) as { n: number };
     return row.n;
   } finally {
     db.close();
   }
 }
 
+export async function countContacts(file: string): Promise<number> {
+  return countContactsWith(await loadSqlite(), file);
+}
+
 export async function readVCards(file: string): Promise<string[]> {
-  const db = await openReadOnly(file);
+  const db = openBook(await loadSqlite(), file);
   try {
-    const rows = db.prepare('SELECT card, name, value FROM properties').all() as unknown as Row[];
     const cards = new Map<string, Map<string, string>>();
-    for (const row of rows) {
+    let rows = 0;
+    let bytes = 0;
+    for (const row of db.prepare('SELECT card, name, value FROM properties').iterate() as Iterable<Row>) {
+      if (++rows > MAX_ROWS) break;
       if (row.value === null) continue;
+      const value = String(row.value);
+      bytes += value.length;
+      if (bytes > MAX_BYTES) break;
       let properties = cards.get(row.card);
       if (!properties) cards.set(row.card, (properties = new Map()));
-      properties.set(row.name, String(row.value));
+      properties.set(row.name, value);
     }
     return [...cards.values()].map(vCardFromProperties).filter((card): card is string => card !== null);
   } finally {

@@ -2,16 +2,18 @@ import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, launch, launchStandalone, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, signIn, STALWARTS, tempProfile } from './helpers';
+import { APP_ORIGIN, expectMailShown, fakeOsIntegration, launch, launchStandalone, prompts, removeProfile, SCREENSHOTS, shownPage, signIn, STALWARTS, tempProfile } from './helpers';
 import { makeThunderbirdProfile, mbox, type FixtureProfile } from './fixtures/make-thunderbird-profile';
 
 /**
- * The whole way, on both Stalwarts, as ent-dave: a Thunderbird profile and a PST found on
+ * The whole way, on both Stalwarts, as dso-import: a Thunderbird profile and a PST found on
  * "this computer", confirmed, imported through the real dialog, and read back from the
- * server over JMAP. What each test adds, it takes off the server again.
+ * server over JMAP. It takes off the server what its own account gained, and no other account is touched.
  */
 
-const DAVE = 'ent-dave@example.org';
+// Its own account, made by ~/desktop-offline/dso_import_provision.py on the VM. Nobody else uses it.
+const ACCOUNT = 'dso-import@example.org';
+const PASSWORD = process.env.IT_DSO_PASSWORD ?? '';
 const PST = path.join(import.meta.dirname, 'fixtures', 'Outlook.pst');
 const PST_MESSAGES = 14;
 
@@ -21,7 +23,7 @@ class Jmap {
   constructor(private readonly server: string) {}
 
   private get auth(): string {
-    return `Basic ${Buffer.from(`${DAVE}:${ENT_PASSWORD}`).toString('base64')}`;
+    return `Basic ${Buffer.from(`${ACCOUNT}:${PASSWORD}`).toString('base64')}`;
   }
 
   async open(): Promise<void> {
@@ -49,11 +51,19 @@ class Jmap {
   }
 
   async emails(): Promise<{ id: string; subject: string; mailboxIds: Record<string, boolean>; keywords: Record<string, boolean> }[]> {
-    const responses = await this.call(['urn:ietf:params:jmap:mail'], [
-      ['Email/query', { limit: 1000 }, 'q'],
-      ['Email/get', { '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' }, properties: ['subject', 'mailboxIds', 'keywords'] }, 'g'],
-    ]);
-    return (responses[1][1] as { list: { id: string; subject: string; mailboxIds: Record<string, boolean>; keywords: Record<string, boolean> }[] }).list;
+    type Row = { id: string; subject: string; mailboxIds: Record<string, boolean>; keywords: Record<string, boolean> };
+    const all: Row[] = [];
+    // Page by page: a limit that cuts the list short would hide what a test looks for.
+    for (let position = 0; ; ) {
+      const responses = await this.call(['urn:ietf:params:jmap:mail'], [
+        ['Email/query', { position, limit: 200 }, 'q'],
+        ['Email/get', { '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' }, properties: ['subject', 'mailboxIds', 'keywords'] }, 'g'],
+      ]);
+      const page = (responses[1][1] as { list: Row[] }).list;
+      all.push(...page);
+      if (page.length < 200) return all;
+      position += page.length;
+    }
   }
 
   async contacts(): Promise<{ id: string; text: string }[]> {
@@ -104,7 +114,9 @@ for (const { label, url } of STALWARTS) {
   test.describe(`local import on Stalwart ${label}`, () => {
     test.describe.configure({ mode: 'serial' });
     test.setTimeout(420_000);
-    test.beforeAll(requireAccount);
+    test.beforeAll(() => {
+      if (!PASSWORD) throw new Error('Run under: vw exec --env IT_DSO_PASSWORD="vault://Stalwart test – dso-* throwaway accounts/password" -- npx playwright test');
+    });
 
     const tag = `IMP${Date.now().toString(36)}${label.replace('.', '')}`;
     let base: string;
@@ -138,7 +150,7 @@ for (const { label, url } of STALWARTS) {
       ({ app, page } = await launchStandalone(profile));
       await fakeOsIntegration(app, 0);
       await pointAt(app, base, fixture);
-      await signIn(page, url, DAVE);
+      await signIn(page, url, ACCOUNT, PASSWORD);
     });
 
     test.afterAll(async () => {
@@ -198,7 +210,7 @@ for (const { label, url } of STALWARTS) {
       };
       for (const [folder, names] of Object.entries(fixture.expected)) {
         for (const name of names) {
-          const expected = folder === 'Inbox' ? boxes.find((box) => box.role === 'inbox')!.name : folder === 'Sent' ? boxes.find((box) => box.role === 'sent')!.name : folder;
+          const expected = folder === 'Inbox' ? boxes.find((box) => box.role === 'inbox')!.name : folder === 'Sent' ? boxes.find((box) => box.role === 'sent')!.name : folder === 'Drafts' ? boxes.find((box) => box.role === 'drafts')!.name : folder;
           expect(where(name), name).toBe(expected);
         }
       }
