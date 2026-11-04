@@ -333,6 +333,7 @@ test.describe('the image optimizer', () => {
     for (const url of ['/_next/image', '/_next/image?url=%2Fa.png&w=64&q=75', '//_next//image', '/_next/%69mage', '/_NEXT/image/']) {
       expect(isImageOptimizer(url), url).toBe(true);
     }
+    for (const url of ['/_next/./image?url=x', '/_next/static/../image']) expect(isImageOptimizer(url), url).toBe(true);
     for (const url of ['/_next/static/chunks/image.js', '/_next/images', '/api/og-image', undefined]) {
       expect(isImageOptimizer(url), String(url)).toBe(false);
     }
@@ -341,11 +342,18 @@ test.describe('the image optimizer', () => {
 
 test.describe('the admin login route', () => {
   test('is recognised however it is spelled, reading its status is not', () => {
-    for (const url of ['/api/admin/auth', '/api/admin/auth/', '//api//admin/auth', '/api/admin/%61uth', '/API/admin/auth?x=1']) {
+    for (const url of [
+      '/api/admin/auth', '/api/admin/auth/', '//api//admin/auth', '/api/admin/%61uth', '/API/admin/auth?x=1',
+      // Next resolves these before it routes, so they reach the login.
+      '/api/admin/./auth', '/api/admin/x/../auth', '/_next/../api/admin/auth', '/api/admin/%2e/auth', '/api/admin/x/%2E%2E/auth',
+      '/api\\admin\\auth', 'https://app.bulwark.localhost/api/admin/auth', 'http://x/api/admin/auth',
+    ]) {
       expect(isAdminLogin('POST', url), url).toBe(true);
     }
     expect(isAdminLogin('GET', '/api/admin/auth')).toBe(false);
+    expect(isAdminLogin('GET', '/api/admin/./auth')).toBe(false);
     expect(isAdminLogin('POST', '/api/admin/plugins')).toBe(false);
+    expect(isAdminLogin('POST', '/api/admin/auth/../plugins')).toBe(false);
   });
 });
 

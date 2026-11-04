@@ -1,7 +1,7 @@
 /**
  * The embedded webmail server. Runs in a utilityProcess, with cwd on the
  * unpacked server directory, and everything it needs arrives from main by
- * message: the TLS key, the launch secret, the session secret and the list of
+ * message: the TLS key, the launch secret, the session secret, the local admin password and the list of
  * approved servers. So none of them is in an argument or the environment block.
  *
  * It answers only requests that carry the launch secret, which main adds to the
@@ -28,6 +28,11 @@ type Holder = Record<symbol, ReadonlySet<string> | undefined>;
 /** Read by the webmail (lib/desktop/trusted-servers.ts) and by jmap-proxy.ts. */
 function setTrusted(origins: string[]): void {
   (globalThis as unknown as Holder)[TRUST_KEY] = new Set(origins);
+}
+
+/** Read by the webmail (lib/desktop/server-secrets.ts). Not process.env: that's the block a child process inherits. */
+function setSecrets(secrets: InitMessage['secrets']): void {
+  (globalThis as unknown as Record<symbol, unknown>)[Symbol.for('bulwark.desktop.serverSecrets')] = secrets;
 }
 
 /** Read by the webmail: lib/desktop/server-policy.ts. */
@@ -107,9 +112,7 @@ async function start(init: InitMessage): Promise<void> {
   // Next and the webmail read their files relative to the working directory, and an asar
   // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
   process.cwd = () => serverDir;
-  // The secrets, here rather than in the utilityProcess's env block. Next and
-  // the webmail read them from process.env from here on.
-  Object.assign(process.env, init.secretEnv);
+  setSecrets(init.secrets);
   process.env.NODE_ENV = 'production';
 
   const ca = useSystemCertificates();
