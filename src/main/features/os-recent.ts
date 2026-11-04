@@ -244,10 +244,13 @@ export function setupRecentFiles(hub: OsHub): RecentHandle {
     try {
       const found = newestCandidates(await candidates(session), process.platform);
       const checks = new Map<number, RecentCheck>();
+      // The size goes to the page, which greys out a file larger than the server takes.
+      const sizes = new Map<RecentCandidate, number>();
       if (found.length > 0) {
         await session.ask({ op: 'check', paths: found.map((entry) => entry.path) }, RECENT_CHECK_TIMEOUT_MS, (message) => {
           if (message.type !== 'checked') return false;
           checks.set(message.index, message.kind);
+          if (typeof message.size === 'number' && found[message.index]) sizes.set(found[message.index], message.size);
           return enoughKnown(found.length, checks);
         });
       }
@@ -265,6 +268,7 @@ export function setupRecentFiles(hub: OsHub): RecentHandle {
           folder: displayFolder(entry.path, process.platform, home),
           path: entry.path,
           usedAt: entry.usedAt,
+          ...(sizes.has(entry) ? { size: sizes.get(entry)! } : {}),
           ...(icon ? { icon } : {}),
         };
       }));

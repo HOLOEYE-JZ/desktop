@@ -551,6 +551,8 @@ export interface RecentFile {
   path: string;
   /** When it was last used, in milliseconds since 1970. */
   usedAt: number;
+  /** Its size in bytes, so the page can grey out one larger than the server takes. */
+  size?: number;
   /** A small icon as a data: URL, when the OS gave one in time. */
   icon?: string;
 }
