@@ -1,0 +1,32 @@
+// What the native helper exports: the agreed list. test/native.spec.ts checks the built binary
+// against it in the release build; test/native-exports-unit.spec.ts checks the Rust source and the
+// README against it on every run, so a new export can't wait until the release to be noticed.
+export const EXPORTS = [
+  'filesDriveConnect',
+  'filesDriveConvert',
+  'filesDriveDehydrate',
+  'filesDriveDisconnect',
+  'filesDriveHydrate',
+  'filesDriveInfo',
+  'filesDriveLetterChanged',
+  'filesDrivePlace',
+  'filesDriveRegister',
+  'filesDriveRoots',
+  'filesDriveStatusAttach',
+  'filesDriveStatusRead',
+  'filesDriveStatusServe',
+  'filesDriveStatusSet',
+  'filesDriveStatusStop',
+  'filesDriveTransfer',
+  'filesDriveTransferFailed',
+  'filesDriveUnregister',
+  'filesDriveUpdate',
+  'filesUsedDriveLetters',
+  'helloAvailable',
+  'helloVerify',
+  'keystoreAgree',
+  'keystoreDecrypt',
+  'keystoreList',
+  'keystoreSign',
+  'policyIsForced',
+];

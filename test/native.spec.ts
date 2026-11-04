@@ -4,7 +4,8 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { helperFile, loadHelperModule, type NativeCertificate, type NativeModule } from '../src/main/native-loader';
 import { readPe } from './pe-reader';
-import { TestCerts, type TestCert } from './test-certs';
+import { TestCerts, type TestCert } from './test-certs';
+import { EXPORTS } from './native-exports';
 
 /**
  * The helper binary itself, from Node. Electron is Node-API too: keystore-bridge.spec.ts
@@ -16,35 +17,6 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const FILE = helperFile({ packaged: false, mainDir: path.join(ROOT, 'dist'), platform: process.platform, arch: process.arch });
 
 // Everything the binary may export.
-const EXPORTS = [
-  'filesDriveConnect',
-  'filesDriveConvert',
-  'filesDriveDehydrate',
-  'filesDriveDisconnect',
-  'filesDriveHydrate',
-  'filesDriveInfo',
-  'filesDriveLetterChanged',
-  'filesDrivePlace',
-  'filesDriveRegister',
-  'filesDriveRoots',
-  'filesDriveStatusAttach',
-  'filesDriveStatusRead',
-  'filesDriveStatusServe',
-  'filesDriveStatusSet',
-  'filesDriveStatusStop',
-  'filesDriveTransfer',
-  'filesDriveTransferFailed',
-  'filesDriveUnregister',
-  'filesDriveUpdate',
-  'filesUsedDriveLetters',
-  'helloAvailable',
-  'helloVerify',
-  'keystoreAgree',
-  'keystoreDecrypt',
-  'keystoreList',
-  'keystoreSign',
-  'policyIsForced',
-];
 
 const load = (): NativeModule => {
   const loaded = loadHelperModule(FILE);
