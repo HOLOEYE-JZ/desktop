@@ -27,7 +27,7 @@ const COLOURS = { light: '#ffffff', dark: '#18181b' };
 // keeps the small sizes from blurring into blobs.
 const STROKE = 1.5;
 /** The menu icons macOS shows: the commands in the tray and the dock menu. */
-const MENU_ICONS = ['compose', 'inbox', 'calendar', 'contacts'];
+const MENU_ICONS = ['compose', 'inbox', 'calendar', 'contacts', 'lock'];
 
 function option(name) {
   const index = process.argv.indexOf(`--${name}`);

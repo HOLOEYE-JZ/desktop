@@ -213,6 +213,25 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
+  test('the tray\'s "Lock now" has the lock icon, as New message has its own', async () => {
+    await run('yes', async (app, page) => {
+      // Each item's label and a fingerprint of its icon, or null without one.
+      const tray = () => app.evaluate(() => {
+        const handle = (globalThis as unknown as { __bulwarkOs: { tray: { template: () => { label?: string; icon?: Electron.NativeImage }[] } | null } }).__bulwarkOs.tray;
+        return handle?.template().map((item) => ({ label: item.label, icon: item.icon && !item.icon.isEmpty() ? item.icon.toPNG().toString('base64') : null })) ?? null;
+      });
+      await call(page, 'enroll', 1);
+      await expect.poll(async () => (await tray())?.some((item) => item.label === 'Lock now')).toBe(true);
+      const items = (await tray())!;
+      const compose = items.find((item) => item.label === 'New message')!;
+      const lock = items.find((item) => item.label === 'Lock now')!;
+      expect(compose.icon).not.toBeNull();
+      expect(lock.icon).not.toBeNull();
+      // Its own glyph, not another command's.
+      expect(lock.icon).not.toBe(compose.icon);
+    });
+  });
+
   test('locked, the menus offer About, Unlock, Exit and the Window basics, nothing that shows mail', async () => {
     await run('yes', async (app, page) => {
       const state = () => app.evaluate(({ Menu }) => {

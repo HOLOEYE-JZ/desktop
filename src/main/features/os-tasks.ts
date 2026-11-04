@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { JumpListCategory, JumpListItem } from 'electron';
 import { APP_ICON_FILE, TASK_ICON_FOLDER, taskIconFile } from '../../../scripts/task-icons.mjs';
 
-export type TaskIcon = 'compose' | 'inbox' | 'calendar' | 'contacts' | 'message';
+export type TaskIcon = 'compose' | 'inbox' | 'calendar' | 'contacts' | 'message' | 'lock';
 export type TaskIconVariant = 'light' | 'dark';
 
 /** White glyphs on a dark shell, near-black ones on a light one. */
