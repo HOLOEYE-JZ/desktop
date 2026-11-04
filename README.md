@@ -122,7 +122,7 @@ The ARM64 MSI is marked x64 inside, because electron-builder's WiX has no arm64,
 
 **NSIS, per user.** `Bulwark-Setup-1.0.0-x64.exe /S` needs no elevation. Uninstalling leaves the user's mail profile in `%APPDATA%\Bulwark` on purpose: delete the folder to remove it too.
 
-**Policies.** `packaging/bulwark-policies.sample.reg` is a sample to start from, with `AutoUpdate` and `UpdateChannel` set. Import it with `reg import`, or use the ADMX templates. `AutoUpdate=0` stops every request for updates, on any install. Values under `Software\Policies\Bulwark\Desktop` are forced, the same under `\Recommended` are defaults.
+**Policies.** `packaging/bulwark-policies.sample.reg` is a sample to start from, with `AutoUpdate` and `UpdateChannel` set. Import it with `reg import`, or use the ADMX templates. `AutoUpdate=0` stops every request for updates, on any install. Values under `Software\Policies\Bulwark\Desktop` are forced, the same under `\Recommended` are defaults. `AutoUpdate` has no recommended form: nobody can choose it in the app, so there's nothing for it to be a default of.
 
 **winget.** `packaging/winget/` holds the manifest templates. Fill in the version and the hashes from the release's `.sha256` files, then submit them to `microsoft/winget-pkgs`.
 
@@ -130,13 +130,17 @@ The ARM64 MSI is marked x64 inside, because electron-builder's WiX has no arm64,
 
 ## Policies
 
-Admins set or force settings through `Software\Policies\Bulwark\Desktop` and its `Recommended` subkey, a macOS profile, or `/etc/bulwark/policies.json`. The schema and the ADMX, ADML and samples come from the webmail (`lib/desktop/policy-schema.ts`, `scripts/generate-desktop-policies.mjs`). `src/shared/policy-schema.ts` is a byte-for-byte copy: `node scripts/generate-desktop-policies.mjs --shell <this repo>` in the webmail refreshes it. `src/main/policy-read.ts` reads them, `src/main/features/policies.ts` keeps them live, and pages read them through the bridge's `policy` member.
+Admins set or force settings through `Software\Policies\Bulwark\Desktop` and its `Recommended` subkey, a macOS profile, or `/etc/bulwark/policies.json`. The schema and the ADMX, ADML and samples come from the webmail (`lib/desktop/policy-schema.ts`, `scripts/generate-desktop-policies.mjs`). `src/shared/policy-schema.ts` is a byte-for-byte copy: `node scripts/generate-desktop-policies.mjs --shell <this repo>` in the webmail refreshes it. `src/main/policy-read.ts` reads them, `src/main/features/policies.ts` keeps them live, and pages read them through the bridge's `policy` member. A page only gets what the webmail reads (`pagePolicySnapshot`), since it can be any server someone chose: not the auth lists or the certificate rules.
+
+A forced value the app can't use fails closed and says so: in the log, in About, and on the error page if nothing is left to start with, such as an `AllowedJmapServers` nobody can read. `OfflineEnabled` is the exception to deleting anything for it: a typo stops keeping mail but leaves what's there.
 
 The installers take the same values: `msiexec /i Bulwark.msi /qn ALLUSERS=1 INSTANCE_URL=https://mail.example.com FORCE_INSTANCE=1 UPDATE_CHANNEL=stable`, or `Bulwark-Setup.exe /S /INSTANCE_URL=https://mail.example.com /FORCE_INSTANCE=1` run as an administrator. Without `FORCE_INSTANCE=1` the values go under `Recommended`.
 
 Limits: these settings stop people from changing them inside the app. The app isn't signed yet, so someone who can write to its folder, or run their own copy, can patch it. Admins who need a hard guarantee also limit what may run, with AppLocker or WDAC, and install per machine with the MSI so standard users can't write to the folder. `AllowedJmapServers` also applies to a Bulwark server the user picks, so list that too.
 
-A production build refuses switches that would script the page or move its traffic (`src/main/switch-guard.ts`), with or without a policy, and restarts itself without them.
+Which `WipeOfflineData` values were acted on is kept in the user's own profile, since the app has nowhere else to write. Someone who edits that file can skip a wipe they know is coming. This is on purpose: the wipe cleans up a device, and a person who can read their own profile already has the data.
+
+A production build refuses switches that would script the page or move its traffic (`src/main/switch-guard.ts`), with or without a policy, and restarts itself without them. The same goes for the environment Electron, Node and Chromium read before any of its code runs, such as `ELECTRON_DISABLE_SANDBOX` and `NODE_OPTIONS`.
 
 Tests use a stand-in root under `HKCU\Software\BulwarkTest\Policies`, only in a test build (`node build.mjs --test`, which `npm test` does). `scripts/after-pack.cjs` refuses to package one.
 
