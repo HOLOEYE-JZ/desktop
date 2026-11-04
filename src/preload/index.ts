@@ -57,6 +57,8 @@ import {
   type OsSummary,
   type NativeMenuItem,
   type PrivacyState,
+  type RecentFileAttachResult,
+  type RecentFilesResult,
   type DevToolsState,
   type SessionUrls,
   type SystemTheme,
@@ -340,6 +342,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
       claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
       onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
+    },
+    recentFiles: {
+      /** Main wants a click or key press of its own for each: a script alone gets `gesture`. */
+      list: (): Promise<RecentFilesResult> => ipcRenderer.invoke(CHANNEL.recentFilesList),
+      attach: (id: string): Promise<RecentFileAttachResult> => ipcRenderer.invoke(CHANNEL.recentFilesAttach, id),
     },
     lifecycle: {
       /**
