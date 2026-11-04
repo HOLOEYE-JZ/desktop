@@ -123,8 +123,7 @@ jobs:
 
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          rustup toolchain install
 
       - name: Install dependencies
         run: npm ci
@@ -150,9 +149,18 @@ jobs:
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
 
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
+
       # One binary per architecture: before-pack.cjs puts the right one in node_modules.
       - name: Build the policy watcher
         run: node scripts/build-policy-watcher.mjs --arch x64,arm64
+
+      # The flag comes through cl's environment, and hasn't been seen working on a real build yet.
+      # When it has, take away the continue-on-error.
+      - name: Check the policy watcher
+        continue-on-error: true
+        run: npx playwright test test/native.spec.ts -g "the policy watcher"
 
       # Fuses and a real start. On a test pack, since a production build refuses the
       # switches a test needs and restarts itself without them. It's thrown away.
@@ -205,8 +213,7 @@ jobs:
 
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          rustup toolchain install
 
       - name: Install dependencies
         run: npm ci
@@ -227,6 +234,9 @@ jobs:
         run: |
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
+
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
 
       # Built per architecture, and the universal merge makes one binary of the two.
       - name: Build the policy watcher
@@ -306,7 +316,7 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install
 
       # rpmbuild for the rpm. electron-builder's bundled fpm is x64 only. Xvfb and the
       # keyring for the smoke test.
@@ -338,6 +348,9 @@ jobs:
 
       - name: Build the native helper
         run: node scripts/build-native.mjs
+
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
 
       - name: Build the policy watcher
         run: node scripts/build-policy-watcher.mjs --optional
@@ -378,9 +391,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # A known hole in a crate the helper links in holds the release back. Whether it matters is
+  # for a person to decide, in native/Cargo.lock or with an ignore in `audit.toml`.
+  audit-native:
+    name: Audit the native helper's crates
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        run: rustup toolchain install
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Audit
+        working-directory: native
+        run: cargo audit
+
   release:
     name: Publish the release
-    needs: [prepare, windows, macos, linux]
+    needs: [prepare, windows, macos, linux, audit-native]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20

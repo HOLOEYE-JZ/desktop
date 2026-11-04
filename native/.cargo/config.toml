@@ -1,10 +1,11 @@
 # The app can't assume a Visual C++ runtime on the user's machine, so it's linked in. And
 # what the helper does load only comes from System32, so a DLL dropped beside the app
-# (0x800 is LOAD_LIBRARY_SEARCH_SYSTEM32) can't get in. test/native.spec.ts reads both
-# back from the built file. Cargo reads this from the working directory: scripts/build-native.mjs
+# (0x800 is LOAD_LIBRARY_SEARCH_SYSTEM32) can't get in. Control Flow Guard as well, as a
+# hardening of what it does hold. test/native.spec.ts reads all three back from the built file.
+# Cargo reads this from the working directory: scripts/build-native.mjs
 # runs in native/.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800", "-C", "control-flow-guard"]
 
 [target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/DEPENDENTLOADFLAG:0x800", "-C", "control-flow-guard"]

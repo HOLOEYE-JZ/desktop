@@ -14,6 +14,14 @@ function step(name: string): string {
   return workflow.slice(start, next === -1 ? undefined : next);
 }
 
+test('a release needs the helper checked and its crates audited', () => {
+  const checks = workflow.split('\n').filter((line) => line.includes('test/native.spec.ts -g "what the binary"'));
+  expect(checks.length, 'Windows, macOS and Linux').toBe(3);
+  expect(workflow).toContain('run: cargo audit');
+  expect(/needs: \[[^\]]*audit-native[^\]]*\]\n\s+if: needs\.prepare\.outputs\.publish/.test(workflow)).toBe(true);
+  expect(workflow).not.toContain('rustup toolchain install stable');
+});
+
 test('only a push publishes: a manual run on a tag only builds', () => {
   const lines = step('Read versions').split('\n').filter((line) => line.includes('publish=true'));
   expect(lines.length).toBeGreaterThan(0);
