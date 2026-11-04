@@ -45,6 +45,8 @@ const BUILD_ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-
 const FIRST_BUILD = 17763;
 /** How long the policy turning the drive off waits for the page to upload what waits. */
 const FLUSH_MS = 120_000;
+/** ...and for it to say it's on it: an older page, or none that listens, isn't waited for longer. */
+const FLUSH_ANSWER_MS = 5_000;
 
 function testArgument(name: string): string | null {
   if (!__BULWARK_TEST_BUILD__) return null;
@@ -87,7 +89,7 @@ export function drivePolicy(): DrivePolicy {
 let controller: DriveController | null = null;
 /** The last folder files that weren't uploaded went to, for the page's "Open folder". */
 let lastRescue: Rescued | null = null;
-const flushWaiters = new Map<string, () => void>();
+const flushWaiters = new Map<string, { done: () => void; working: () => void }>();
 
 function rescuedNotice(rescued: Rescued, reason: string): void {
   lastRescue = rescued;
@@ -156,8 +158,12 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showM
           flushWaiters.delete(requestId);
           resolve();
         };
-        const timer = setTimeout(done, Number(testArgument('flush-timeout')) || FLUSH_MS);
-        flushWaiters.set(requestId, done);
+        let timer = setTimeout(done, FLUSH_ANSWER_MS);
+        const working = () => {
+          clearTimeout(timer);
+          timer = setTimeout(done, Number(testArgument('flush-timeout')) || FLUSH_MS);
+        };
+        flushWaiters.set(requestId, { done, working });
         contents.send(CHANNEL.filesDriveFlush, { requestId, accounts });
       }),
     },
@@ -264,8 +270,11 @@ export const filesDriveFeature: Feature = {
     ctx.on(CHANNEL.filesDriveStatus, (_event, window, account, status) => {
       if (isMain(window)) drive.setStatus(account, status);
     });
-    ctx.on(CHANNEL.filesDriveFlushed, (_event, window, requestId) => {
-      if (isMain(window) && typeof requestId === 'string') flushWaiters.get(requestId)?.();
+    ctx.on(CHANNEL.filesDriveFlushed, (_event, window, requestId, phase) => {
+      if (!isMain(window) || typeof requestId !== 'string') return;
+      const waiter = flushWaiters.get(requestId);
+      if (phase === 'working') waiter?.working();
+      else waiter?.done();
     });
     ctx.handle(CHANNEL.filesDriveSetPin, (_event, window, rootId, relative, pin) => {
       fromMain(window);

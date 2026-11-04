@@ -391,7 +391,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         enable: (account: string, label: string) => ipcRenderer.invoke(CHANNEL.filesDriveEnable, account, label, clicked()),
         disable: (account: string, reason: 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
         onFlush: (listener: (request: { requestId: string; accounts: string[] }) => void) => subscribe(CHANNEL.filesDriveFlush, listener),
-        flushed: (requestId: string) => ipcRenderer.send(CHANNEL.filesDriveFlushed, requestId),
+        flushed: (requestId: string, phase?: 'working') => ipcRenderer.send(CHANNEL.filesDriveFlushed, requestId, phase),
         openRescue: () => ipcRenderer.invoke(CHANNEL.filesDriveOpenRescue),
         setPin: (rootId: string, path: string, pin: 'pinned' | 'unpinned') => ipcRenderer.invoke(CHANNEL.filesDriveSetPin, rootId, path, pin),
         place: (rootId: string, entries: FilesPlaceholder[]) => ipcRenderer.invoke(CHANNEL.filesDrivePlace, rootId, entries),

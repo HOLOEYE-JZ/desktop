@@ -844,9 +844,13 @@ export interface FilesDriveControls {
    * `refused` delete everything, nothing is copied.
    */
   disable: (account: string, reason: 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused') => Promise<FilesDriveDisableResult | void>;
-  /** Main is about to remove the drives of these accounts (the policy): upload what waits, then `flushed`. */
+  /**
+   * Main is about to remove the drives of these accounts (the policy): say `working` at once,
+   * upload what waits, then `flushed` without a phase. A page that says nothing within a few
+   * seconds isn't waited for.
+   */
   onFlush?: (listener: (request: { requestId: string; accounts: string[] }) => void) => () => void;
-  flushed?: (requestId: string) => void;
+  flushed?: (requestId: string, phase?: 'working') => void;
   /** Opens the folder files that weren't uploaded went to last. False when there's none. */
   openRescue?: () => Promise<boolean>;
   /**
