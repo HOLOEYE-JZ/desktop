@@ -11,12 +11,16 @@
  *
  * Opening a link goes back to the page, which runs it past the same checks as a click
  * on it (plugins, mailto in the app's composer). Spellcheck languages follow what the
- * webmail says about the interface and composer.
+ * webmail says about the interface and composer, plus the languages set up in the OS.
+ *
+ * Windows checks spelling itself, in the languages installed there, with nothing to
+ * download: a language it lacks goes unchecked, and the page hears nothing about a
+ * dictionary. Elsewhere a missing dictionary is the page's question to ask.
  */
 
-import { clipboard, Menu, type BrowserWindow, type ContextMenuParams, type DownloadItem, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
+import { app, clipboard, Menu, type BrowserWindow, type ContextMenuParams, type DownloadItem, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
 import { CHANNEL, type LanguagesUpdate, type MenuBarEntry, type MenuState } from '../../shared/bridge';
-import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toMenuTemplate } from '../menu-text';
+import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, spellLanguagesFor, toMenuTemplate } from '../menu-text';
 import { openExternally } from '../navigation';
 import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads, outsideHostsAllowed } from '../spellcheck';
 import { setUiLanguage, strings } from '../strings';
@@ -190,11 +194,15 @@ export const contextMenuFeature: Feature = {
 
     let languageNow = '';
     let wantedLanguages: string[] = [];
+    const asksForDictionaries = process.platform !== 'win32';
     const applySpellLanguages = () => {
       const languages = pickSpellLanguages(wantedLanguages, session.availableSpellCheckerLanguages);
       // macOS has no such setting: its own spellchecker detects the language.
       if (languages.length && process.platform !== 'darwin') session.setSpellCheckerLanguages(languages);
     };
+    // Until the page says what it shows (the sign-in page doesn't): the app's language.
+    wantedLanguages = spellLanguagesFor(app.getLocale(), [], app.getPreferredSystemLanguages());
+    applySpellLanguages();
     ctx.on(CHANNEL.shellSetLanguages, (_event, _window, update) => {
       const { ui, composer, labels } = (update ?? {}) as Partial<LanguagesUpdate>;
       if (typeof ui !== 'string') return;
@@ -203,12 +211,13 @@ export const contextMenuFeature: Feature = {
       // A warm spare rendered in the language it was made with.
       if (languageNow && languageNow !== ui) windows.dropSpare();
       languageNow = ui;
-      wantedLanguages = [ui, ...(Array.isArray(composer) ? composer.filter((l): l is string => typeof l === 'string') : [])];
+      const composers = Array.isArray(composer) ? composer.filter((l): l is string => typeof l === 'string') : [];
+      wantedLanguages = spellLanguagesFor(ui, composers, app.getPreferredSystemLanguages());
       applySpellLanguages();
     });
 
-    onDictionaryMissing((language) => windows.broadcast(CHANNEL.spellMissing, language));
-    ctx.handle(CHANNEL.spellListMissing, () => missingDictionaries());
+    if (asksForDictionaries) onDictionaryMissing((language) => windows.broadcast(CHANNEL.spellMissing, language));
+    ctx.handle(CHANNEL.spellListMissing, () => (asksForDictionaries ? missingDictionaries() : []));
     ctx.on(CHANNEL.spellAllowDownload, () => {
       void outsideHostsAllowed(() => session.fetch(new URL('/api/config', origin).toString())).then((allowed) => {
         if (!allowed) return;

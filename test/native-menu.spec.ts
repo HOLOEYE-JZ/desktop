@@ -1156,7 +1156,9 @@ test.describe('spellcheck makes no silent call to Google', () => {
       expect(outcome).not.toBe('downloaded');
       if (outcome === 'refused') {
         const missing = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { spellcheck: { missing: () => Promise<string[]> } } }).bulwarkDesktop.spellcheck.missing());
-        expect(missing.length).toBeGreaterThan(0);
+        // Windows: its own checker or none, never a dictionary question (test/spelling.spec.ts).
+        if (process.platform === 'win32') expect(missing).toEqual([]);
+        else expect(missing.length).toBeGreaterThan(0);
       }
     } finally {
       await app.close();
