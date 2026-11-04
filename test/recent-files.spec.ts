@@ -49,7 +49,7 @@ function replaceInFile(file: string, from: string, to: string): number {
 interface Listed {
   ok: boolean;
   reason?: string;
-  files?: { id: string; name: string; folder: string; path: string; usedAt: number; icon?: string }[];
+  files?: { id: string; name: string; folder: string; path: string; usedAt: number; size?: number; icon?: string }[];
 }
 
 interface Attached {
@@ -177,7 +177,9 @@ test.describe('recent files on Windows', () => {
     }
     expect(files[0].icon).toMatch(/^data:image\/png;base64,/);
     // Only what the menu shows.
-    expect(Object.keys(files[0]).sort()).toEqual(['folder', 'icon', 'id', 'name', 'path', 'usedAt']);
+    expect(Object.keys(files[0]).sort()).toEqual(['folder', 'icon', 'id', 'name', 'path', 'size', 'usedAt']);
+    // The size, so the page can grey out a file larger than the server takes.
+    expect(files.find((file) => file.name === 'Quarterly report.docx')?.size).toBe(10);
   });
 
   test('a host like the offline share\'s really doesn\'t answer for seconds', () => {
