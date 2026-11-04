@@ -13,9 +13,10 @@ name: Release
 #
 # Signing: Windows is unsigned for now, see the hook in electron-builder.yml. macOS signs and
 # notarizes on a tag when the repository has its secrets, and is unsigned otherwise. Betas
-# publish with nobody looking. Stable releases wait for a reviewer in the `release`
-# environment: whoever can publish here can put code on every install. See "First stable
-# release" in the README. Actions are pinned by commit.
+# publish with nobody looking. The `release` environment a stable tag publishes through doesn't
+# exist yet, and GitHub creates it with no reviewers, so until someone sets it up a pushed tag
+# publishes with nobody looking too. Whoever can publish here can put code on every install.
+# See "First stable release" in the README. Actions are pinned by commit.
 
 on:
   push:
@@ -387,8 +388,8 @@ jobs:
     concurrency:
       group: publish-${{ github.repository }}
       cancel-in-progress: false
-    # Betas wait for nobody, as asked. A stable release waits for this environment's reviewers,
-    # once they're set up: see the README.
+    # Betas wait for nobody, as asked. A stable release only waits if someone has created this
+    # environment with reviewers: see the README.
     environment: ${{ contains(needs.prepare.outputs.version, '-') && 'beta' || 'release' }}
     permissions:
       contents: write
@@ -437,7 +438,7 @@ jobs:
           {
             case "$VERSION" in
               *-*)
-                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway.'
+                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway. On macOS it should need System Settings > Privacy & Security > Open Anyway the first time. We have not tested that on a Mac yet. Windows and the AppImage update themselves with no signature check: the only barrier to a bad release is the security of the GitHub accounts that can publish here.'
                 echo
                 ;;
             esac
