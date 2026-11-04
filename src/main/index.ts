@@ -23,6 +23,7 @@ import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { registerImportScheme } from './features/import';
 import { holdEarlyLaunches } from './features/os-launch';
+import { electronRegistersScheme } from './features/os-rules';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
@@ -30,13 +31,12 @@ import { privacy } from './features/privacy';
 import { clientAuth } from './features/client-certificates';
 import { createChannels, registerBridge } from './ipc';
 import { durableWrite, holdsAppLockRecords, KEY_CHECK_FOLDER, KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
-import { addWipeStep, notePartition } from './features/local-wipe';
+import { addWipeStep, notePartition, restartAfterWipe } from './features/local-wipe';
 import { native } from './native';
 import { LocalAdmin } from './local-admin';
 import { requestGate } from './request-gate';
 import { MenuController } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
-import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
 import { sandboxRefused } from './sandbox-check';
 import { connectionMustChange, decideStart, restartKey, type StartDecision } from './policy-start';
@@ -164,7 +164,6 @@ const SERVER_PORT = await reservePort();
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
 
 let windowManager: WindowManager | null = null;
-let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
 let mainWindowAllowed = false;
 let menu: MenuController | null = null;
@@ -388,7 +387,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         launchSecret,
         mainSecret,
         tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
-        secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
+        secrets: { sessionSecret, adminPassword },
         trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
         policy: policies.serverPolicy(),
         privacy: privacy.serverView('standalone'),
@@ -407,7 +406,6 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
   const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
-  signIn = new LoopbackSignIn(() => windows.focus());
   const ctx: FeatureContext = {
     mode: 'standalone',
     origin: APP_ORIGIN,
@@ -423,7 +421,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     openLink: openDeepLink,
     ...createChannels(APP_ORIGIN),
   };
-  registerBridge(ctx, { origin: APP_ORIGIN, signIn, pluginPolicy: policies.pluginPolicy });
+  registerBridge(ctx, { origin: APP_ORIGIN, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
   try {
@@ -588,18 +586,14 @@ function restartNow(): void {
   app.quit();
 }
 
+restartAfterWipe(restartNow);
+
 /**
  * A change that needs a restart asks for one, once for each outcome. Where a forced
  * connection is what changed, "Later" isn't for good: it asks again, and after the
  * deadline it restarts by itself.
  */
 function watchPolicyForRestart(booted: StartDecision): void {
-  // A wipe left the windows blank: they had nothing to come back to anyway.
-  policies.on('wiped', () => {
-    const main = windowManager?.mainWindow();
-    for (const window of BrowserWindow.getAllWindows()) if (window !== main) window.destroy();
-    if (main) void main.loadURL(appStartUrl).catch(() => {});
-  });
   let cancelTimers = () => {};
   let asking = false;
   const ask = (key: string) => {
@@ -721,12 +715,17 @@ if (gotLock) {
   // Nothing may attach a webview or open a window behind the window manager's back.
   app.on('web-contents-created', (_event, contents) => {
     contents.on('will-attach-webview', (event) => event.preventDefault());
+    // With no handler Electron picks the first device. Nothing in the app uses Bluetooth.
+    contents.on('select-bluetooth-device', (event, _devices, choose) => {
+      event.preventDefault();
+      choose('');
+    });
   });
 
   // Registered here: macOS sends a launch's file or link before `ready`.
   holdEarlyLaunches();
-  // Unpackaged, the shell isn't what the OS should start for these.
-  if (app.isPackaged) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  // Unpackaged, the shell isn't what the OS should start for these. Windows: os-default-app.ts.
+  if (electronRegistersScheme(process.platform, app.isPackaged)) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   app.on('window-all-closed', () => {
     // Closing to the tray hides the main window, so this means there's nothing left.
@@ -740,7 +739,6 @@ if (gotLock) {
   // Pages save first, within limits, and then the quit goes on. A preventDefault in a
   // window's own close would call the quit off, so it's done here.
   app.on('before-quit', (event) => {
-    signIn?.closeAll();
     stateFile.save();
     windowManager?.beginQuit();
     if (quitFlushed || !windowManager) return;

@@ -40,10 +40,12 @@ exports.default = async function afterPack(context) {
   // on macOS that takes a signature, which is only known here.
   writeFileSync(path.join(resources, 'bulwark-build.json'), `${JSON.stringify({ macSigned: Boolean(process.env.CSC_LINK || process.env.CSC_NAME) })}\n`);
 
-  const { guardModes, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
+  const { guardHelper, guardModes, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
   // Last, so it covers what's copied above. Before fpm and the others pack the tree.
   tightenModes(context.appOutDir);
-  guardResources(resources);
+  guardResources(resources, context.electronPlatformName);
   guardExtraFiles(context.appOutDir);
   guardModes(context.appOutDir);
+  // Only a test may pack without it: scripts/pack-test.mjs, a machine with no Rust.
+  if (process.env.BULWARK_TEST_PACK !== '1') guardHelper(resources, context.electronPlatformName);
 };

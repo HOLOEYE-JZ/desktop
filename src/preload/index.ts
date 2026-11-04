@@ -11,13 +11,22 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { editFileName } from '../shared/edit-rules';
 import {
+  type EditBeginResult,
+  type EditClearResult,
+  type EditFile,
+  type EditOpenResult,
+  type EditReadResult,
+  type EditSession,
   BRIDGE_VERSION,
   type AppLockStatus,
   type PinStepAnswer,
   type OsUnlockAnswer,
   CHANNEL,
   PRELOAD_ARG,
+  type BrowserSignInControls,
+  type BrowserSignInRequest,
   type ConfirmOptions,
   type FlushAnswer,
   type LanguagesUpdate,
@@ -28,11 +37,13 @@ import {
   type KeystoreCertificate,
   type KeystoreResult,
   type KeystoreSignScheme,
+  type KeystoreUseOptions,
   type LocalImportGrantResult,
   type LocalImportResumeResult,
   type LocalImportScanResult,
   type MenuState,
   type OsCommand,
+  type PasswordSignInAnswer,
   type OsDefaultAppStatus,
   type OsFile,
   type OsNotification,
@@ -53,6 +64,16 @@ import {
 import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
 
 let appLockClaimed = false;
+
+/**
+ * A real click or key press in the last few seconds. Read here, in the preload's own world, so a
+ * page can't replace the answer, and no script can make one. A same-origin frame reaches these
+ * calls through `parent` and main can't tell (ipc.ts), so this is what separates "the user just
+ * did something" from a call alone. It doesn't say what was clicked.
+ */
+function clicked(): boolean {
+  return navigator.userActivation?.isActive === true;
+}
 
 function argument(prefix: string): string | null {
   const found = process.argv.find((arg) => arg.startsWith(prefix));
@@ -93,10 +114,36 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
     policySnapshot = snapshot;
   });
+  /**
+   * A same-origin frame reaches this object through `parent`, and main can't tell. So the
+   * page takes these once, in its first render, before any frame exists, and a flow only
+   * starts from a real click on it.
+   */
+  let signInClaimed = false;
+  const signInControls: BrowserSignInControls = {
+    begin: (request: BrowserSignInRequest) => {
+      if (!clicked()) return Promise.resolve({ ok: false, error: 'no_gesture' });
+      return ipcRenderer.invoke(CHANNEL.authBegin, request);
+    },
+    complete: (flowId: string, url: string) => ipcRenderer.invoke(CHANNEL.authComplete, flowId, url),
+    useScheme: (flowId: string) => ipcRenderer.invoke(CHANNEL.authUseScheme, flowId),
+    cancel: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
+    beginPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordBegin, flowId),
+    nextPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordNext, flowId),
+    answerPassword: (flowId: string, answer: PasswordSignInAnswer) => ipcRenderer.send(CHANNEL.authPasswordAnswer, flowId, answer),
+    outcome: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordOutcome, flowId),
+  };
   const common = {
     version: BRIDGE_VERSION,
     platform,
     mode,
+    auth: {
+      claim: (): BrowserSignInControls | null => {
+        if (signInClaimed) return null;
+        signInClaimed = true;
+        return signInControls;
+      },
+    },
     certificates: {
       clearChoices: (scope: { account?: string; last?: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices, scope),
       setAccount: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesSetAccount, account),
@@ -156,10 +203,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           replaceRenderer: () => ipcRenderer.send(CHANNEL.appLockReplaceRenderer),
         };
       },
-      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof),
+      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof, clicked()),
       prove: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockProve, proof),
       disable: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockDisable, proof),
       forget: (proof?: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockForget, proof),
+      clearOrphan: (): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockClearOrphan),
       osEnroll: (proof: Uint8Array, lockKey: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockOsEnroll, proof, lockKey),
       osRemove: (): Promise<void> => ipcRenderer.invoke(CHANNEL.appLockOsRemove),
       onLockRequest: (listener: () => void) => subscribe(CHANNEL.appLockRequest, listener),
@@ -214,7 +262,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       get: () => ipcRenderer.invoke(CHANNEL.privacyGet),
       setTelemetry: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetTelemetry, on),
       setCrashReports: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetCrashReports, on),
-      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url),
+      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url, clicked()),
       listCrashes: () => ipcRenderer.invoke(CHANNEL.privacyListCrashes),
       sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
       deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
@@ -231,7 +279,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         return stop;
       },
       getStatus: (): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osGetStatus),
-      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch),
+      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch, clicked()),
       setPaused: (until: number | null) => ipcRenderer.send(CHANNEL.osSetPaused, until),
       onStatusChange: (listener: (status: OsStatus) => void) => subscribe(CHANNEL.osStatusChanged, listener),
       setBadge: (count: number) => ipcRenderer.send(CHANNEL.osSetBadge, count),
@@ -246,6 +294,34 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       copyFiles: (files: OsFile[]): Promise<boolean> => ipcRenderer.invoke(CHANNEL.osCopyFiles, files),
       defaultAppStatus: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppStatus),
       openDefaultAppSettings: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppOpen),
+    },
+    edit: {
+      /** Whether this file may go through Edit at all: the same rule main enforces. */
+      canEdit: (name: string) => editFileName(name, process.platform) !== null,
+      begin: (key: string): Promise<EditBeginResult> => ipcRenderer.invoke(CHANNEL.editBegin, key),
+      open: (ticket: string, file: EditFile): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editOpen, ticket, file),
+      reopen: (ticket: string, id: string): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editReopen, ticket, id),
+      list: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editList),
+      /** The list after looking at each file now, for a decision that can't wait for the watcher. */
+      settle: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editSettle),
+      read: (id: string): Promise<EditReadResult> => ipcRenderer.invoke(CHANNEL.editRead, id),
+      taken: (id: string, hash: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editTaken, id, hash),
+      /** The draft it was on has gone: deleted, unless it holds a save nobody took. */
+      release: (id: string, source: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editRelease, id, source),
+      /** Asks natively if it holds edits. */
+      discard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editDiscard, id),
+      /** The organisation said no: no question. */
+      forceDiscard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editForceDiscard, id),
+      /** The question before a sign-out. A yes covers the `clear` that follows. */
+      askClear: (account: string): Promise<boolean> => ipcRenderer.invoke(CHANNEL.editAskClear, account),
+      clear: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editClear, account),
+      /** A wipe: no question. */
+      wipe: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editWipe, account),
+      /** The page has shown a last offer. */
+      shown: (id: string) => ipcRenderer.send(CHANNEL.editShown, id),
+      setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
+      claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
+      onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
     },
     lifecycle: {
       /**
@@ -270,12 +346,6 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           noteSession: (serverUrl: string, urls: SessionUrls) => ipcRenderer.send(CHANNEL.serversNoteSession, serverUrl, urls),
           forget: (serverUrl: string, reason: 'failed' | 'signed-out') => ipcRenderer.send(CHANNEL.serversForget, serverUrl, reason),
         },
-        auth: {
-          beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin),
-          completeBrowserSignIn: (flowId: string, authorizeUrl: string) =>
-            ipcRenderer.invoke(CHANNEL.authComplete, flowId, authorizeUrl),
-          cancelBrowserSignIn: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
-        },
         plugins: {
           install: (slug: string, version?: string) => ipcRenderer.invoke(CHANNEL.pluginsInstall, slug, version),
         },
@@ -287,13 +357,13 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   const keystore = argument(PRELOAD_ARG.keystore) === '1'
     ? {
         keystore: {
-          list: () => keystoreAnswer<KeystoreCertificate[]>(ipcRenderer.invoke(CHANNEL.keystoreList)),
-          sign: (id: string, digest: Uint8Array, scheme: KeystoreSignScheme) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreSign, id, digest, scheme)),
-          decrypt: (id: string, data: Uint8Array, scheme: KeystoreDecryptScheme) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme)),
-          agree: (id: string, peerPublicKey: Uint8Array) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
+          list: (options?: KeystoreUseOptions) => keystoreAnswer<KeystoreCertificate[]>(ipcRenderer.invoke(CHANNEL.keystoreList, options)),
+          sign: (id: string, signedAttributes: Uint8Array, scheme: KeystoreSignScheme) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreSign, id, signedAttributes, scheme)),
+          decrypt: (id: string, data: Uint8Array, scheme: KeystoreDecryptScheme, options?: KeystoreUseOptions) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme, options)),
+          agree: (id: string, peerPublicKey: Uint8Array, options?: KeystoreUseOptions) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey, options)),
           accessState: (): Promise<KeystoreAccessState> => ipcRenderer.invoke(CHANNEL.keystoreAccess),
           revokeAccess: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreRevoke),
           clearGrants: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreClearGrants),

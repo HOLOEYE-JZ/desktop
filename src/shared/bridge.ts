@@ -25,9 +25,42 @@ export type ServerPrepareResult =
   | { ok: true; approved: boolean }
   | { ok: false; reason: 'declined' | 'invalid' | 'policy' };
 
-export type BrowserSignInResult =
-  | { ok: true; code: string; state: string }
+/** Standalone: a mail server's own OAuth. Instance: the instance's own login page. */
+export type BrowserSignInRequest = { kind: 'oauth'; serverUrl: string } | { kind: 'instance' };
+
+export type BrowserSignInBegin =
+  | { ok: true; flowId: string; redirectUri: string; state: string }
   | { ok: false; error: string };
+
+export type BrowserSignInResult =
+  | { ok: true; code: string; state: string; iss?: string }
+  | { ok: false; error: string };
+
+/** The server has no OAuth: a page main serves. See src/main/browser-sign-in.ts. */
+export type PasswordSignInStart = { ok: true; host: string } | { ok: false; error: string };
+
+export type PasswordSignInAttempt =
+  | { ok: true; username: string; password: string; totp?: string }
+  | { ok: false; error: string };
+
+export type PasswordSignInAnswer =
+  | { ok: true }
+  | { ok: false; error: 'invalid_credentials' | 'totp_required' | 'other' };
+
+/**
+ * What `auth.claim()` hands out, once per document, in the page's first render: a
+ * same-origin frame can reach the parent's bridge, and main can't tell its calls apart.
+ */
+export interface BrowserSignInControls {
+  begin: (request: BrowserSignInRequest) => Promise<BrowserSignInBegin>;
+  complete: (flowId: string, url: string) => Promise<BrowserSignInResult>;
+  useScheme: (flowId: string) => Promise<string | null>;
+  cancel: (flowId: string) => void;
+  beginPassword: (flowId: string) => Promise<PasswordSignInStart>;
+  nextPassword: (flowId: string) => Promise<PasswordSignInAttempt>;
+  answerPassword: (flowId: string, answer: PasswordSignInAnswer) => void;
+  outcome: (flowId: string) => Promise<BrowserSignInResult>;
+}
 
 export type PluginInstallResult =
   | { ok: true; id: string; version: string }
@@ -198,6 +231,11 @@ export type KeystoreDecryptScheme =
   | { scheme: 'rsa-pkcs1' }
   /** MGF1 on the same hash. */
   | { scheme: 'rsa-oaep'; hash: KeystoreHash; label?: Uint8Array };
+
+/** `quiet`: answer from what's already allowed, with keystore:ask-first in place of a dialog. */
+export interface KeystoreUseOptions {
+  quiet?: boolean;
+}
 
 /** How main answers a keystore call. The preload turns a failure into `new Error(code)`. */
 export type KeystoreResult<T> = { ok: true; value: T } | { ok: false; code: string };
@@ -396,6 +434,60 @@ export type CrashSendResult =
   | { ok: true }
   | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
 
+/** An attachment copied to a private folder and open in its default program. */
+export interface EditSession {
+  id: string;
+  name: string;
+  type: string;
+  /** The local account it belongs to. */
+  account: string;
+  /** What the page said it came from. Main only keeps it. */
+  source: string;
+  /** Saved differently from what the page last took. */
+  changed: boolean;
+  /** Goes up with each save. */
+  version: number;
+  /** What the file holds now: a chip holding this version has nothing to update. */
+  hash: string;
+  /** A composer has it and offers the update itself. */
+  claimed: boolean;
+  /** Wanted gone, and another program has it open. */
+  held: boolean;
+  /** Saved under a new name in that program. */
+  savedAs: boolean;
+  /** Not used for 30 days: this offer is the last. */
+  lastChance: boolean;
+}
+
+/** What couldn't be deleted because another program has it open, by file name. `refused`: nothing happened. */
+export interface EditClearResult {
+  held: string[];
+  refused?: boolean;
+}
+
+export interface EditFile {
+  /** One session per key: Edit on the same attachment opens the same file. */
+  key: string;
+  name: string;
+  type: string;
+  data: Uint8Array;
+  account: string;
+  source: string;
+}
+
+export type EditBeginResult =
+  /** One click, one ticket, for that key. A session for it exists: reopen this one. */
+  | { ok: true; ticket: string; open?: string }
+  | { ok: false; reason: 'locked' | 'gesture' };
+
+export type EditOpenResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: 'locked' | 'ticket' | 'type' | 'too-large' | 'full' | 'no-app' | 'failed' };
+
+export type EditReadResult =
+  | { ok: true; name: string; type: string; data: Uint8Array; hash: string }
+  | { ok: false; reason: 'locked' | 'missing' | 'busy' | 'too-large' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -438,6 +530,11 @@ export const CHANNEL = {
   authBegin: 'bulwark:auth.begin',
   authComplete: 'bulwark:auth.complete',
   authCancel: 'bulwark:auth.cancel',
+  authUseScheme: 'bulwark:auth.useScheme',
+  authPasswordBegin: 'bulwark:auth.password.begin',
+  authPasswordNext: 'bulwark:auth.password.next',
+  authPasswordAnswer: 'bulwark:auth.password.answer',
+  authPasswordOutcome: 'bulwark:auth.password.outcome',
   pluginsInstall: 'bulwark:plugins.install',
   osSubscribe: 'bulwark:os.subscribe',
   osCommand: 'bulwark:os.command',
@@ -456,6 +553,23 @@ export const CHANNEL = {
   osCopyFiles: 'bulwark:os.copyFiles',
   osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
   osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
+  editBegin: 'bulwark:edit.begin',
+  editOpen: 'bulwark:edit.open',
+  editReopen: 'bulwark:edit.reopen',
+  editList: 'bulwark:edit.list',
+  editSettle: 'bulwark:edit.settle',
+  editRead: 'bulwark:edit.read',
+  editTaken: 'bulwark:edit.taken',
+  editRelease: 'bulwark:edit.release',
+  editDiscard: 'bulwark:edit.discard',
+  editForceDiscard: 'bulwark:edit.forceDiscard',
+  editAskClear: 'bulwark:edit.askClear',
+  editClear: 'bulwark:edit.clear',
+  editWipe: 'bulwark:edit.wipe',
+  editShown: 'bulwark:edit.shown',
+  editSetSource: 'bulwark:edit.setSource',
+  editClaim: 'bulwark:edit.claim',
+  editChanged: 'bulwark:edit.changed',
   welcomeChoose: 'bulwark:welcome.choose',
   appLockStatus: 'bulwark:appLock.status',
   appLockLock: 'bulwark:appLock.lock',
@@ -463,6 +577,7 @@ export const CHANNEL = {
   appLockProve: 'bulwark:appLock.prove',
   appLockDisable: 'bulwark:appLock.disable',
   appLockForget: 'bulwark:appLock.forget',
+  appLockClearOrphan: 'bulwark:appLock.clearOrphan',
   appLockOsEnroll: 'bulwark:appLock.osEnroll',
   appLockOsRemove: 'bulwark:appLock.osRemove',
   appLockOsUnlock: 'bulwark:appLock.osUnlock',

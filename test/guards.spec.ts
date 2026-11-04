@@ -64,6 +64,22 @@ test.describe('the embedded server', () => {
     expect(run.stdout).not.toContain('BEGIN PRIVATE KEY');
   });
 
+  test('the session secret and admin password are in no environment block', async () => {
+    test.skip(process.platform !== 'win32', 'reads the block through a Windows API');
+    const server = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((m) => m.type === 'Utility' && m.name === 'Bulwark mail service')?.pid);
+    expect(server, 'the server process').toBeTruthy();
+    const run = spawnSync('powershell.exe', ['-NoProfile', '-File', path.join(import.meta.dirname, 'support', 'process-env-names.ps1'), '-TargetPid', String(server)], { encoding: 'utf8' });
+    const names = run.stdout.split(/\r?\n/).filter(Boolean);
+    expect(names, 'the block was read').toContain('ADMIN_CONFIG_DIR');
+    expect(names).not.toContain('SESSION_SECRET');
+    expect(names).not.toContain('ADMIN_PASSWORD');
+    // And they still got there: the local admin signs in, and cookies are sealed.
+    await fakeOsIntegration(app);
+    const answer = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { plugins: { install: (s: string) => Promise<unknown> } } }).bulwarkDesktop.plugins.install('bulwark-no-such-plugin-xyz'));
+    expect(answer).toMatchObject({ ok: false, error: 'not_found' });
+    expect(existsSync(path.join(profile, 'webmail', 'admin-state', '.session-secret')), 'no secret of its own').toBe(false);
+  });
+
   test('the forwarding route refuses a navigation at the server too', async () => {
     const port = await serverPort(app);
     // The secret alone isn't enough: this is what a document request would look like.
@@ -128,7 +144,7 @@ test.describe('window prefs', () => {
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
     // `keystore` is only there where the native helper loaded: keystore-bridge.spec.ts.
-    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['appLock', 'auth', 'certificates', 'clipboard', 'dialogs', 'lifecycle', 'localImport', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
+    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['appLock', 'auth', 'certificates', 'clipboard', 'dialogs', 'edit', 'lifecycle', 'localImport', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
   });
 
   test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {

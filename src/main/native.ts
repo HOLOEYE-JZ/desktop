@@ -7,11 +7,13 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app } from 'electron';
+import { addonMayLoad, type AddonPins } from './addon-pins';
 import { helperFile, loadHelperModule, wrapHelper, type NativeHelper } from './native-loader';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 declare const __BULWARK_TEST_BUILD__: boolean;
+declare const __BULWARK_ADDON_PINS__: AddonPins;
 
 let helper: NativeHelper | null = null;
 
@@ -22,6 +24,7 @@ export function native(): NativeHelper {
   const disabled = __BULWARK_TEST_BUILD__ && process.argv.includes('--bulwark-test-no-native');
   const packaged = app.isPackaged || !__BULWARK_TEST_BUILD__;
   const file = helperFile({ packaged, mainDir: HERE, platform: process.platform, arch: process.arch });
-  helper = wrapHelper(disabled ? null : loadHelperModule(file));
+  const allowed = addonMayLoad({ file, name: 'native', packaged, platform: process.platform, arch: process.arch, pins: __BULWARK_ADDON_PINS__ });
+  helper = wrapHelper(disabled || !allowed ? null : loadHelperModule(file));
   return helper;
 }

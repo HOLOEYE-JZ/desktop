@@ -120,6 +120,23 @@ export function cleanSettingsPatch(patch: unknown): Partial<OsSettings> {
   return out;
 }
 
+/**
+ * Starting with the OS is persistence: it outlasts this run and the page that asked. A same-origin
+ * plugin frame can make this call, so turning it on takes a real click. Turning it off doesn't.
+ */
+export function settingsAllowedWithoutClick(patch: unknown, clicked: boolean): unknown {
+  if (clicked || !patch || typeof patch !== 'object' || (patch as { startAtLogin?: unknown }).startAtLogin !== true) return patch;
+  const { startAtLogin: _left, ...rest } = patch as Record<string, unknown>;
+  return rest;
+}
+
+/** Longest a page may pause notifications. The tray's own choices don't go through here. */
+export const MAX_PAGE_PAUSE_MS = 24 * 60 * 60 * 1000;
+
+export function pageSetPause(until: unknown, now: number): number | null {
+  return typeof until === 'number' && Number.isFinite(until) ? Math.min(until, now + MAX_PAGE_PAUSE_MS) : null;
+}
+
 function minutesOf(time: string): number {
   return Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 }
@@ -180,6 +197,8 @@ export function requestFromUrl(raw: string): { commands: OsCommand[]; links: Win
   }
   if (link.kind === 'new') return { commands: [{ type: 'new-message' }], links: [] };
   if (link.kind === 'view') return { commands: [{ type: 'navigate', target: link.view }], links: [] };
+  // Not a request of any kind: see os-launch.ts, which gives it to the flow that's waiting.
+  if (link.kind === 'sign-in') return { commands: [], links: [] };
   return { commands: [], links: [link] };
 }
 
@@ -408,6 +427,19 @@ export interface RegistryValue {
 
 const CLASSES = 'Software\\Classes';
 
+/** `--` ends Chromium's switches, so nothing in a link or a file name can pass for one. */
+function windowsOpenCommand(exe: string): string {
+  return `"${exe}" -- "%1"`;
+}
+
+/**
+ * Electron's own call writes `"exe" "%1"`, with no terminator. On Windows the registration in
+ * os-default-app.ts writes the scheme, along with everything else it offers.
+ */
+export function electronRegistersScheme(platform: NodeJS.Platform, packaged: boolean): boolean {
+  return packaged && platform !== 'win32';
+}
+
 /** A handled URL scheme or file type, in the class it's registered as. */
 function progId(id: string, description: string, exe: string, url: boolean): RegistryValue[] {
   const key = `${CLASSES}\\${id}`;
@@ -415,7 +447,7 @@ function progId(id: string, description: string, exe: string, url: boolean): Reg
     { key, data: description },
     ...(url ? [{ key, name: 'URL Protocol', data: '' }] : []),
     { key: `${key}\\DefaultIcon`, data: `${exe},0` },
-    { key: `${key}\\shell\\open\\command`, data: `"${exe}" -- "%1"` },
+    { key: `${key}\\shell\\open\\command`, data: windowsOpenCommand(exe) },
   ];
 }
 
@@ -446,9 +478,15 @@ export function windowsRegistration(exe: string): RegistryValue[] {
   ];
 }
 
-/** An uninstall takes the keys, and a reinstall to the same path must still put them back. */
+/**
+ * An uninstall takes the keys, and a reinstall to the same path must still put them back. Only the
+ * exact command counts: the right exe with another command line is something else's registration,
+ * and the rest of what the app offers may never have been written.
+ */
 export function needsRegistration(handlerQuery: { ok: boolean; stdout: string }, exe: string): boolean {
-  return !handlerQuery.ok || !handlerQuery.stdout.toLowerCase().includes(`"${exe.toLowerCase()}"`);
+  if (!handlerQuery.ok) return true;
+  const command = /REG_(?:EXPAND_)?SZ\s+(.*)/.exec(handlerQuery.stdout)?.[1]?.trim();
+  return command?.toLowerCase() !== windowsOpenCommand(exe).toLowerCase();
 }
 
 /** How long a failed main window waits before it tries again. */

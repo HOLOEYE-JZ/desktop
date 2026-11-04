@@ -146,7 +146,41 @@ function setup(ctx: FeatureContext): void {
     wrap: await wrapAvailable(),
   }));
   ctx.on(CHANNEL.appLockLock, () => appLockGate.lock());
-  ctx.handle(CHANNEL.appLockEnroll, (_event, _window, proof) => appLockGate.enroll(proof));
+
+  /** The first button is the yes. A no holds for this run, so nothing can keep asking. */
+  const askOnce = (message: string, detail: string, yes: string, no: string, window: BrowserWindow | null) => {
+    const options = { type: 'question' as const, message, detail, buttons: [yes, no], defaultId: 1, cancelId: 1, noLink: true };
+    return (window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options)).then(({ response }) => response === 0);
+  };
+
+  let enrollDeclined = false;
+  // A lock survives a restart and only its PIN opens it, so setting one up isn't for just any
+  // call: a same-origin plugin frame gets here too. The page's own setup comes from a click, and
+  // whatever took longer than a click lasts is the user's to allow.
+  ctx.handle(CHANNEL.appLockEnroll, async (_event, window, proof, clicked) => {
+    if (clicked !== true) {
+      if (enrollDeclined || !(proof instanceof Uint8Array) || proof.length !== 32 || appLockGate.enrolled) return false;
+      const text = strings();
+      const allowed = await oneAtATime<boolean | null>(null, () => askOnce(text.appLockEnrollTitle, text.appLockEnrollDetail, text.appLockEnrollConfirm, text.appLockForgetCancel, window));
+      if (allowed === false) enrollDeclined = true;
+      if (!allowed) return false;
+    }
+    return appLockGate.enroll(proof);
+  });
+
+  let orphanAsked = false;
+  // Main keeps a lock and the page has no PIN for it (the webmail's clearOrphanedDesktopLock).
+  // Nothing can prove that lock, and no page's word can lift it, so the user decides, once a run.
+  ctx.handle(CHANNEL.appLockClearOrphan, (_event, window) => oneAtATime(false, async () => {
+    if (!appLockGate.enrolled) return true;
+    if (orphanAsked) return false;
+    orphanAsked = true;
+    const text = strings();
+    if (!(await askOnce(text.appLockOrphanTitle, text.appLockOrphanDetail, text.appLockOrphanConfirm, text.appLockOrphanCancel, window))) return false;
+    appLockGate.forget();
+    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    return true;
+  }));
   ctx.handle(CHANNEL.appLockProve, (_event, _window, proof) => appLockGate.prove(proof));
   ctx.handle(CHANNEL.appLockDisable, async (_event, _window, proof) => {
     if (!appLockGate.disable(proof)) return false;

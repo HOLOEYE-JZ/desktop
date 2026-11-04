@@ -13,9 +13,10 @@ name: Release
 #
 # Signing: Windows is unsigned for now, see the hook in electron-builder.yml. macOS signs and
 # notarizes on a tag when the repository has its secrets, and is unsigned otherwise. Betas
-# publish with nobody looking. Stable releases wait for a reviewer in the `release`
-# environment: whoever can publish here can put code on every install. See "First stable
-# release" in the README. Actions are pinned by commit.
+# publish with nobody looking. The `release` environment a stable tag publishes through doesn't
+# exist yet, and GitHub creates it with no reviewers, so until someone sets it up a pushed tag
+# publishes with nobody looking too. Whoever can publish here can put code on every install.
+# See "First stable release" in the README. Actions are pinned by commit.
 
 on:
   push:
@@ -82,7 +83,7 @@ jobs:
             fi
             kind=tag
             ref="$(node -p "require('./package.json').config.webmailTag")"
-            publish=true
+            if [ "$EVENT_NAME" = "push" ]; then publish=true; fi
           else
             kind=ref
             ref="${INPUT_WEBMAIL_REF:-main}"
@@ -122,8 +123,7 @@ jobs:
 
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc
+          rustup toolchain install
 
       - name: Install dependencies
         run: npm ci
@@ -138,6 +138,8 @@ jobs:
       # sharp for the other architecture comes along here: a build on x64 only holds its own.
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         shell: bash
@@ -149,9 +151,18 @@ jobs:
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
 
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
+
       # One binary per architecture: before-pack.cjs puts the right one in node_modules.
       - name: Build the policy watcher
         run: node scripts/build-policy-watcher.mjs --arch x64,arm64
+
+      # The flag comes through cl's environment, and hasn't been seen working on a real build yet.
+      # When it has, take away the continue-on-error.
+      - name: Check the policy watcher
+        continue-on-error: true
+        run: npx playwright test test/native.spec.ts -g "the policy watcher"
 
       # Fuses and a real start. On a test pack, since a production build refuses the
       # switches a test needs and restarts itself without them. It's thrown away.
@@ -204,8 +215,7 @@ jobs:
 
       - name: Setup Rust
         run: |
-          rustup toolchain install stable --profile minimal
-          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          rustup toolchain install
 
       - name: Install dependencies
         run: npm ci
@@ -218,6 +228,8 @@ jobs:
       # Both of sharp's architectures: a universal app holds them side by side.
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT" --native darwin-x64,darwin-arm64
@@ -226,6 +238,9 @@ jobs:
         run: |
           node scripts/build-native.mjs --arch x64
           node scripts/build-native.mjs --arch arm64
+
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
 
       # Built per architecture, and the universal merge makes one binary of the two.
       - name: Build the policy watcher
@@ -305,7 +320,7 @@ jobs:
           cache: npm
 
       - name: Setup Rust
-        run: rustup toolchain install stable --profile minimal
+        run: rustup toolchain install
 
       # rpmbuild for the rpm. electron-builder's bundled fpm is x64 only. Xvfb and the
       # keyring for the smoke test.
@@ -331,12 +346,17 @@ jobs:
 
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT"
 
       - name: Build the native helper
         run: node scripts/build-native.mjs
+
+      - name: Check the native helper
+        run: npx playwright test test/native.spec.ts -g "what the binary"
 
       - name: Build the policy watcher
         run: node scripts/build-policy-watcher.mjs --optional
@@ -377,9 +397,34 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # A known hole in a crate the helper links in holds the release back. Whether it matters is
+  # for a person to decide, in native/Cargo.lock or with an ignore in `audit.toml`.
+  audit-native:
+    name: Audit the native helper's crates
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        run: rustup toolchain install
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+
+      - name: Audit
+        working-directory: native
+        run: cargo audit
+
   release:
     name: Publish the release
-    needs: [prepare, windows, macos, linux]
+    needs: [prepare, windows, macos, linux, audit-native]
     if: needs.prepare.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -387,8 +432,8 @@ jobs:
     concurrency:
       group: publish-${{ github.repository }}
       cancel-in-progress: false
-    # Betas wait for nobody, as asked. A stable release waits for this environment's reviewers,
-    # once they're set up: see the README.
+    # Betas wait for nobody, as asked. A stable release only waits if someone has created this
+    # environment with reviewers: see the README.
     environment: ${{ contains(needs.prepare.outputs.version, '-') && 'beta' || 'release' }}
     permissions:
       contents: write
@@ -437,7 +482,7 @@ jobs:
           {
             case "$VERSION" in
               *-*)
-                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway.'
+                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway. On macOS it should need System Settings > Privacy & Security > Open Anyway the first time. We have not tested that on a Mac yet. Windows and the AppImage update themselves with no signature check: the only barrier to a bad release is the security of the GitHub accounts that can publish here.'
                 echo
                 ;;
             esac

@@ -12,7 +12,7 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `helloAvailable()`: promise of a boolean. Whether Windows says a Hello prompt can be shown. False elsewhere.
 - `helloVerify(reason, hwnd, timeoutMs)`: shows the Hello prompt on a window. Promise of `verified`, `cancelled`, `busy`, `unavailable`, `timeout`, `invalid` or `failed`. A yes or no that gates the UI: it doesn't unlock or wrap a key. The timeout is required, at most 5 minutes.
 - `keystoreList()`: promise of the certificates fit for mail that have a private key. Never prompts, and doesn't touch a smart card.
-- `keystoreSign(id, digest, scheme, hwnd?)`: signs a digest. RSA PKCS#1 v1.5 and PSS, ECDSA as DER.
+- `keystoreSign(id, digest, scheme, hwnd?)`: signs a digest. RSA PKCS#1 v1.5 and PSS, ECDSA as DER. The page never picks this digest: main takes a CMS message's signed attributes, checks them and hashes them itself (`src/main/keystore-signed-attrs.ts`).
 - `keystoreDecrypt(id, data, scheme, hwnd?)`: RSA key transport with OAEP or v1.5. v1.5 answers only with 16, 24 or 32 bytes, OAEP with up to 64.
 - `keystoreAgree(id, peerPublicKey, hwnd?)`: ECDH, the raw shared secret.
 - `policyIsForced(key)`: macOS, whether a configuration profile forces this preference. False elsewhere.
@@ -26,13 +26,13 @@ Cancelling the WinRT operation doesn't close the Windows Security dialog, which 
 
 ## The keystore
 
-**Consent isn't here.** The helper does what it's told. Who may ask is decided in main, in `src/main/keystore-consent.ts`, by origin, certificate and class of use, with a native dialog. The plugin host's checks in the webmail are no boundary: a privileged plugin's frame is same-origin and reaches the bridge through `parent`.
+**Consent isn't here.** The helper does what it's told. Who may ask is decided in main, in `src/main/keystore-consent.ts`, by origin, certificate and class of use, with a native dialog. Signing asks every time. A yes for unwrapping holds until 15 minutes pass without a use, the screen or the app locks, or the account changes. The plugin host's checks in the webmail are no boundary: a privileged plugin's frame is same-origin and reaches the bridge through `parent`.
 
-**Which certificates.** Windows `CurrentUser\My`, including smart cards through their minidriver. macOS keychains and tokens. Only those fit for mail: with an extended key usage it has to name email protection or any use, and with a key usage it has to allow signing, key encipherment or key agreement. A CA is out, by `cA=true`, `keyCertSign` or `cRLSign`, whatever else it allows. A sign-in-only, code signing or CA key in the same store has no id, and can't be used. A key that can also sign in (no extended key usage, any use, client authentication, smart card logon) reports `askEachUse`, and main asks per operation.
+**Which certificates.** Windows `CurrentUser\My`, including smart cards through their minidriver. macOS keychains and tokens. Only those fit for mail: with an extended key usage it has to name email protection or any use, and with a key usage it has to allow signing, key encipherment or key agreement. A CA is out, by `cA=true`, `keyCertSign` or `cRLSign`, whatever else it allows. A sign-in-only, code signing or CA key in the same store has no id, and can't be used. A key asks at each use unless its extended key usage is exactly email protection and it has no `nonRepudiation`, the mark of a qualified signing key: anything broader could also sign code or sign the user in. Names lose control and invisible characters, since the consent dialog shows them.
 
 **Ids.** The SHA-256 of the certificate. Every call checks the id against the last `keystoreList()`.
 
-**What's checked before the OS sees it.** Id format, digest length for the hash, scheme against key type, key usage against the operation, ciphertext length against the modulus, label size, and the peer key's curve and form. SHA-1 signatures are refused, and SHA-1 stays for OAEP, where old mail needs it.
+**What's checked before the OS sees it.** Id format, digest length for the hash, scheme against key type, key usage against the operation, ciphertext length against the modulus, label size, and the peer key's curve, form and that its point is on the curve, here as well as in main, so nothing rests on a third-party provider. SHA-1 signatures are refused, and SHA-1 stays for OAEP, where old mail needs it.
 
 **Errors** are in the message: `keystore:cancelled`, `keystore:not-found`, `keystore:unsupported`, `keystore:locked`, `keystore:invalid`, `keystore:failed`. Every decryption failure, a bad padding or an answer of the wrong size, reads the same, so the key can't be used as an oracle.
 

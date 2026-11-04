@@ -10,6 +10,7 @@ import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  electronRegistersScheme,
   isAccelerator,
   quickComposeBuiltIn,
   quickComposeShortcut,
@@ -470,6 +471,23 @@ test.describe('registry', () => {
     expect(needsRegistration({ ok: false, stdout: '' }, exe)).toBe(true);
     expect(needsRegistration({ ok: true, stdout: 'REG_SZ "C:\\Old\\Bulwark.exe" -- "%1"' }, exe)).toBe(true);
     expect(needsRegistration({ ok: true, stdout: 'REG_SZ "c:\\apps\\bulwark.exe" -- "%1"' }, exe)).toBe(false);
+  });
+
+  test('only the exact command counts as registered: the right exe without the terminator does not', () => {
+    const exe = 'C:\\Apps\\Bulwark.exe';
+    const answer = (command: string) => ({ ok: true, stdout: `\r\nHKEY_CURRENT_USER\\Software\\Classes\\bulwark\\shell\\open\\command\r\n    (Standard)    REG_SZ    ${command}\r\n\r\n` });
+    expect(needsRegistration(answer(`"${exe}" -- "%1"`), exe)).toBe(false);
+    expect(needsRegistration(answer(`"${exe}" "%1"`), exe)).toBe(true);
+    expect(needsRegistration(answer(`"${exe}" -- "%1" --extra`), exe)).toBe(true);
+    expect(needsRegistration(answer(`"${exe}.old" -- "%1"`), exe)).toBe(true);
+    expect(needsRegistration({ ok: true, stdout: '' }, exe)).toBe(true);
+  });
+
+  test('on Windows the app registers its scheme itself: Electron\'s call would leave out the terminator', () => {
+    expect(electronRegistersScheme('win32', true)).toBe(false);
+    expect(electronRegistersScheme('darwin', true)).toBe(true);
+    expect(electronRegistersScheme('linux', true)).toBe(true);
+    expect(electronRegistersScheme('linux', false)).toBe(false);
   });
 
   test('taking it away removes only what is ours', () => {

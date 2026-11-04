@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { build } from 'esbuild';
+import { addonPins } from './scripts/addon-pins.mjs';
 
 rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist/pages', { recursive: true });
@@ -30,7 +31,7 @@ await build({
   format: 'esm',
   // A native module, loaded at run time from node_modules.
   external: ['electron', '@vscode/policy-watcher'],
-  define: { __BULWARK_TEST_BUILD__: String(testBuild), __BULWARK_TEST_PROFILE__: JSON.stringify(bakedProfile), __BULWARK_UPDATER_TEST__: String(updaterTest) },
+  define: { __BULWARK_ADDON_PINS__: JSON.stringify(addonPins(process.cwd())), __BULWARK_TEST_BUILD__: String(testBuild), __BULWARK_TEST_PROFILE__: JSON.stringify(bakedProfile), __BULWARK_UPDATER_TEST__: String(updaterTest) },
   // Takes out what's behind the false above, and the functions only it used.
   minifySyntax: true,
 });

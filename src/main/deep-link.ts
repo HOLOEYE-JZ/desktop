@@ -9,10 +9,15 @@
  *   bulwark://folder/<role or id>
  *   bulwark://new
  *   bulwark://inbox, bulwark://calendar, bulwark://contacts
+ *   bulwark://sign-in/callback?code=<code>&state=<state>
  *
  * A link isn't signed, so it may only show something. What opens from one carries
  * `via=link`, and the message window then doesn't mark it read or send a read receipt
  * by itself. Anything that would change mail needs the user's click in the window.
+ *
+ * The sign-in link is the redirect for a server that refuses a loopback one. It shows
+ * nothing and opens nothing. It finishes a flow the user started in the app, if its state
+ * is that flow's (browser-sign-in.ts), and otherwise it's dropped without a sound.
  */
 
 export const DEEP_LINK_SCHEME = 'bulwark';
@@ -21,7 +26,8 @@ export type DeepLink =
   | { kind: 'message'; emailId: string; account?: string; owner?: string }
   | { kind: 'folder'; folder: string }
   | { kind: 'new' }
-  | { kind: 'view'; view: 'inbox' | 'calendar' | 'contacts' };
+  | { kind: 'view'; view: 'inbox' | 'calendar' | 'contacts' }
+  | { kind: 'sign-in'; code: string; state: string };
 
 /** A link main opens itself. The others are commands to the page: features/os-rules.ts. */
 export type WindowLink = Extract<DeepLink, { kind: 'message' | 'folder' }>;
@@ -34,6 +40,9 @@ const ID = /^[A-Za-z0-9_-]{1,255}$/;
  * username is usually an address itself, so it can hold another @.
  */
 const LOGIN = /^[^\s/\\?#%<>"'`&]{1,254}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$/;
+
+/** RFC 6749 appendix A: printable ASCII. */
+const OAUTH_VALUE = /^[\x20-\x7e]{1,1024}$/;
 
 function validId(value: string | null): string | undefined {
   return value && ID.test(value) ? value : undefined;
@@ -70,6 +79,13 @@ export function parseDeepLink(raw: unknown): DeepLink | null {
   if (url.hostname === 'folder' || url.hostname === 'mailbox') {
     if (segments.length !== 1 || !ID.test(segments[0])) return null;
     return { kind: 'folder', folder: segments[0] };
+  }
+  if (url.hostname === 'sign-in') {
+    if (segments.length !== 1 || segments[0] !== 'callback') return null;
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state');
+    if (!code || !state || !OAUTH_VALUE.test(code) || !OAUTH_VALUE.test(state)) return null;
+    return { kind: 'sign-in', code, state };
   }
   if (segments.length > 0) return null;
   if (url.hostname === 'new') return { kind: 'new' };
