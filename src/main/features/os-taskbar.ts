@@ -3,12 +3,14 @@
  * thumbnail toolbar and dock menu.
  */
 
+import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { app, Menu, nativeImage, type BrowserWindow, type JumpListCategory, type ProgressBarOptions } from 'electron';
+import { app, Menu, nativeImage, nativeTheme, type BrowserWindow, type JumpListCategory, type ProgressBarOptions } from 'electron';
 import type { OsCommand, OsSummary, OsTrayMessage } from '../../shared/bridge';
-import { strings } from '../strings';
+import { onUiLanguage, strings } from '../strings';
 import { overlayPng } from './os-icons';
 import type { OsHub } from './os-hub';
+import { jumpListCategories, taskIconPath, taskIconVariant, type TaskIcon, type TaskIconVariant } from './os-tasks';
 
 const JUMP_LIST_DELAY_MS = 2000;
 
@@ -18,6 +20,8 @@ export interface TaskbarHandle {
   attention: () => void;
   setProgress: (progress: unknown, mode: unknown) => void;
   applyThumbar: (window: BrowserWindow) => boolean;
+  /** Which glyphs the jump list and the thumbnail toolbar have now, for the checks. */
+  iconVariant: () => TaskIconVariant;
 }
 
 /** A jump list entry starts us again; in development the script goes in front. */
@@ -37,7 +41,11 @@ function messageLink(message: OsTrayMessage): string {
   return `bulwark://message/${encodeURIComponent(message.emailId)}?${query}`;
 }
 
-export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
+/**
+ * `iconsDir` has the images Electron loads itself, `taskIconsDir` the .ico files Windows
+ * reads for the jump list (os-tasks.ts).
+ */
+export function setupTaskbar(hub: OsHub, iconsDir: string, taskIconsDir: string): TaskbarHandle {
   const { windows } = hub.ctx;
   const win32 = process.platform === 'win32';
   const open = new Set<BrowserWindow>();
@@ -45,6 +53,10 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
   let jumpTimer: NodeJS.Timeout | null = null;
   let lastJumpKey = '';
   let lastProgress: { value: number; options?: ProgressBarOptions } | null = null;
+  // The jump list and the thumbnail toolbar belong to the taskbar: they follow its light or
+  // dark (the Windows mode), not the apps'. The tray does the same.
+  const variant = () => taskIconVariant(nativeTheme.shouldUseDarkColorsForSystemIntegratedUI);
+  let lastVariant = variant();
 
   const overlayIcon = (count: number) => {
     const image = nativeImage.createEmpty();
@@ -94,13 +106,8 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
     }
   };
 
-  const thumbIcon = (name: string) => {
-    const image = nativeImage.createEmpty();
-    for (const [scaleFactor, size] of [[1, 16], [1.5, 24], [2, 32]] as const) {
-      image.addRepresentation({ scaleFactor, width: size, height: size, buffer: nativeImage.createFromPath(path.join(iconsDir, `thumb-${name}-${size}.png`)).toPNG() });
-    }
-    return image;
-  };
+  // The jump list's .ico files: Windows picks the size for the scale.
+  const thumbIcon = (name: TaskIcon) => nativeImage.createFromPath(taskIconPath(taskIconsDir, name, variant()));
 
   const applyThumbar = (window: BrowserWindow) => {
     if (!win32 || window.isDestroyed()) return false;
@@ -113,31 +120,18 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
 
   const jumpList = (summary: OsSummary): JumpListCategory[] => {
     const text = strings();
-    const task = (title: string, url: string) => ({
-      type: 'task' as const,
-      title,
-      description: title,
+    return jumpListCategories({
+      text,
+      recent: summary.recent.slice(0, 5).map((message) => ({
+        title: message.subject.replace(/\s+/g, ' ').trim().slice(0, 120) || text.jumpNoSubject,
+        url: messageLink(message),
+      })),
       program: process.execPath,
-      args: launchArgs(url),
-      iconPath: process.execPath,
-      iconIndex: 0,
+      args: launchArgs,
+      iconsDir: taskIconsDir,
+      variant: lastVariant,
+      iconExists: existsSync,
     });
-    const recent = summary.recent.slice(0, 5).map((message) => {
-      const title = message.subject.replace(/\s+/g, ' ').trim().slice(0, 120) || text.jumpNoSubject;
-      return task(title, messageLink(message));
-    });
-    return [
-      ...(recent.length ? [{ type: 'custom' as const, name: text.jumpRecent, items: recent }] : []),
-      {
-        type: 'tasks',
-        items: [
-          task(text.trayNewMessage, 'bulwark://new'),
-          task(text.jumpInbox, 'bulwark://inbox'),
-          task(text.jumpCalendar, 'bulwark://calendar'),
-          task(text.jumpContacts, 'bulwark://contacts'),
-        ],
-      },
-    ];
   };
 
   const jumpKey = (summary: OsSummary) => JSON.stringify(summary.recent.map((message) => [message.emailId, message.subject]));
@@ -146,6 +140,7 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
     if (!win32) return null;
     const summary = hub.summary;
     lastJumpKey = jumpKey(summary);
+    lastVariant = variant();
     jumpResult = app.setJumpList(jumpList(summary));
     return jumpResult;
   };
@@ -175,16 +170,42 @@ export function setupTaskbar(hub: OsHub, iconsDir: string): TaskbarHandle {
   hub.on('cleared', () => applyJumpList());
   applyJumpList();
 
-  if (process.platform === 'darwin' && app.dock) {
+  const refreshThumbar = () => {
+    const main = windows.mainWindow();
+    if (main && !main.isDestroyed() && main.isVisible()) applyThumbar(main);
+  };
+  // Windows keeps the icons it was given: another light or dark needs the list set again.
+  nativeTheme.on('updated', () => {
+    if (!win32 || variant() === lastVariant) return;
+    applyJumpList();
+    refreshThumbar();
+  });
+
+  const applyDockMenu = () => {
+    if (process.platform !== 'darwin' || !app.dock) return;
     const text = strings();
     const dockCommand = (command: OsCommand) => () => hub.dispatch(command);
+    // Template images: the menu tints them.
+    const icon = (name: TaskIcon) => {
+      const image = nativeImage.createFromPath(path.join(iconsDir, `menu-${name}Template.png`));
+      image.setTemplateImage(true);
+      return image;
+    };
     app.dock.setMenu(Menu.buildFromTemplate([
-      { label: text.trayNewMessage, click: dockCommand({ type: 'new-message' }) },
-      { label: text.jumpInbox, click: dockCommand({ type: 'navigate', target: 'inbox' }) },
-      { label: text.jumpCalendar, click: dockCommand({ type: 'navigate', target: 'calendar' }) },
-      { label: text.jumpContacts, click: dockCommand({ type: 'navigate', target: 'contacts' }) },
+      { label: text.trayNewMessage, icon: icon('compose'), click: dockCommand({ type: 'new-message' }) },
+      { label: text.jumpInbox, icon: icon('inbox'), click: dockCommand({ type: 'navigate', target: 'inbox' }) },
+      { label: text.jumpCalendar, icon: icon('calendar'), click: dockCommand({ type: 'navigate', target: 'calendar' }) },
+      { label: text.jumpContacts, icon: icon('contacts'), click: dockCommand({ type: 'navigate', target: 'contacts' }) },
     ]));
-  }
+  };
+  applyDockMenu();
 
-  return { jumpListResult: () => jumpResult, applyJumpList, attention, setProgress, applyThumbar };
+  // Until the page says which language it shows, these are in the OS's.
+  onUiLanguage(() => {
+    applyJumpList();
+    refreshThumbar();
+    applyDockMenu();
+  });
+
+  return { jumpListResult: () => jumpResult, applyJumpList, attention, setProgress, applyThumbar, iconVariant: () => lastVariant };
 }

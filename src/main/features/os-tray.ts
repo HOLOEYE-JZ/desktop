@@ -14,6 +14,7 @@ import { onUiLanguage, strings, uiLanguageNow } from '../strings';
 import { PAUSE_UNTIL_TURNED_ON, pausedText } from './os-rules';
 import { withUnreadDot } from './os-icons';
 import type { OsHub } from './os-hub';
+import { taskIconPath, taskIconVariant, type TaskIcon } from './os-tasks';
 
 /** Clicking the tray takes the focus away first. Within this, the window still counts as in front. */
 const JUST_BLURRED_MS = 400;
@@ -37,7 +38,8 @@ export interface TrayHandle {
   toggleMain: () => void;
 }
 
-export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
+/** `taskIconsDir`: the .ico files of os-tasks.ts, for the menu's icons on Windows. */
+export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): TrayHandle | null {
   const { windows } = hub.ctx;
   const mac = process.platform === 'darwin';
   let lastBlur = 0;
@@ -66,6 +68,16 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
       image.addRepresentation({ scaleFactor, width: size, height: size, buffer });
     }
     return image;
+  };
+
+  // The webmail's glyph for a command. Windows draws the menu in the apps' light or dark,
+  // macOS tints a template image. Linux menus go over D-Bus in a theme we can't know: none.
+  const menuIcon = (name: TaskIcon): { icon: NativeImage } | Record<string, never> => {
+    if (process.platform === 'win32') return { icon: nativeImage.createFromPath(taskIconPath(taskIconsDir, name, taskIconVariant(nativeTheme.shouldUseDarkColors))) };
+    if (!mac) return {};
+    const image = nativeImage.createFromPath(path.join(iconsDir, `menu-${name}Template.png`));
+    image.setTemplateImage(true);
+    return { icon: image };
   };
 
   let tray: Tray;
@@ -122,11 +134,12 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
       click: () => hub.dispatch({ type: 'open-message', emailId: message.emailId, accountId: message.accountId, context: message.context }),
     }));
     const event: MenuItemConstructorOptions[] = summary.nextEvent
-      ? [{ label: line(text.trayNextEvent(summary.nextEvent.title, summary.nextEvent.when)), click: () => hub.dispatch({ type: 'navigate', target: 'calendar' }) }]
+      ? [{ label: line(text.trayNextEvent(summary.nextEvent.title, summary.nextEvent.when)), ...menuIcon('calendar'), click: () => hub.dispatch({ type: 'navigate', target: 'calendar' }) }]
       : [];
     return [
       {
         label: text.trayNewMessage,
+        ...menuIcon('compose'),
         ...(hub.quickComposeStatus?.active && hub.quickComposeStatus.shortcut ? { accelerator: hub.quickComposeStatus.shortcut, registerAccelerator: false } : {}),
         click: () => hub.dispatch({ type: 'new-message' }),
       },
@@ -165,7 +178,10 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
   appLockGate.on('enrolled', refreshMenu);
   appLockGate.on('locked', refreshMenu);
   hub.on('badge', refreshIcon);
-  nativeTheme.on('updated', refreshIcon);
+  nativeTheme.on('updated', () => {
+    refreshIcon();
+    refreshMenu();
+  });
   // The app's language, once the page has said: the tray was built in the OS's.
   onUiLanguage(() => {
     refreshMenu();
