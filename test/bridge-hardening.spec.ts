@@ -10,7 +10,7 @@ import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { GOOGLE_DICTIONARY_URL, outsideHostsAllowed } from '../src/main/spellcheck';
 import { profilePaths } from '../src/main/profile';
-import { fakeOsIntegration, launch, launchStandalone, opened, prompts, removeProfile, shownPage, tempProfile, waitForLogin } from './helpers';
+import { fakeOsIntegration, launch, launchStandalone, prompts, removeProfile, shownPage, tempProfile, waitForLogin } from './helpers';
 
 const CALLER = 'app.bulwark.localhost';
 const idOf = (origin: string) => Buffer.from(origin).toString('base64url');
@@ -211,37 +211,6 @@ test.describe('one app, one hostile server', () => {
     expect(await copy('invoice.exe')).toEqual({ name: 'invoice.exe', exists: true, zone: marked });
     expect(await copy('shortcut.lnk')).toEqual({ name: 'shortcut.lnk.txt', exists: true, zone: marked });
     expect(await copy('..\\..\\evil.url')).toEqual({ name: '_.._evil.url.txt', exists: true, zone: marked });
-  });
-
-  test('browser sign-in: no click means a native question naming the host', async () => {
-    const authorize = (redirectUri: string, state: string) => `${hostile.origin}/authorize?redirect_uri=${encodeURIComponent(redirectUri)}&state=${state}`;
-    const host = new URL(hostile.origin).host;
-
-    await setAnswer(app, 1);
-    let flow = await noGesture<{ flowId: string; redirectUri: string }>(app, 'return d.auth.beginBrowserSignIn();');
-    const refused = noGesture<{ ok: boolean; error?: string }>(app, 'return d.auth.completeBrowserSignIn(a.flowId, a.url);', { flowId: flow.flowId, url: authorize(flow.redirectUri, 'one') });
-    // Without the question the browser opens, and the flow would wait there for ten minutes.
-    await expect.poll(() => promptCount(app), { timeout: 5000 }).toBe(1);
-    expect((await prompts(app))[0].message).toContain(host);
-    expect(await refused).toEqual({ ok: false, error: 'cancelled' });
-    expect(await opened(app)).toEqual([]);
-
-    await setAnswer(app, 0);
-    flow = await noGesture<{ flowId: string; redirectUri: string }>(app, 'return d.auth.beginBrowserSignIn();');
-    const allowed = noGesture<{ ok: boolean; code?: string }>(app, 'return d.auth.completeBrowserSignIn(a.flowId, a.url);', { flowId: flow.flowId, url: authorize(flow.redirectUri, 'two') });
-    await expect.poll(() => opened(app)).toHaveLength(1);
-    expect(await promptCount(app)).toBe(1);
-    await fetch(`${flow.redirectUri}?code=THECODE&state=two`);
-    expect(await allowed).toEqual({ ok: true, code: 'THECODE', state: 'two' });
-
-    await setAnswer(app, 1);
-    flow = await withClick<{ flowId: string; redirectUri: string }>(page, 'return d.auth.beginBrowserSignIn();');
-    const clicked = page.evaluate(({ flowId, url }) => (window as never as { bulwarkDesktop: { auth: { completeBrowserSignIn(f: string, u: string): Promise<unknown> } } }).bulwarkDesktop.auth.completeBrowserSignIn(flowId, url), { flowId: flow.flowId, url: authorize(flow.redirectUri, 'three') });
-    await expect.poll(() => opened(app)).toHaveLength(1);
-    expect(await promptCount(app)).toBe(0);
-    await fetch(`${flow.redirectUri}?code=CLICKED&state=three`);
-    expect(await clicked).toEqual({ ok: true, code: 'CLICKED', state: 'three' });
-    await setAnswer(app, 0);
   });
 
   test('start at login: turning it on takes a click, turning it off does not', async () => {

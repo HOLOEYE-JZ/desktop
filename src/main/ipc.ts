@@ -26,7 +26,6 @@ import { CHANNEL, type ThemeColours, type WindowType } from '../shared/bridge';
 import { openExternally } from './navigation';
 import { isJmapProxyPath } from './navigation-rules';
 import type { FeatureContext } from './features';
-import type { LoopbackSignIn } from './oauth-loopback';
 import { installPlugin, type PluginPolicyCheck } from './plugins';
 import { windowTypeOf } from './windows';
 
@@ -43,7 +42,6 @@ export function senderAllowed(frame: WebFrameMain | null | undefined, origin: st
 
 export interface IpcOptions {
   origin: string;
-  signIn?: LoopbackSignIn;
   pluginPolicy?: PluginPolicyCheck;
 }
 
@@ -163,11 +161,6 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   ctx.on(CHANNEL.serversForget, (_event, _window, serverUrl, reason) => {
     ctx.servers!.forget(serverUrl, reason);
   });
-
-  const signIn = options.signIn!;
-  ctx.handle(CHANNEL.authBegin, (event, _window, clicked) => signIn.begin(event.sender.id, clicked === true));
-  ctx.handle(CHANNEL.authComplete, (event, _window, flowId, authorizeUrl) => signIn.complete(flowId, authorizeUrl, event.sender.id));
-  ctx.on(CHANNEL.authCancel, (event, _window, flowId) => signIn.cancel(flowId, event.sender.id));
 
   ctx.handle(CHANNEL.pluginsInstall, (_event, window, slug, version) =>
     installPlugin(ctx.localAdmin!, slug, version, window, options.pluginPolicy),

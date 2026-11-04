@@ -11,12 +11,21 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
+import { editFileName } from '../shared/edit-rules';
 import {
+  type EditBeginResult,
+  type EditClearResult,
+  type EditFile,
+  type EditOpenResult,
+  type EditReadResult,
+  type EditSession,
   BRIDGE_VERSION,
   type AppLockStatus,
   type OsUnlockAnswer,
   CHANNEL,
   PRELOAD_ARG,
+  type BrowserSignInControls,
+  type BrowserSignInRequest,
   type ConfirmOptions,
   type FlushAnswer,
   type LanguagesUpdate,
@@ -32,6 +41,7 @@ import {
   type LocalImportScanResult,
   type MenuState,
   type OsCommand,
+  type PasswordSignInAnswer,
   type OsDefaultAppStatus,
   type OsFile,
   type OsNotification,
@@ -102,10 +112,36 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
     policySnapshot = snapshot;
   });
+  /**
+   * A same-origin frame reaches this object through `parent`, and main can't tell. So the
+   * page takes these once, in its first render, before any frame exists, and a flow only
+   * starts from a real click on it.
+   */
+  let signInClaimed = false;
+  const signInControls: BrowserSignInControls = {
+    begin: (request: BrowserSignInRequest) => {
+      if (!clicked()) return Promise.resolve({ ok: false, error: 'no_gesture' });
+      return ipcRenderer.invoke(CHANNEL.authBegin, request);
+    },
+    complete: (flowId: string, url: string) => ipcRenderer.invoke(CHANNEL.authComplete, flowId, url),
+    useScheme: (flowId: string) => ipcRenderer.invoke(CHANNEL.authUseScheme, flowId),
+    cancel: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
+    beginPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordBegin, flowId),
+    nextPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordNext, flowId),
+    answerPassword: (flowId: string, answer: PasswordSignInAnswer) => ipcRenderer.send(CHANNEL.authPasswordAnswer, flowId, answer),
+    outcome: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordOutcome, flowId),
+  };
   const common = {
     version: BRIDGE_VERSION,
     platform,
     mode,
+    auth: {
+      claim: (): BrowserSignInControls | null => {
+        if (signInClaimed) return null;
+        signInClaimed = true;
+        return signInControls;
+      },
+    },
     certificates: {
       clearChoices: (scope: { account?: string; last?: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices, scope),
       setAccount: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesSetAccount, account),
@@ -249,6 +285,34 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       defaultAppStatus: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppStatus),
       openDefaultAppSettings: (): Promise<OsDefaultAppStatus> => ipcRenderer.invoke(CHANNEL.osDefaultAppOpen),
     },
+    edit: {
+      /** Whether this file may go through Edit at all: the same rule main enforces. */
+      canEdit: (name: string) => editFileName(name, process.platform) !== null,
+      begin: (key: string): Promise<EditBeginResult> => ipcRenderer.invoke(CHANNEL.editBegin, key),
+      open: (ticket: string, file: EditFile): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editOpen, ticket, file),
+      reopen: (ticket: string, id: string): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editReopen, ticket, id),
+      list: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editList),
+      /** The list after looking at each file now, for a decision that can't wait for the watcher. */
+      settle: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editSettle),
+      read: (id: string): Promise<EditReadResult> => ipcRenderer.invoke(CHANNEL.editRead, id),
+      taken: (id: string, hash: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editTaken, id, hash),
+      /** The draft it was on has gone: deleted, unless it holds a save nobody took. */
+      release: (id: string, source: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editRelease, id, source),
+      /** Asks natively if it holds edits. */
+      discard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editDiscard, id),
+      /** The organisation said no: no question. */
+      forceDiscard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editForceDiscard, id),
+      /** The question before a sign-out. A yes covers the `clear` that follows. */
+      askClear: (account: string): Promise<boolean> => ipcRenderer.invoke(CHANNEL.editAskClear, account),
+      clear: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editClear, account),
+      /** A wipe: no question. */
+      wipe: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editWipe, account),
+      /** The page has shown a last offer. */
+      shown: (id: string) => ipcRenderer.send(CHANNEL.editShown, id),
+      setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
+      claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
+      onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
+    },
     lifecycle: {
       /**
        * Before a window closes or the app quits, main asks the page to save what it
@@ -271,12 +335,6 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           prepare: (serverUrl: string) => ipcRenderer.invoke(CHANNEL.serversPrepare, serverUrl),
           noteSession: (serverUrl: string, urls: SessionUrls) => ipcRenderer.send(CHANNEL.serversNoteSession, serverUrl, urls),
           forget: (serverUrl: string, reason: 'failed' | 'signed-out') => ipcRenderer.send(CHANNEL.serversForget, serverUrl, reason),
-        },
-        auth: {
-          beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin, clicked()),
-          completeBrowserSignIn: (flowId: string, authorizeUrl: string) =>
-            ipcRenderer.invoke(CHANNEL.authComplete, flowId, authorizeUrl),
-          cancelBrowserSignIn: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
         },
         plugins: {
           install: (slug: string, version?: string) => ipcRenderer.invoke(CHANNEL.pluginsInstall, slug, version),
