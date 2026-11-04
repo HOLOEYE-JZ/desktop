@@ -40,6 +40,7 @@ await build({
 await build({ ...common, entryPoints: ['node_modules/electron-updater/out/main.js'], outfile: 'dist/updater-lib.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/preload/index.ts'], outfile: 'dist/preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist/welcome-preload.cjs', format: 'cjs', external: ['electron'] });
+await build({ ...common, entryPoints: ['src/preload/dialog.ts'], outfile: 'dist/dialog-preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
 await build({ ...common, entryPoints: ['src/main/import-worker.ts'], outfile: 'dist/import-worker.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/main/recent-files-worker.ts'], outfile: 'dist/recent-files-worker.cjs', format: 'cjs', external: ['electron'] });
@@ -58,4 +59,12 @@ const page = readFileSync('src/pages/welcome.html', 'utf8')
   .replace("script-src 'self'", `script-src 'sha256-${hash}'`)
   .replace('<script src="welcome.js"></script>', () => `<script>${script}</script>`);
 writeFileSync('dist/pages/welcome.html', page);
+
+// The dialog window's page (src/main/dialog-window.ts), built the same way.
+const dialogScript = readFileSync('src/pages/dialog.js', 'utf8').replace(/\r\n/g, '\n');
+const dialogHash = createHash('sha256').update(dialogScript).digest('base64');
+const dialogPage = readFileSync('src/pages/dialog.html', 'utf8')
+  .replace("script-src 'self'", `script-src 'sha256-${dialogHash}'`)
+  .replace('<script src="dialog.js"></script>', () => `<script>${dialogScript}</script>`);
+writeFileSync('dist/pages/dialog.html', dialogPage);
 if (testBuild || bakedProfile) writeFileSync('dist/test-build.json', JSON.stringify({ testBuild, bakedProfile }));

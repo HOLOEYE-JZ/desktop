@@ -213,6 +213,61 @@ export interface ConfirmOptions {
   type?: 'none' | 'info' | 'warning' | 'question';
 }
 
+/**
+ * A short question drawn by the shell in a window of its own, looking like the app's
+ * in-page dialog. Everything in it is plain text: the dialog page sets textContent only.
+ */
+export interface DialogWindowRequest {
+  /** The page's own name for it, for `dialogs.cancel`. */
+  id: string;
+  title: string;
+  /** The text under the title, in runs; `bold` runs are drawn bold. */
+  message?: { text: string; bold?: boolean }[];
+  /** "From the plugin …": who is asking, when it isn't the app. Drawn under the title. */
+  source?: string;
+  /** A warning sign beside the title, as the page's destructive confirm has. */
+  icon?: 'warning';
+  /** In the order they stand, start to end. */
+  buttons: { label: string; variant?: 'primary' | 'secondary' | 'destructive' }[];
+  /** The button Enter takes and the focus starts on. */
+  defaultIndex?: number;
+  /** The ⋮ menu at the top end: a plugin's options. */
+  menu?: { label: string; items: { id: string; label: string; destructive?: boolean }[] };
+  theme?: DialogWindowTheme;
+  lang?: string;
+  dir?: 'ltr' | 'rtl';
+}
+
+/** The page's look, read from its CSS: colours as #rrggbb[aa] or rgb(a)(). */
+export interface DialogWindowTheme {
+  dark?: boolean;
+  colours?: Partial<Record<DialogWindowColour, string>>;
+  font?: string;
+  /** px. */
+  fontSize?: number;
+  /** px, the card's corners; buttons get radiusSmall. */
+  radius?: number;
+  radiusSmall?: number;
+}
+
+export type DialogWindowColour =
+  | 'background'
+  | 'foreground'
+  | 'muted'
+  | 'mutedForeground'
+  | 'border'
+  | 'input'
+  | 'primary'
+  | 'primaryForeground'
+  | 'destructive'
+  | 'destructiveForeground'
+  | 'accent'
+  | 'accentForeground'
+  | 'ring';
+
+/** A button by its index, a menu item by its id. Null: closed without an answer (Escape, Alt+F4, the page went). */
+export type DialogWindowAnswer = { button: number } | { menu: string } | null;
+
 export interface LanguagesUpdate {
   /** The interface language. The shell's menus follow it too. */
   ui: string;
@@ -593,6 +648,12 @@ export const CHANNEL = {
   shellOpenExternal: 'bulwark:shell.openExternal',
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',
+  dialogsShow: 'bulwark:dialogs.show',
+  dialogsCancel: 'bulwark:dialogs.cancel',
+  /** The dialog window's own page: what to draw, its size, the answer. */
+  dialogWindowSpec: 'bulwark:dialog-window.spec',
+  dialogWindowReady: 'bulwark:dialog-window.ready',
+  dialogWindowAnswer: 'bulwark:dialog-window.answer',
   clipboardCopyFile: 'bulwark:clipboard.copyFile',
   clipboardClearFiles: 'bulwark:clipboard.clearFiles',
   spellMissing: 'bulwark:spell.missing',
