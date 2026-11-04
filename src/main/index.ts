@@ -51,6 +51,7 @@ import { ServerRegistry } from './servers';
 import { StateFile } from './state';
 import { strings, uiLanguageNow, unsentDetail } from './strings';
 import { checkInstance } from './instance-check';
+import { useWelcomeMenu } from './welcome-menu';
 import { changeConnectionUrl, loadErrorPage, noteLoadErrorPage, retryTarget, showsLoadError } from './load-error';
 import { leaveLaunchFolder } from './system-exe';
 import { ThemeController } from './theme';
@@ -544,6 +545,7 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
     },
   });
   window.once('ready-to-show', () => window.show());
+  useWelcomeMenu(window, () => menu?.rebuild());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
