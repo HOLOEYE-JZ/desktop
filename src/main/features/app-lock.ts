@@ -108,12 +108,13 @@ function setup(ctx: FeatureContext): void {
     });
   });
 
-  ctx.menu.extend('file', () => [{
+  // Only with a lock, as in the tray: a greyed line with no way to make it work says nothing.
+  ctx.menu.extend('file', () => (appLockGate.enrolled ? [{
     id: 'file.lockNow',
     label: strings().menuLockNow,
-    enabled: appLockGate.enrolled && !appLockGate.locked,
+    enabled: !appLockGate.locked,
     click: () => appLockGate.requestLock(),
-  }]);
+  }] : []));
 
   appLockGate.on('locked', (locked) => {
     if (locked) blankTitles();
