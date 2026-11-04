@@ -6,6 +6,11 @@
  * webmail's cookies are sealed with it, and a new one signs every account out
  * and wipes its offline data. So when an existing file can't be decrypted, `get`
  * throws, and the app shows an error page rather than generate another.
+ *
+ * On Linux with no secret service, safeStorage's `basic_text` backend only obfuscates, with a key
+ * every copy of Chromium knows. Chromium goes on working that way, and so does this: the app would
+ * otherwise not start there. It isn't silent: main logs it, and the page's settings say it, through
+ * the `wrap` of the app lock's status.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -13,6 +18,8 @@ import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { safeStorage } from 'electron';
 import { durableWrite } from './key-on-disk';
+
+let warnedObfuscated = false;
 
 export class SecretStoreError extends Error {
   constructor(
@@ -38,6 +45,10 @@ export class SecretStore {
   private async assertAvailable(): Promise<void> {
     if (!(await safeStorage.isAsyncEncryptionAvailable())) {
       throw new SecretStoreError('The system key store is not available.', 'unavailable');
+    }
+    if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text' && !warnedObfuscated) {
+      warnedObfuscated = true;
+      console.warn('No secret service here: secrets under the profile are only obfuscated.');
     }
   }
 

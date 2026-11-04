@@ -17,7 +17,7 @@
 
 import { wipeUnderWay } from './features/local-wipe';
 import { EventEmitter } from 'node:events';
-import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
+import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebContents, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { SessionWindow, StateFile } from './state';
 import { keystoreOffByPolicy } from './keystore-policy';
@@ -29,6 +29,9 @@ import { nextInCycle, sumAnswers } from './window-logic';
 
 /** The app's toolbar row (h-14), so the window's buttons line up with what's next to them. */
 export const TITLE_BAR_HEIGHT = 56;
+
+/** Pages whose renderer the app lock is ending on purpose: that isn't a crash to count or recover from. */
+export const replacingRenderer = new WeakSet<WebContents>();
 /** Whatever's under the buttons shows through: the app draws to the top of the window. */
 const OVERLAY_COLOUR = '#00000000';
 
@@ -501,7 +504,7 @@ export class WindowManager extends EventEmitter<{
 
   private onPageGone(managed: ManagedWindow, reason: string): void {
     const { window } = managed;
-    if (reason === 'clean-exit' || window.isDestroyed()) return;
+    if (reason === 'clean-exit' || window.isDestroyed() || replacingRenderer.has(window.webContents)) return;
     const now = Date.now();
     managed.crashes = [...(managed.crashes ?? []).filter((at) => now - at < CRASH_WINDOW_MS), now];
     if (managed.crashes.length > MAX_CRASH_RELOADS) {
