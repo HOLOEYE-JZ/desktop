@@ -536,6 +536,11 @@ export class WindowManager extends EventEmitter<{
     this.options.state.save();
   }
 
+  /** Windows are going. Choosing Stay in a prompt ends that. */
+  isQuitting(): boolean {
+    return this.quitting;
+  }
+
   /** The next main window loads but isn't shown: a start at login, or a toast's button. */
   startMainHidden(): void {
     this.mainStartsHidden = true;

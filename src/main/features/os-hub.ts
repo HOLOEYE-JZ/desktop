@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { WebContents } from 'electron';
 import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary, type QuickComposeStatus } from '../../shared/bridge';
+import { LinkRateLimit } from '../deep-link';
 import type { FeatureContext } from './index';
 import { cleanSettingsPatch, defaultSettings } from './os-rules';
 
@@ -37,6 +38,8 @@ export class OsHub extends EventEmitter<{
   /** Opens the quick composer: os-quick-compose.ts. */
   quickCompose: (() => void) | null = null;
   quickComposeStatus: QuickComposeStatus | undefined;
+  /** Any web page can fire `bulwark://new` in a loop, and each would take the focus. */
+  private readonly newMessageLimit = new LinkRateLimit();
 
   constructor(readonly ctx: FeatureContext) {
     super();
@@ -195,7 +198,7 @@ export class OsHub extends EventEmitter<{
   dispatch(command: OsCommand, options: { show: boolean } = { show: true }): void {
     // A new message from outside the app is its own small window.
     if (command.type === 'new-message' && this.quickCompose) {
-      this.quickCompose();
+      if (this.newMessageLimit.allow(Date.now())) this.quickCompose();
       return;
     }
     this.pending.push(command);

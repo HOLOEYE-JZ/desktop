@@ -72,6 +72,12 @@ const clickTrayNew = (app: ElectronApplication) => app.evaluate(() => {
   items.find((item) => item.label === 'New message')?.click?.();
 });
 
+/**
+ * Windows' default, as the app would hold it. Enter is a key the rest of this file doesn't
+ * name, so this is what proves Electron takes it. With Shift, as nobody uses that.
+ */
+const ENTER_KEY = 'CommandOrControl+Alt+Shift+Enter';
+
 test.describe('the shortcut', () => {
   let profile = '';
   let running: Launched | null = null;
@@ -104,6 +110,15 @@ test.describe('the shortcut', () => {
     expect(await quickStatus(page)).toMatchObject({ shortcut: null, active: false, locked: false });
   });
 
+  test('Enter is a key Electron takes, as the Windows default needs', async () => {
+    running = await launchStandalone(profile, DEFAULT_ARG);
+    const { app, page } = running;
+    await os(page, `setSettings({ quickComposeShortcut: '${ENTER_KEY}' })`);
+    expect(await isHeld(app, ENTER_KEY)).toBe(true);
+    expect(await quickStatus(page)).toMatchObject({ shortcut: ENTER_KEY, active: true });
+    expect((await menuItem(app, 'file.quickCompose'))?.accelerator).toBe(ENTER_KEY);
+  });
+
   test('turned off stays off after a restart', async () => {
     running = await launchStandalone(profile, DEFAULT_ARG);
     await os(running.page, 'setSettings({ quickComposeShortcut: null })');
@@ -116,8 +131,13 @@ test.describe('the shortcut', () => {
   test('what the page may set is checked', async () => {
     running = await launchStandalone(profile, DEFAULT_ARG);
     const { app, page } = running;
-    await os(page, `setSettings({ quickComposeShortcut: 'not a shortcut' })`);
+    await os(page, `setSettings({ quickComposeShortcut: 'not a shortcut', showShortcut: 'not a shortcut' })`);
     expect(await quickStatus(page)).toMatchObject({ shortcut: KEY, active: true });
+    for (const keys of ['CommandOrControl+C', 'CommandOrControl+V', 'Shift+A', 'Alt+Tab', 'Alt+F4']) {
+      await os(page, `setSettings({ quickComposeShortcut: '${keys}', showShortcut: '${keys}' })`);
+      expect(await quickStatus(page), keys).toMatchObject({ shortcut: KEY, active: true });
+      expect(await isHeld(app, keys), keys).toBe(false);
+    }
     expect(await isHeld(app, KEY)).toBe(true);
   });
 
@@ -325,6 +345,98 @@ test.describe('the window', () => {
 
     // None of them went to the main window's page as well.
     expect(await page.evaluate(() => (window as unknown as { __cmds: unknown[] }).__cmds)).toEqual([]);
+  });
+
+  test('a web page firing bulwark://new in a loop can\'t keep taking the focus', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await signedIn(app, page);
+    await app.evaluate(({ BrowserWindow }) => {
+      const g = globalThis as unknown as { __focuses: number };
+      g.__focuses = 0;
+      const real = BrowserWindow.prototype.focus;
+      BrowserWindow.prototype.focus = function focus(this: Electron.BrowserWindow) {
+        g.__focuses += 1;
+        return real.call(this);
+      };
+    });
+    const fire = () => app.evaluate(({ app: electronApp }) => electronApp.emit('second-instance', {}, ['bulwark.exe', 'bulwark://new'], ''));
+    for (let index = 0; index < 20; index += 1) await fire();
+    await expect.poll(async () => (await composers(app)).length).toBe(1);
+    const focuses = () => app.evaluate(() => (globalThis as unknown as { __focuses: number }).__focuses);
+    expect(await focuses()).toBeLessThan(6);
+    // The shortcut itself isn't held to it: it's the user at the keyboard.
+    const before = await focuses();
+    await press(app);
+    await expect.poll(focuses).toBeGreaterThan(before);
+    // And it passes.
+    await app.evaluate(() => {
+      const real = Date.now;
+      Date.now = () => real() + 11_000;
+    });
+    const later = await focuses();
+    await fire();
+    await expect.poll(focuses).toBeGreaterThan(later);
+  });
+
+  test('nothing opens once the app is quitting', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await signedIn(app, page);
+    const quit = () => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { ctx: { windows: { beginQuit: () => void } } } } }).__bulwarkOs.hub.ctx.windows.beginQuit());
+    // Waiting behind the lock when the quit comes: it doesn't open after all.
+    await os(page, 'setLocked(true)');
+    await press(app);
+    await quit();
+    await os(page, 'setLocked(false)');
+    await page.waitForTimeout(800);
+    expect(await composers(app)).toEqual([]);
+    await press(app);
+    await clickTrayNew(app);
+    await page.waitForTimeout(800);
+    expect(await composers(app)).toEqual([]);
+  });
+
+  test('opens on the monitor the pointer is on, and a remembered place on another or off every screen doesn\'t count', async () => {
+    running = await launchStandalone(profile);
+    const { app } = running;
+    const LEFT = { x: 0, y: 0, width: 1920, height: 1040 };
+    const RIGHT = { x: 2560, y: 100, width: 1600, height: 900 };
+    const placeWith = (stored: object | null, pointerOn: object) => app.evaluate(({ screen }, [area, place]) => {
+      type Ctx = { state: { data: { windowBounds: Record<string, unknown> } }; windows: { placeFor: (t: string, s: unknown, k: string) => { x: number; y: number; width: number; height: number } } };
+      const { state, windows } = (globalThis as unknown as { __bulwarkOs: { hub: { ctx: Ctx } } }).__bulwarkOs.hub.ctx;
+      // Electron's screen is a proxy: a plain assignment reaches the real object.
+      screen.getCursorScreenPoint = () => ({ x: (area as { x: number }).x + 5, y: (area as { y: number }).y + 5 });
+      screen.getDisplayNearestPoint = (() => ({ workArea: area })) as unknown as typeof screen.getDisplayNearestPoint;
+      if (place) state.data.windowBounds.quickComposer = place;
+      else delete state.data.windowBounds.quickComposer;
+      return windows.placeFor('composer', undefined, 'quickComposer');
+    }, [pointerOn, stored] as const);
+    const inside = (rect: { x: number; y: number; width: number; height: number }, area: typeof LEFT) =>
+      rect.x >= area.x && rect.y >= area.y && rect.x + rect.width <= area.x + area.width && rect.y + rect.height <= area.y + area.height;
+
+    // Nothing remembered: the small size, in the middle of that monitor.
+    const fresh = await placeWith(null, RIGHT);
+    expect(inside(fresh, RIGHT)).toBe(true);
+    expect([fresh.width, fresh.height]).toEqual([680, 560]);
+    expect(fresh.x).toBe(RIGHT.x + Math.round((RIGHT.width - 680) / 2));
+
+    // Remembered on this monitor: there.
+    const here = { x: 2700, y: 200, width: 700, height: 600 };
+    expect(await placeWith(here, RIGHT)).toEqual(here);
+
+    // Remembered on the other one: its size, here.
+    const moved = await placeWith({ x: 100, y: 100, width: 700, height: 600 }, RIGHT);
+    expect(inside(moved, RIGHT)).toBe(true);
+    expect([moved.width, moved.height]).toEqual([700, 600]);
+
+    // Remembered off every screen, on a monitor long gone.
+    const lost = await placeWith({ x: -9000, y: -9000, width: 700, height: 600 }, LEFT);
+    expect(inside(lost, LEFT)).toBe(true);
+
+    // Remembered larger than this monitor: it fits.
+    const large = await placeWith({ x: 100, y: 100, width: 3000, height: 2000 }, RIGHT);
+    expect(inside(large, RIGHT)).toBe(true);
   });
 
   test('the menu shows the keys that work', async () => {

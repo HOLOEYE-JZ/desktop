@@ -1,0 +1,1304 @@
+{
+"00000401": {
+"name": "Arabic (101)",
+"file": "kbda1.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000402": {
+"name": "Bulgarian (Typewriter)",
+"file": "kbdbu.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000404": {
+"name": "Chinese (Traditional) - US Keyboard",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000405": {
+"name": "Czech",
+"file": "kbdcz.dll",
+"ctrlAlt": "0123456789BCDEFGKLNQSVWX vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00000406": {
+"name": "Danish",
+"file": "kbdda.dll",
+"ctrlAlt": "02345789EM vkba vkdb vke2",
+"ctrlAltShift": ""
+},
+"00000407": {
+"name": "German",
+"file": "kbdgr.dll",
+"ctrlAlt": "023789EMQ vkbb vkdb vke2",
+"ctrlAltShift": " vkdb"
+},
+"00000408": {
+"name": "Greek",
+"file": "kbdhe.dll",
+"ctrlAlt": "02345689CERY vkba vkbb vkbd vkdb vkdc vkdd",
+"ctrlAltShift": ""
+},
+"00000409": {
+"name": "US",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000040a": {
+"name": "Spanish",
+"file": "kbdsp.dll",
+"ctrlAlt": "123456E vkba vkbb vkbf vkdc vkde",
+"ctrlAltShift": ""
+},
+"0000040b": {
+"name": "Finnish",
+"file": "kbdfi.dll",
+"ctrlAlt": "02345789EM vkba vkbb vke2",
+"ctrlAltShift": ""
+},
+"0000040c": {
+"name": "French (Legacy, AZERTY)",
+"file": "kbdfr.dll",
+"ctrlAlt": "023456789E vkba vkbb vkdb",
+"ctrlAltShift": ""
+},
+"0000040d": {
+"name": "Hebrew",
+"file": "kbdheb.dll",
+"ctrlAlt": "4EHJU vkbd",
+"ctrlAltShift": ""
+},
+"0000040e": {
+"name": "Hungarian",
+"file": "kbdhu.dll",
+"ctrlAlt": "123456789ABCDEFGIJKLMNQSUVWXY vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"0000040f": {
+"name": "Icelandic",
+"file": "kbdic.dll",
+"ctrlAlt": "05789EMQ vkba vkbb vkbf vkdc vkde vke2",
+"ctrlAltShift": ""
+},
+"00000410": {
+"name": "Italian",
+"file": "kbdit.dll",
+"ctrlAlt": "5E vkba vkbb vkc0 vkde",
+"ctrlAltShift": " vkba vkbb"
+},
+"00000411": {
+"name": "Japanese",
+"file": "kbdjpn.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000412": {
+"name": "Korean",
+"file": "kbdkor.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000413": {
+"name": "Dutch",
+"file": "kbdne.dll",
+"ctrlAlt": "123456789CEMRSXZ vkbe vkbf vkdb vkde vke2",
+"ctrlAltShift": ""
+},
+"00000414": {
+"name": "Norwegian",
+"file": "kbdno.dll",
+"ctrlAlt": "02345789EM vkba vkdb",
+"ctrlAltShift": ""
+},
+"00000415": {
+"name": "Polish (Programmers)",
+"file": "kbdpl1.dll",
+"ctrlAlt": "ACELNOSUXZ",
+"ctrlAltShift": "ACELNOSXZ"
+},
+"00000416": {
+"name": "Portuguese (Brazilian ABNT)",
+"file": "kbdbr.dll",
+"ctrlAlt": "123456CEQW vkbb vkc1 vkdc vkdd",
+"ctrlAltShift": ""
+},
+"00000418": {
+"name": "Romanian (Legacy)",
+"file": "kbdro.dll",
+"ctrlAlt": "0123456789BDKLMNQSVW vk20 vkba vkbb vkbc vkbd vkbe vkdb vkdd vkde",
+"ctrlAltShift": ""
+},
+"00000419": {
+"name": "Russian",
+"file": "kbdru.dll",
+"ctrlAlt": "8",
+"ctrlAltShift": ""
+},
+"0000041a": {
+"name": "Standard",
+"file": "kbdcr.dll",
+"ctrlAlt": "0123456789BEFGKLMNQVW vkbb vkbc vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"0000041b": {
+"name": "Slovak",
+"file": "kbdsl.dll",
+"ctrlAlt": "0123456789BCDEFGKLNPQSVWXY vkba vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde vkdf vke2",
+"ctrlAltShift": ""
+},
+"0000041c": {
+"name": "Albanian",
+"file": "kbdal.dll",
+"ctrlAlt": "0123456789BDFGKLMNQSVW vkba vkbb vkbc vkbd vkbe vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"0000041d": {
+"name": "Swedish",
+"file": "kbdsw.dll",
+"ctrlAlt": "02345789EM vkba vkbb vke2",
+"ctrlAltShift": ""
+},
+"0000041e": {
+"name": "Thai Kedmanee",
+"file": "kbdth0.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000041f": {
+"name": "Turkish Q",
+"file": "kbdtuq.dll",
+"ctrlAlt": "012345789AEIQST vkba vkbc vkbd vkc0 vkdb vkdd vkdf vke2",
+"ctrlAltShift": "AI"
+},
+"00000420": {
+"name": "Urdu",
+"file": "kbdurdu.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000422": {
+"name": "Ukrainian",
+"file": "kbdur.dll",
+"ctrlAlt": "U",
+"ctrlAltShift": "U"
+},
+"00000423": {
+"name": "Belarusian",
+"file": "kbdblr.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000424": {
+"name": "Slovenian",
+"file": "kbdcr.dll",
+"ctrlAlt": "0123456789BEFGKLMNQVW vkbb vkbc vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00000425": {
+"name": "Estonian",
+"file": "kbdest.dll",
+"ctrlAlt": "02345789ESZ vkbd vkbf vkdb vkdc vke2",
+"ctrlAltShift": "0234789SZ vkbd vkbf vkdb vkdc vke2"
+},
+"00000426": {
+"name": "Latvian",
+"file": "kbdlv.dll",
+"ctrlAlt": "14568BEFGHKMOQRVY vkbc vkbd vkbe vkde vke2",
+"ctrlAltShift": "234567BFGHKMOQRVY vkbd vkde vke2"
+},
+"00000427": {
+"name": "Lithuanian IBM",
+"file": "kbdlt.dll",
+"ctrlAlt": "0789E",
+"ctrlAltShift": ""
+},
+"00000428": {
+"name": "Tajik",
+"file": "kbdtajik.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000429": {
+"name": "Persian",
+"file": "kbdfa.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000042a": {
+"name": "Vietnamese",
+"file": "kbdvntc.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"0000042b": {
+"name": "Armenian Eastern",
+"file": "kbdarme.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000042c": {
+"name": "Azeri Latin",
+"file": "kbdazel.dll",
+"ctrlAlt": "24",
+"ctrlAltShift": ""
+},
+"0000042e": {
+"name": "Sorbian Standard (Legacy)",
+"file": "kbdsorst.dll",
+"ctrlAlt": "0123456789EMQ vkbb vkbf vkdb vke2",
+"ctrlAltShift": ""
+},
+"0000042f": {
+"name": "Macedonian (North Macedonia)",
+"file": "kbdmac.dll",
+"ctrlAlt": "BEFGMNV vkba vkdb vkdd vkde",
+"ctrlAltShift": ""
+},
+"00000432": {
+"name": "Setswana",
+"file": "kbdnso.dll",
+"ctrlAlt": "0123456789ACDEILMNOPQRSTUWYZ vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": "14ACDEILNOPQSTUWYZ vkba vkbb vkbc vkbe vkdc vkde"
+},
+"00000437": {
+"name": "Georgian",
+"file": "kbdgeo.dll",
+"ctrlAlt": "ADNT vkbf vkdb",
+"ctrlAltShift": ""
+},
+"00000438": {
+"name": "Faeroese",
+"file": "kbdfo.dll",
+"ctrlAlt": "02345789EM vkba vkdb vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"00000439": {
+"name": "Devanagari - INSCRIPT",
+"file": "kbdindev.dll",
+"ctrlAlt": "0123456789CDFIKPRZ vkba vkbb vkbc vkbe vkdb",
+"ctrlAltShift": "EFHKRX vkbb vkbe vkdb vkde"
+},
+"0000043a": {
+"name": "Maltese 47-Key",
+"file": "kbdmlt47.dll",
+"ctrlAlt": "3AEIOU vkc0 vkdb vkdc vkdd",
+"ctrlAltShift": "AEIOU vkc0 vkdb vkdc vkdd"
+},
+"0000043b": {
+"name": "Norwegian with Sami",
+"file": "kbdno1.dll",
+"ctrlAlt": "02345789ABCDEFGHIKMNOQSTVZ vkba vkc0 vkdb vkde",
+"ctrlAltShift": "ABCDFGHIKNOQSTVZ vkc0 vkde"
+},
+"0000043f": {
+"name": "Kazakh",
+"file": "kbdkaz.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000440": {
+"name": "Kyrgyz Cyrillic",
+"file": "kbdkyr.dll",
+"ctrlAlt": "9EJY",
+"ctrlAltShift": "EJY"
+},
+"00000442": {
+"name": "Turkmen",
+"file": "kbdturme.dll",
+"ctrlAlt": " vkbf vkdc",
+"ctrlAltShift": ""
+},
+"00000444": {
+"name": "Tatar (Legacy)",
+"file": "kbdtat.dll",
+"ctrlAlt": "0234789MORUW vkba vkbc vkbe vkc0 vkdd vkde",
+"ctrlAltShift": "8MORUW vkba vkc0 vkdd"
+},
+"00000445": {
+"name": "Bengali",
+"file": "kbdinben.dll",
+"ctrlAlt": "0123456789ADFIJQRSX vkbb vkdb",
+"ctrlAltShift": "ADFJRS vkbb vkdb"
+},
+"00000446": {
+"name": "Punjabi",
+"file": "kbdinpun.dll",
+"ctrlAlt": "0123456789BHIKP vkbe vkdb",
+"ctrlAltShift": "FGX"
+},
+"00000447": {
+"name": "Gujarati",
+"file": "kbdinguj.dll",
+"ctrlAlt": "0123456789 vkbb vkbe",
+"ctrlAltShift": "X vkbb vkbe"
+},
+"00000448": {
+"name": "Oriya",
+"file": "kbdinori.dll",
+"ctrlAlt": "0123456789BFRX vkbb vkbe vkdb",
+"ctrlAltShift": "FR vkbb vkbe vkbf vkdb"
+},
+"00000449": {
+"name": "Tamil",
+"file": "kbdintam.dll",
+"ctrlAlt": "0123456789BCHNVXYZ vkbb vkbd vkbe",
+"ctrlAltShift": ""
+},
+"0000044a": {
+"name": "Telugu",
+"file": "kbdintel.dll",
+"ctrlAlt": "0123456789PSW vkba vkbb",
+"ctrlAltShift": "FR vkbb"
+},
+"0000044b": {
+"name": "Kannada",
+"file": "kbdinkan.dll",
+"ctrlAlt": "0123456789SW vkbb",
+"ctrlAltShift": "FHR vkbb"
+},
+"0000044c": {
+"name": "Malayalam",
+"file": "kbdinmal.dll",
+"ctrlAlt": "0123456789Q",
+"ctrlAltShift": "123DRV vkbb"
+},
+"0000044d": {
+"name": "Assamese - INSCRIPT",
+"file": "kbdinasa.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000044e": {
+"name": "Marathi",
+"file": "kbdinmar.dll",
+"ctrlAlt": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789XZ vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00000450": {
+"name": "Mongolian Cyrillic",
+"file": "kbdmon.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000451": {
+"name": "Tibetan (PRC)",
+"file": "kbdtiprc.dll",
+"ctrlAlt": " vk20",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00000452": {
+"name": "United Kingdom Extended",
+"file": "kbdukx.dll",
+"ctrlAlt": "246ACEIOUWY vkc0 vkde vkdf",
+"ctrlAltShift": "ACEIOUWY vkc0 vkdd vkde"
+},
+"00000453": {
+"name": "Khmer",
+"file": "kbdkhmr.dll",
+"ctrlAlt": "0123456789ABCEIJKLMNOPQRSTUVXZ vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLOPQRSTUVWXYZ vkba vkbb vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00000454": {
+"name": "Lao",
+"file": "kbdlao.dll",
+"ctrlAlt": "0123456789",
+"ctrlAltShift": ""
+},
+"0000045a": {
+"name": "Syriac",
+"file": "kbdsyr1.dll",
+"ctrlAlt": "0123456789ABEFGHIJKLMNOPQRSTUVWXY vkbb vkbd vkc0",
+"ctrlAltShift": ""
+},
+"0000045b": {
+"name": "Sinhala",
+"file": "kbdsn1.dll",
+"ctrlAlt": "ABCDEFGHKLOQRSTVWXYZ vkba vkbc vkbe vkde",
+"ctrlAltShift": ""
+},
+"0000045c": {
+"name": "Cherokee Nation",
+"file": "kbdcher.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbd vkbf vkdb vkdc vkdd vkde"
+},
+"00000461": {
+"name": "Nepali",
+"file": "kbdnepr.dll",
+"ctrlAlt": "0123456789CP vkbb vkdd",
+"ctrlAltShift": "0123456789OPQ vkbb vkbd vkdd"
+},
+"00000463": {
+"name": "Pashto (Afghanistan)",
+"file": "kbdpash.dll",
+"ctrlAlt": "0123456789DEFGHIJKLMNOPQRTUWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00000465": {
+"name": "Divehi Phonetic",
+"file": "kbddiv1.dll",
+"ctrlAlt": "BMNV vkba vkbc",
+"ctrlAltShift": ""
+},
+"00000468": {
+"name": "Hausa",
+"file": "kbdhau.dll",
+"ctrlAlt": "059BDKY vkba vkde",
+"ctrlAltShift": "BDKY vkdc"
+},
+"0000046a": {
+"name": "Yoruba",
+"file": "kbdyba.dll",
+"ctrlAlt": "059AKLS vkba",
+"ctrlAltShift": "AKLS vkdc vkde"
+},
+"0000046c": {
+"name": "Sesotho sa Leboa",
+"file": "kbdnso.dll",
+"ctrlAlt": "0123456789ACDEILMNOPQRSTUWYZ vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": "14ACDEILNOPQSTUWYZ vkba vkbb vkbc vkbe vkdc vkde"
+},
+"0000046d": {
+"name": "Bashkir",
+"file": "kbdbash.dll",
+"ctrlAlt": "8",
+"ctrlAltShift": ""
+},
+"0000046e": {
+"name": "Luxembourgish",
+"file": "kbdsf.dll",
+"ctrlAlt": "12345678E vkba vkc0 vkdb vkdc vkdd vkdf vke2",
+"ctrlAltShift": ""
+},
+"0000046f": {
+"name": "Greenlandic",
+"file": "kbdgrlnd.dll",
+"ctrlAlt": "02345789DEKMPS vkba vkdb vke2",
+"ctrlAltShift": "DP"
+},
+"00000470": {
+"name": "Igbo",
+"file": "kbdibo.dll",
+"ctrlAlt": "059ADEFGHIMNOQSUW vkba vkbc vkbe vkde",
+"ctrlAltShift": "ADEFGHIMNOQSUW vkbc vkbe vkdc"
+},
+"00000474": {
+"name": "Guarani",
+"file": "kbdgn.dll",
+"ctrlAlt": "4AEGIOQUY vkba vkbb vkbf vkdb vkdc vkde",
+"ctrlAltShift": "AEGIOUY"
+},
+"00000475": {
+"name": "Hawaiian",
+"file": "kbdhaw.dll",
+"ctrlAlt": "AEIOU vkde",
+"ctrlAltShift": "AEIOU vkde"
+},
+"00000480": {
+"name": "Uyghur (Legacy)",
+"file": "kbdughr.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000481": {
+"name": "Maori",
+"file": "kbdmaori.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000485": {
+"name": "Sakha",
+"file": "kbdyak.dll",
+"ctrlAlt": "8",
+"ctrlAltShift": ""
+},
+"00000488": {
+"name": "Wolof",
+"file": "kbdwol.dll",
+"ctrlAlt": "023456789E vkba vkbb vkdb",
+"ctrlAltShift": ""
+},
+"00000492": {
+"name": "Central Kurdish",
+"file": "kbdkurd.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000804": {
+"name": "Chinese (Simplified) - US Keyboard",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000807": {
+"name": "Swiss German",
+"file": "kbdsg.dll",
+"ctrlAlt": "12345678E vkba vkc0 vkdb vkdc vkdd vkdf vke2",
+"ctrlAltShift": ""
+},
+"00000809": {
+"name": "United Kingdom",
+"file": "kbduk.dll",
+"ctrlAlt": "4AEIOU vkde vkdf",
+"ctrlAltShift": "AEIOU vkde"
+},
+"0000080a": {
+"name": "Latin American",
+"file": "kbdla.dll",
+"ctrlAlt": "Q vkbb vkbf vkdb vkdc vkde",
+"ctrlAltShift": ""
+},
+"0000080c": {
+"name": "Belgian French",
+"file": "kbdbe.dll",
+"ctrlAlt": "01234569E vkba vkbb vkc0 vkdc vkdd vke2",
+"ctrlAltShift": " vkbb vkc0 vkdc"
+},
+"00000813": {
+"name": "Belgian (Period)",
+"file": "kbdbe.dll",
+"ctrlAlt": "01234569E vkba vkbb vkc0 vkdc vkdd vke2",
+"ctrlAltShift": " vkbb vkc0 vkdc"
+},
+"00000816": {
+"name": "Portuguese",
+"file": "kbdpo.dll",
+"ctrlAlt": "02345789E vkba vkbb",
+"ctrlAltShift": ""
+},
+"0000081a": {
+"name": "Serbian (Latin)",
+"file": "kbdycl.dll",
+"ctrlAlt": "0123456789BEFGKLMNQVW vkbb vkbc vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"0000082c": {
+"name": "Azeri Cyrillic",
+"file": "kbdaze.dll",
+"ctrlAlt": "24",
+"ctrlAltShift": ""
+},
+"0000083b": {
+"name": "Swedish with Sami",
+"file": "kbdfi1.dll",
+"ctrlAlt": "02345789ABCDEFGHIKMNOQSTVZ vkba vkbb vkc0 vkde vke2",
+"ctrlAltShift": "ABCDFGHIKNOQSTVZ vkc0 vkde"
+},
+"00000843": {
+"name": "Uzbek Cyrillic",
+"file": "kbduzb.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000850": {
+"name": "Mongolian (Mongolian Script)",
+"file": "kbdmonmo.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0000085d": {
+"name": "Inuktitut - Latin",
+"file": "kbdiulat.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbf vkc0 vkdb vkdd",
+"ctrlAltShift": "0123456789ABCDEFIJKLMNOQSTUVWXYZ vkba vkbf vkc0 vkdb vkdc vkdd vkde vkdf"
+},
+"0000085f": {
+"name": "Central Atlas Tamazight",
+"file": "kbdtzm.dll",
+"ctrlAlt": "023456789E vkba vkbb vkdb",
+"ctrlAltShift": ""
+},
+"00000c04": {
+"name": "Chinese (Traditional, Hong Kong S.A.R.) - US Keyboard",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00000c0c": {
+"name": "Canadian French (Legacy)",
+"file": "kbdfc.dll",
+"ctrlAlt": "0123456789ACDEFMOPRSXYZ vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "12349ACDMOPRS vkba vkbd vkdc vkdd vke2"
+},
+"00000c1a": {
+"name": "Serbian (Cyrillic)",
+"file": "kbdycc.dll",
+"ctrlAlt": "E vkbc vkbe",
+"ctrlAltShift": ""
+},
+"00000c51": {
+"name": "Dzongkha",
+"file": "kbddzo.dll",
+"ctrlAlt": "0123456789ABCDEFIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "12345678ABCDEFIJKLMOPQRSTVWXZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00001004": {
+"name": "Chinese (Simplified, Singapore) - US Keyboard",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00001009": {
+"name": "Canadian French",
+"file": "kbdca.dll",
+"ctrlAlt": "0123456789EMOP vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"0000100c": {
+"name": "Swiss French",
+"file": "kbdsf.dll",
+"ctrlAlt": "12345678E vkba vkc0 vkdb vkdc vkdd vkdf vke2",
+"ctrlAltShift": ""
+},
+"0000105f": {
+"name": "Tifinagh (Basic)",
+"file": "kbdtifi.dll",
+"ctrlAlt": "02345689E vkbb vkbd vkdd",
+"ctrlAltShift": ""
+},
+"00001404": {
+"name": "Chinese (Traditional, Macao S.A.R.) - US Keyboard",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00001409": {
+"name": "NZ Aotearoa",
+"file": "kbdmaori.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00001809": {
+"name": "Irish",
+"file": "kbdir.dll",
+"ctrlAlt": "4AEIOU vkc0 vkdf",
+"ctrlAltShift": "AEIOU vkc0 vkdf"
+},
+"0000201a": {
+"name": "Bosnian (Cyrillic)",
+"file": "kbdbhc.dll",
+"ctrlAlt": "35BEFGMNQVW vkbc vkbe",
+"ctrlAltShift": ""
+},
+"00004009": {
+"name": "India",
+"file": "kbdinen.dll",
+"ctrlAlt": "4ADEGHILMNOQRSTUXY vkbb vkbc vkbd vkbe vkbf vkc0 vkde",
+"ctrlAltShift": "69ADEGHILMNOQRSTUXY vkbb vkbc vkbd vkbf vkc0 vkde"
+},
+"00010401": {
+"name": "Arabic (102)",
+"file": "kbda2.dll",
+"ctrlAlt": "4CEQRVW",
+"ctrlAltShift": "4CEQRVW"
+},
+"00010402": {
+"name": "Bulgarian (Latin)",
+"file": "kbdus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00010405": {
+"name": "Czech (QWERTY)",
+"file": "kbdcz1.dll",
+"ctrlAlt": "0123456789E vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": " vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"00010407": {
+"name": "German (IBM)",
+"file": "kbdgr1.dll",
+"ctrlAlt": "023789EMQ vkbb vkdb vke2",
+"ctrlAltShift": "023789MQ vkbb vkdb vke2"
+},
+"00010408": {
+"name": "Greek (220)",
+"file": "kbdhe220.dll",
+"ctrlAlt": "02345689CERY vkba vkbb vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00010409": {
+"name": "United States-Dvorak",
+"file": "kbddv.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0001040a": {
+"name": "Spanish Variation",
+"file": "kbdes.dll",
+"ctrlAlt": "0123456789ADEFGHJKS vkba vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"0001040c": {
+"name": "French (Standard, AZERTY)",
+"file": "kbdfrna.dll",
+"ctrlAlt": "0123456789ABCDEFGHIKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "012345689ACHIOPQSTUVW vk20 vkba vkbb vkbc vkbd vkc0 vkdb vkdc vkde vke2"
+},
+"0001040e": {
+"name": "Hungarian 101-key",
+"file": "kbdhu1.dll",
+"ctrlAlt": "0123456789ABCDEFGIJKLMNQRSTUVWXZ vkba vkbc vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"00010410": {
+"name": "Italian (142)",
+"file": "kbdit142.dll",
+"ctrlAlt": "035789EQ vkbb vkbf",
+"ctrlAltShift": ""
+},
+"00010415": {
+"name": "Polish (214)",
+"file": "kbdpl.dll",
+"ctrlAlt": "0123456789BDMNQSUVW vkba vkbb vkbc vkbe vkbf vkdb vkdd vkde",
+"ctrlAltShift": ""
+},
+"00010416": {
+"name": "Portuguese (Brazilian ABNT2)",
+"file": "kbdbr.dll",
+"ctrlAlt": "123456CEQW vkbb vkc1 vkdc vkdd",
+"ctrlAltShift": ""
+},
+"00010418": {
+"name": "Romanian (Standard)",
+"file": "kbdrost.dll",
+"ctrlAlt": "0123456789CDELPS vk6e vkba vkbb vkbc vkbd vkbe vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "DL vk6e vkba vkbb vkbc vkbd vkbe vkc0 vkdb vkdc vkdd vkde"
+},
+"00010419": {
+"name": "Russian (Typewriter)",
+"file": "kbdru1.dll",
+"ctrlAlt": "8",
+"ctrlAltShift": ""
+},
+"0001041b": {
+"name": "Slovak (QWERTY)",
+"file": "kbdsl1.dll",
+"ctrlAlt": "0123456789BCDEFGKLNPQSVWXZ vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"0001041e": {
+"name": "Thai Pattachote",
+"file": "kbdth1.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0001041f": {
+"name": "Turkish F",
+"file": "kbdtuf.dll",
+"ctrlAlt": "0123456789BDEFHIJPQSTUVWXY vkbb vkbc vkbd vkbe vkc0 vkdb vkdc vke2",
+"ctrlAltShift": "134AHIJSUV vkbb vkdb vkdc vke2"
+},
+"00010426": {
+"name": "Latvian (QWERTY)",
+"file": "kbdlv1.dll",
+"ctrlAlt": "12346ACEGIKLNORSUZ vkbd vkc0 vkdc vkde",
+"ctrlAltShift": "4578ACEGIKLNORSUZ vkbd vkc0 vkde"
+},
+"00010427": {
+"name": "Lithuanian",
+"file": "kbdlt1.dll",
+"ctrlAlt": "0123456789E vkbb",
+"ctrlAltShift": "12345678 vkbb"
+},
+"0001042b": {
+"name": "Armenian Western",
+"file": "kbdarmw.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0001042c": {
+"name": "Azerbaijani (Standard)",
+"file": "kbdazst.dll",
+"ctrlAlt": "24",
+"ctrlAltShift": ""
+},
+"0001042e": {
+"name": "Sorbian Extended",
+"file": "kbdsorex.dll",
+"ctrlAlt": "0123456789EQ vkbb vkbd vkbf vkdb vke2",
+"ctrlAltShift": ""
+},
+"0001042f": {
+"name": "Macedonian (North Macedonia) - Standard",
+"file": "kbdmacst.dll",
+"ctrlAlt": "012346789 vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd",
+"ctrlAltShift": ""
+},
+"00010437": {
+"name": "Georgian (QWERTY)",
+"file": "kbdgeoqw.dll",
+"ctrlAlt": "2358ACEFGHIJNRVXY vkbb vkbc vkbd vkbe vkbf",
+"ctrlAltShift": ""
+},
+"00010439": {
+"name": "Hindi Traditional",
+"file": "kbdinhin.dll",
+"ctrlAlt": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789X vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"0001043a": {
+"name": "Maltese 48-Key",
+"file": "kbdmlt48.dll",
+"ctrlAlt": "3AEIOU vkc0 vkdb vkdd vke2",
+"ctrlAltShift": "AEIOU vkc0 vkdb vkdd vke2"
+},
+"0001043b": {
+"name": "Sami Extended Norway",
+"file": "kbdsmsno.dll",
+"ctrlAlt": "02345789AEGHIKMOQWXYZ vkba vkbc vkbe vkbf vkc0 vkdb vkdd vkde vke2",
+"ctrlAltShift": "AGHIKOQWXYZ vkba vkbf vkc0 vkdd vkde vke2"
+},
+"00010444": {
+"name": "Tatar",
+"file": "kbdtt102.dll",
+"ctrlAlt": "0234789MORUW vkba vkbc vkbe vkc0 vkdd vkde",
+"ctrlAltShift": "8MORUW vkba vkc0 vkdd"
+},
+"00010445": {
+"name": "Bengali - INSCRIPT (Legacy)",
+"file": "kbdinbe1.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00010451": {
+"name": "Tibetan (PRC) - Updated",
+"file": "kbdtiprd.dll",
+"ctrlAlt": " vk20",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00010453": {
+"name": "Khmer (NIDA)",
+"file": "kbdkni.dll",
+"ctrlAlt": "0123456789EIOPR vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"0001045a": {
+"name": "Syriac Phonetic",
+"file": "kbdsyr2.dll",
+"ctrlAlt": "0123456789ABEFGHIJKLMNOPQRSTUVWXY vkbb vkbd vkc0",
+"ctrlAltShift": ""
+},
+"0001045b": {
+"name": "Sinhala - Wij 9",
+"file": "kbdsw09.dll",
+"ctrlAlt": "0123456789ABCDEFGHJKLNOQRSTVWXYZ vkba vkbb vkbc vkbd vkbe vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "14 vkbb vkbc vkbe vkc0 vkdb vkdc vkdd"
+},
+"0001045c": {
+"name": "Cherokee Nation Phonetic",
+"file": "kbdcherp.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0001045d": {
+"name": "Inuktitut - Naqittaut",
+"file": "kbdinuk2.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbf vkc0 vkdb vkdd",
+"ctrlAltShift": "0123456789ABCDEFIJKLMNOQSTUVWXYZ vkbf vkc0 vkdb vkdc vkdd vkde vkdf"
+},
+"00010465": {
+"name": "Divehi Typewriter",
+"file": "kbddiv2.dll",
+"ctrlAlt": "BFMNV vkde",
+"ctrlAltShift": ""
+},
+"00010480": {
+"name": "Uyghur",
+"file": "kbdughr1.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0001080c": {
+"name": "Belgian (Comma)",
+"file": "kbdbene.dll",
+"ctrlAlt": "01234569E vkba vkbb vkc0 vkdc vkdd vke2",
+"ctrlAltShift": " vkbb vkc0 vkdc"
+},
+"0001083b": {
+"name": "Finnish with Sami",
+"file": "kbdfi1.dll",
+"ctrlAlt": "02345789ABCDEFGHIKMNOQSTVZ vkba vkbb vkc0 vkde vke2",
+"ctrlAltShift": "ABCDFGHIKNOQSTVZ vkc0 vkde"
+},
+"00010850": {
+"name": "Traditional Mongolian (Standard)",
+"file": "kbdmonst.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00010c00": {
+"name": "Myanmar (Phonetic order)",
+"file": "kbdmyan.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"00011009": {
+"name": "Canadian Multilingual Standard",
+"file": "kbdcan.dll",
+"ctrlAlt": "04789EXZ vk20 vkba vkbb vkbc vkbe vkdb vkdd vkde",
+"ctrlAltShift": ""
+},
+"0001105f": {
+"name": "Tifinagh (Full)",
+"file": "kbdtifi2.dll",
+"ctrlAlt": "02345689E vkbb vkbd vkdd",
+"ctrlAltShift": ""
+},
+"00011809": {
+"name": "Gaelic",
+"file": "kbdgae.dll",
+"ctrlAlt": "47AEIOUY vkc0 vkdf",
+"ctrlAltShift": "AEIOUY vkc0 vkdf"
+},
+"00020401": {
+"name": "Arabic (102) AZERTY",
+"file": "kbda3.dll",
+"ctrlAlt": "4CEQRVW",
+"ctrlAltShift": "4CEQRVW"
+},
+"00020402": {
+"name": "Bulgarian (Phonetic)",
+"file": "kbdbgph.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00020405": {
+"name": "Czech Programmers",
+"file": "kbdcz2.dll",
+"ctrlAlt": "0123456789E vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": " vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"00020407": {
+"name": "German Extended (E1)",
+"file": "kbdgre1.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": " vkdb"
+},
+"00020408": {
+"name": "Greek (319)",
+"file": "kbdhe319.dll",
+"ctrlAlt": "E vkba",
+"ctrlAltShift": ""
+},
+"00020409": {
+"name": "United States-International",
+"file": "kbdusx.dll",
+"ctrlAlt": "0123456789ACDEILMNOPQRSTUWYZ vkba vkbb vkbc vkbd vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": "14ACDEILNOPQSTUWYZ vkba vkbb vkbc vkdc vkde"
+},
+"0002040c": {
+"name": "French (Standard, BÉPO)",
+"file": "kbdfrnb.dll",
+"ctrlAlt": "0123456789ABCDEFGHIKLMNOPQRSTUVXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdd vkde vke2",
+"ctrlAltShift": "01234589ACEGHIKLOPRSTUXY vk20 vkbb vkbc vkbd vkbe vkbf vkde vke2"
+},
+"0002040d": {
+"name": "Hebrew (Standard)",
+"file": "kbdhebl3.dll",
+"ctrlAlt": "03456789ACEGHJLMPQRSUWXY vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "BCJLNU vkba vkbc vkbe"
+},
+"00020418": {
+"name": "Romanian (Programmers)",
+"file": "kbdropr.dll",
+"ctrlAlt": "0123456789ACDEILPQSTW vk6e vkbb vkbc vkbd vkbe vkdb vkdd",
+"ctrlAltShift": "ADILQST vk6e vkbb vkbd"
+},
+"00020419": {
+"name": "Russian - Mnemonic",
+"file": "kbdrum.dll",
+"ctrlAlt": "8 vkc0 vkde",
+"ctrlAltShift": ""
+},
+"0002041e": {
+"name": "Thai Kedmanee (non-ShiftLock)",
+"file": "kbdth2.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00020422": {
+"name": "Ukrainian (Enhanced)",
+"file": "kbdur1.dll",
+"ctrlAlt": "U",
+"ctrlAltShift": "U"
+},
+"00020426": {
+"name": "Latvian (Standard)",
+"file": "kbdlvst.dll",
+"ctrlAlt": "12346ACEGIKLNORSUZ vk6e vkbd vkc0 vkde",
+"ctrlAltShift": "4578ACEGIKLNORSUZ vk6e vkbd vkde"
+},
+"00020427": {
+"name": "Lithuanian Standard",
+"file": "kbdlt2.dll",
+"ctrlAlt": "0123456789E vk20 vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": ""
+},
+"0002042b": {
+"name": "Armenian Phonetic",
+"file": "kbdarmph.dll",
+"ctrlAlt": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"0002042e": {
+"name": "Sorbian Standard",
+"file": "kbdsors1.dll",
+"ctrlAlt": "023789EMQ vkbb vkdb vke2",
+"ctrlAltShift": ""
+},
+"00020437": {
+"name": "Georgian (Ergonomic)",
+"file": "kbdgeoer.dll",
+"ctrlAlt": "0123456789ACDFIOSVX vk6e vkbb vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0389CDILMVX vkbc vkbd vkbe vkc0 vkdb vkdc vkdd vkde"
+},
+"00020445": {
+"name": "Bengali - INSCRIPT",
+"file": "kbdinbe2.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00020449": {
+"name": "Tamil 99",
+"file": "kbdtam99.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0002045d": {
+"name": "Inuktitut - Nattilik",
+"file": "kbdinuk3.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vkba vkbb vkbc vkbe vkbf vkdb vkdc vkdd vke2",
+"ctrlAltShift": "0123456789ABCDEFIJKLMNOPQSTUVWXYZ vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"0002083b": {
+"name": "Sami Extended Finland-Sweden",
+"file": "kbdsmsfi.dll",
+"ctrlAlt": "02345789AEGHIKMOQWXYZ vkba vkbb vkbc vkbe vkbf vkc0 vkdc vkdd vkde vke2",
+"ctrlAltShift": "AGHIKOQWXYZ vkba vkbf vkc0 vkdd vkde vke2"
+},
+"00020850": {
+"name": "Traditional Mongolian (MNS)",
+"file": "kbdmons2.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00020c00": {
+"name": "New Tai Lue",
+"file": "kbdntl.dll",
+"ctrlAlt": "ABCDEGHIJKLMNORSUVXY",
+"ctrlAltShift": ""
+},
+"00030402": {
+"name": "Bulgarian",
+"file": "kbdbulg.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00030407": {
+"name": "German Extended (E2)",
+"file": "kbdgre2.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": " vkdb"
+},
+"00030408": {
+"name": "Greek (220) Latin",
+"file": "kbdhela2.dll",
+"ctrlAlt": "02345689E vkba vkbb vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00030409": {
+"name": "United States-Dvorak for left hand",
+"file": "kbdusl.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0003040d": {
+"name": "Hebrew (Standard, 2018)",
+"file": "kbdhebsi.dll",
+"ctrlAlt": "03456789ACEJLMPQRSUWX vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "BCJLNU vkba vkbc vkbe"
+},
+"0003041e": {
+"name": "Thai Pattachote (non-ShiftLock)",
+"file": "kbdth3.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"0003042b": {
+"name": "Armenian Typewriter",
+"file": "kbdarmty.dll",
+"ctrlAlt": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0123456789 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde"
+},
+"00030437": {
+"name": "Georgian Ministry of Education and Science Schools",
+"file": "kbdgeome.dll",
+"ctrlAlt": "0123478AFGHIJNVXZ vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdd",
+"ctrlAltShift": ""
+},
+"00030449": {
+"name": "Tamil Anjal",
+"file": "kbdinen.dll",
+"ctrlAlt": "4ADEGHILMNOQRSTUXY vkbb vkbc vkbd vkbe vkbf vkc0 vkde",
+"ctrlAltShift": "69ADEGHILMNOQRSTUXY vkbb vkbc vkbd vkbf vkc0 vkde"
+},
+"00030c00": {
+"name": "Tai Le",
+"file": "kbdtaile.dll",
+"ctrlAlt": " vkba vkbb vkbc vkbd vkbe vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": ""
+},
+"00040402": {
+"name": "Bulgarian (Phonetic Traditional)",
+"file": "kbdbgph1.dll",
+"ctrlAlt": "",
+"ctrlAltShift": " vkdb vkdd"
+},
+"00040408": {
+"name": "Greek (319) Latin",
+"file": "kbdhela3.dll",
+"ctrlAlt": "E",
+"ctrlAltShift": ""
+},
+"00040409": {
+"name": "United States-Dvorak for right hand",
+"file": "kbdusr.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00040437": {
+"name": "Georgian (Old Alphabets)",
+"file": "kbdgeooa.dll",
+"ctrlAlt": "0123456789ACDFIOSWX vk20 vk6e vkbb vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "0389AF vk20 vkbd vkbe vkc0 vkdb vkdc vkdd vkde"
+},
+"00040c00": {
+"name": "Ogham",
+"file": "kbdogham.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00050408": {
+"name": "Greek Latin",
+"file": "kbdgkl.dll",
+"ctrlAlt": "0123456789ACDEILMNOPQRSTUWYZ vkba vkbb vkbc vkbd vkbf vkdb vkdc vkdd vkde",
+"ctrlAltShift": "14ACDEILNOPQSTUWYZ vkba vkbb vkbc vkdc vkde"
+},
+"00050409": {
+"name": "US English Table for IBM Arabic 238_L",
+"file": "kbdusa.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00050429": {
+"name": "Persian (Standard)",
+"file": "kbdfar.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00060408": {
+"name": "Greek Polytonic",
+"file": "kbdhept.dll",
+"ctrlAlt": "012345689CEQRY vkba vkbb vkbd vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "23 vkbb vkbf vkdc vkdd vkde"
+},
+"00060409": {
+"name": "Colemak",
+"file": "kbdcmk.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "0123456789ACEFIJLNOPQSTUVWYZ vk20 vkba vkbb vkbd vkdb vkdd vkde vke2"
+},
+"00070c00": {
+"name": "Lisu (Basic)",
+"file": "kbdlisub.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00080c00": {
+"name": "Lisu (Standard)",
+"file": "kbdlisus.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00090c00": {
+"name": "N’Ko",
+"file": "kbdnko.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"000a0c00": {
+"name": "Phags-pa",
+"file": "kbdphags.dll",
+"ctrlAlt": "CDJNRSTY vkbd vkbe vkdb vkdd",
+"ctrlAltShift": "CT"
+},
+"000b0c00": {
+"name": "Buginese",
+"file": "kbdbug.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"000c0c00": {
+"name": "Gothic",
+"file": "kbdgthc.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"000d0c00": {
+"name": "Ol Chiki",
+"file": "kbdolch.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"000e0c00": {
+"name": "Osmanya",
+"file": "kbdosm.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"000f0c00": {
+"name": "Old Italic",
+"file": "kbdoldit.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00100c00": {
+"name": "Sora",
+"file": "kbdsora.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00110c00": {
+"name": "Javanese",
+"file": "kbdjav.dll",
+"ctrlAlt": "0123456789AEIJKQRSVX vkbb vkbd vkbf vkc0 vkdb vkdd",
+"ctrlAltShift": "12345678EIOU vkbb vkbd vkc0"
+},
+"00120c00": {
+"name": "Futhark",
+"file": "kbdfthrk.dll",
+"ctrlAlt": "",
+"ctrlAltShift": ""
+},
+"00130c00": {
+"name": "Myanmar (Visual Order)",
+"file": "kbdmyan.dll",
+"ctrlAlt": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2",
+"ctrlAltShift": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ vk20 vkba vkbb vkbc vkbd vkbe vkbf vkc0 vkdb vkdc vkdd vkde vke2"
+},
+"00140c00": {
+"name": "ADLaM",
+"file": "kbdadlm.dll",
+"ctrlAlt": "019ABIKOPSTUVYZ vkba vkbf vkc0 vkdb vkdc vkdd vkde",
+"ctrlAltShift": "1BKPSVZ vkbf vkc0 vkdb vkdd vkde"
+},
+"00150c00": {
+"name": "Osage",
+"file": "kbdosa.dll",
+"ctrlAlt": "ACDEIJKOPRSTX",
+"ctrlAltShift": "ACDEIJKOPRSTX"
+}
+}

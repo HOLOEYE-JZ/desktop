@@ -4,9 +4,9 @@ import { destroyMessages, draftsWithSubject, jmap, pageWith } from './native-hel
 
 /**
  * Quick compose on a real account, with a webmail build of this branch:
- *   BULWARK_TEST_WEBMAIL=<dir> IT_ENT_PASSWORD=<test account password> npx playwright test test/quick-compose-mail.spec.ts
+ *   BULWARK_TEST_WEBMAIL=<dir> BULWARK_TEST_ACCOUNT=<a throwaway account of this test's own> IT_ENT_PASSWORD=<its password> npx playwright test test/quick-compose-mail.spec.ts
  * BULWARK_TEST_SERVER_LABEL picks the Stalwart (1.0 by default). Nothing a composer holds may
- * go missing, however its window goes.
+ * go missing, however its window goes. Teardown deletes only what this run's subjects found.
  */
 const STALWART = STALWARTS.find((s) => s.label === (process.env.BULWARK_TEST_SERVER_LABEL ?? '1.0'))!;
 const SERVER = STALWART.url;
@@ -26,6 +26,8 @@ async function openQuick(app: ElectronApplication): Promise<Page> {
   await press(app);
   const page = await pageWith(app, '/popout/compose');
   await subjectField(page).waitFor({ state: 'visible', timeout: 60_000 });
+  // It moves the caret to the To field a moment after it shows. A fill in that moment lands there.
+  await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('INPUT');
   return page;
 }
 
@@ -40,6 +42,8 @@ const closeWindow = (app: ElectronApplication) => app.evaluate(({ BrowserWindow 
 });
 
 async function drafts(subject: string): Promise<string[]> {
+  // Teardown destroys what this collects: a filter that could match mail of someone else's stays out.
+  if (!subject.startsWith(TAG)) throw new Error(`Not a subject of this run: ${subject}`);
   const ids = await draftsWithSubject(SERVER, ACCOUNT, ENT_PASSWORD, subject);
   for (const id of ids) if (!seeded.includes(id)) seeded.push(id);
   return ids;
@@ -50,6 +54,12 @@ async function sentWith(subject: string): Promise<string[]> {
   const ids = (answer as { ids: string[] }).ids;
   for (const id of ids) if (!seeded.includes(id)) seeded.push(id);
   return ids;
+}
+
+/** How many drafts there are, whatever they're called. Stalwart's `subject: ''` matches nothing. */
+async function draftCount(): Promise<number> {
+  const [[, boxes]] = await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Mailbox/get', { properties: ['role', 'totalEmails'] }, 'm']]);
+  return (boxes as { list: { role: string | null; totalEmails: number }[] }).list.find((box) => box.role === 'drafts')?.totalEmails ?? 0;
 }
 
 /** Back on the mail page with no composer, whatever the test before left. */
@@ -124,11 +134,12 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
   });
 
   test('closing an empty one leaves nothing behind', async () => {
-    const before = (await drafts('')).length;
+    const before = await draftCount();
     await openQuick(app);
     await closeWindow(app);
     await expect.poll(() => composerWindows(app), { timeout: 30_000 }).toBe(0);
-    expect((await drafts('')).length).toBe(before);
+    await page.waitForTimeout(3000);
+    expect(await draftCount()).toBe(before);
   });
 
   test('pressing again goes back to the text, and doesn\'t start another', async () => {
@@ -192,7 +203,7 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
     const composer = await openQuick(app);
     await typeInto(composer, subject);
     await composer.getByTestId('composer-back-to-main').click();
-    await expect(composer.getByText('The main window already has a message open', { exact: false })).toBeVisible({ timeout: 30_000 });
+    await expect(composer.getByText('The main window already has a message open', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
     expect(await composerWindows(app)).toBe(1);
     await expect(subjectField(composer)).toHaveValue(subject);
     await expect(subjectField(page)).toHaveValue(mainSubject);
@@ -273,6 +284,40 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
     }
     await expect.poll(() => composerWindows(app), { timeout: 60_000 }).toBe(0);
     await expect.poll(() => drafts(subject), { timeout: 120_000 }).not.toHaveLength(0);
+  });
+
+  test('a renderer crash brings the composer back on its saved draft, not blank, and the next save goes over that draft', async () => {
+    const subject = `${TAG} crashed`;
+    const body = 'Saved before the crash';
+    const composer = await openQuick(app);
+    await typeInto(composer, subject, body);
+    await expect.poll(() => drafts(subject), { timeout: 30_000 }).toHaveLength(1);
+    await expect.poll(() => composer.url()).toContain('draft=');
+    expect(composer.url()).toContain('account=');
+
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/compose'));
+      window?.webContents.forcefullyCrashRenderer();
+    });
+    // Playwright lets go of a page that crashed, so this asks the window that came back.
+    const inWindow = (script: string) => app.evaluate(({ BrowserWindow }, code) => {
+      const window = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/compose'));
+      return window ? window.webContents.executeJavaScript(code, true).catch(() => null) : null;
+    }, script);
+    const SUBJECT = "document.querySelector('[data-testid=\"composer-subject\"]')";
+    await expect.poll(() => inWindow(`${SUBJECT}?.value ?? ''`), { timeout: 60_000 }).toBe(subject);
+    await expect.poll(() => inWindow("document.querySelector('[data-testid=\"email-composer\"]')?.innerText ?? ''"), { timeout: 30_000 }).toContain(body);
+
+    // The next save goes over that draft, not next to it.
+    await inWindow(`(() => {
+      const field = ${SUBJECT};
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, ${JSON.stringify(`${subject} more`)});
+      field.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await closeWindow(app);
+    await expect.poll(() => composerWindows(app), { timeout: 30_000 }).toBe(0);
+    await expect.poll(() => drafts(`${subject} more`), { timeout: 30_000 }).toHaveLength(1);
+    expect(await drafts(subject)).toHaveLength(1);
   });
 
   // Last: from here on the app has a PIN.

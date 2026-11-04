@@ -10,6 +10,7 @@ import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  isAccelerator,
   quickComposeBuiltIn,
   quickComposeShortcut,
   isRetryableLoadError,
@@ -199,13 +200,103 @@ test.describe('quick compose keys', () => {
     expect(quickComposeShortcut({ value: 'off', locked: true }, 'Ctrl+Alt+K')).toBeNull();
   });
 
-  test('takes no letter from a keyboard where AltGr+N types one', () => {
-    expect(quickComposeBuiltIn('win32', 'en-US')).toBe('CommandOrControl+Alt+N');
-    expect(quickComposeBuiltIn('win32', 'de-DE')).toBe('CommandOrControl+Alt+N');
-    expect(quickComposeBuiltIn('win32', 'pl-PL')).toBe('CommandOrControl+Alt+M');
-    expect(quickComposeBuiltIn('win32', 'lv')).toBe('CommandOrControl+Alt+M');
-    // Option isn't AltGr to a global shortcut on a Mac, and nothing here reads it that way.
-    expect(quickComposeBuiltIn('darwin', 'pl-PL')).toBe('CommandOrControl+Alt+N');
+  test('the built-in keys off Windows have no AltGr to fight with', () => {
+    expect(quickComposeBuiltIn('darwin')).toBe('CommandOrControl+Alt+N');
+    expect(quickComposeBuiltIn('linux')).toBe('CommandOrControl+Alt+N');
+  });
+
+  test('the built-in keys get past the rules for what a page may set, so turning it on works', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      const keys = quickComposeBuiltIn(platform);
+      expect(isAccelerator(keys, platform)).toBe(true);
+    }
+  });
+});
+
+test.describe('what a global shortcut would take from each Windows keyboard', () => {
+  // Read from the DLLs of every layout Windows ships: test/support/keyboard-layouts.py.
+  const layouts = JSON.parse(readFileSync(path.join(import.meta.dirname, 'fixtures', 'keyboard-layouts.json'), 'utf8')) as Record<string, { name: string; file: string; ctrlAlt: string; ctrlAltShift: string }>;
+  const typed = (keys: string) => new Set(keys.split(' ').flatMap((part, index) => (index === 0 ? [...part] : [part])));
+  const VIRTUAL_KEY: Record<string, string> = { Enter: 'vk0d' };
+
+  test('the table is real: every layout read, and AltGr+N types on Czech, as it was reported', () => {
+    expect(Object.keys(layouts).length).toBeGreaterThan(200);
+    expect(typed(layouts['00000405'].ctrlAlt).has('N')).toBe(true);
+    expect(typed(layouts['00000407'].ctrlAlt).has('E')).toBe(true);
+    expect(typed(layouts['00000415'].ctrlAltShift).has('N')).toBe(true);
+  });
+
+  test('no letter or digit is free on all of them, with or without Shift', () => {
+    for (const keys of ['ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789']) {
+      for (const key of keys) {
+        const hit = Object.values(layouts).some((layout) => typed(layout.ctrlAlt).has(key));
+        const hitWithShift = Object.values(layouts).some((layout) => typed(layout.ctrlAltShift).has(key));
+        expect(hit, `Ctrl+Alt+${key}`).toBe(true);
+        expect(hitWithShift, `Ctrl+Alt+Shift+${key}`).toBe(true);
+      }
+    }
+  });
+
+  for (const [id, layout] of Object.entries(layouts)) {
+    test(`the built-in keys type nothing on ${layout.name} (${id}, ${layout.file})`, () => {
+      const parts = quickComposeBuiltIn('win32').split('+');
+      const key = parts.at(-1)!;
+      const column = parts.includes('Shift') ? layout.ctrlAltShift : layout.ctrlAlt;
+      expect(parts.slice(0, -1)).toEqual(expect.arrayContaining(['CommandOrControl', 'Alt']));
+      expect(typed(column).has(VIRTUAL_KEY[key] ?? key), `${layout.name} types something with ${parts.join('+')}`).toBe(false);
+    });
+  }
+});
+
+test.describe('the keys a page may hold for every app', () => {
+  const REFUSED = [
+    ['Ctrl+V', 'CommandOrControl+V'],
+    ['Ctrl+C', 'CommandOrControl+C'],
+    ['Ctrl+C, spelt out', 'Ctrl+C'],
+    ['Shift+A', 'Shift+A'],
+    ['Alt+Tab', 'Alt+Tab'],
+    ['Alt+F4', 'Alt+F4'],
+    ['Alt+Shift+A, which types on a Mac', 'Alt+Shift+A'],
+    ['Ctrl+F4', 'CommandOrControl+F4'],
+    ['Ctrl+Alt+Delete', 'CommandOrControl+Alt+Delete'],
+    ['Ctrl+Shift+Esc', 'CommandOrControl+Shift+Esc'],
+    ['Ctrl+Alt+Tab', 'CommandOrControl+Alt+Tab'],
+    ['the Windows key and L', 'Super+L'],
+    ['the Windows key with Shift+S', 'Super+Shift+S'],
+    ['Meta with Ctrl', 'Meta+Control+D'],
+    ['AltGr, which types', 'AltGr+Shift+N'],
+    ['the same modifier twice', 'Alt+Alt+N'],
+    ['Ctrl+Shift+V, paste in every terminal', 'CommandOrControl+Shift+V'],
+    ['one key under two names', 'CommandOrControl+Control+N'],
+    ['a key with no modifier', 'F9'],
+    ['nonsense', 'rm -rf'],
+  ] as const;
+  for (const [name, keys] of REFUSED) {
+    test(`refuses ${name}, for both shortcuts`, () => {
+      expect(cleanSettingsPatch({ quickComposeShortcut: keys })).toEqual({});
+      expect(cleanSettingsPatch({ showShortcut: keys })).toEqual({});
+    });
+  }
+
+  for (const keys of ['CommandOrControl+Alt+Enter', 'CommandOrControl+Shift+B', 'CommandOrControl+Alt+Shift+F9', 'Ctrl+Alt+J', 'CommandOrControl+Alt+7']) {
+    test(`takes ${keys}`, () => {
+      expect(cleanSettingsPatch({ quickComposeShortcut: keys })).toEqual({ quickComposeShortcut: keys });
+      expect(cleanSettingsPatch({ showShortcut: keys })).toEqual({ showShortcut: keys });
+    });
+  }
+
+  test('a Mac\'s own keys are refused there, and free elsewhere', () => {
+    expect(isAccelerator('CommandOrControl+Shift+4', 'darwin')).toBe(false);
+    expect(isAccelerator('Command+Control+Q', 'darwin')).toBe(false);
+    expect(isAccelerator('CommandOrControl+Alt+M', 'darwin')).toBe(false);
+    expect(isAccelerator('CommandOrControl+Shift+4', 'win32')).toBe(true);
+    expect(isAccelerator('CommandOrControl+Alt+M', 'win32')).toBe(true);
+    expect(isAccelerator('CommandOrControl+Control+N', 'darwin')).toBe(true);
+  });
+
+  test('a policy isn\'t held to this: an admin chose it', () => {
+    expect(quickComposeShortcut({ value: 'CommandOrControl+V', locked: true }, 'CommandOrControl+Alt+J')).toBe('CommandOrControl+V');
+    expect(quickComposeShortcut({ value: 'Alt+F4', locked: false }, undefined)).toBe('Alt+F4');
   });
 });
 

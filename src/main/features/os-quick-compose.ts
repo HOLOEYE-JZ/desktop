@@ -37,7 +37,7 @@ function builtInShortcut(): string | null {
     const named = process.argv.find((arg) => arg.startsWith('--bulwark-test-quick-compose-default='));
     return named ? named.slice(named.indexOf('=') + 1) : null;
   }
-  return quickComposeBuiltIn(process.platform, app.getSystemLocale());
+  return quickComposeBuiltIn(process.platform);
 }
 
 export interface QuickComposeHandle {
@@ -62,6 +62,7 @@ export function setupQuickCompose(hub: OsHub): QuickComposeHandle {
   };
 
   const open = () => {
+    if (windows.isQuitting()) return;
     if (ready()) {
       waitingSince = null;
       openWindow();
@@ -72,7 +73,7 @@ export function setupQuickCompose(hub: OsHub): QuickComposeHandle {
   };
 
   const openIfWaiting = () => {
-    if (waitingSince === null || !ready()) return;
+    if (waitingSince === null || !ready() || windows.isQuitting()) return;
     const inTime = Date.now() - waitingSince < WAIT_LIMIT_MS;
     waitingSince = null;
     if (inTime) openWindow();

@@ -32,21 +32,19 @@ export function defaultSettings(platform: NodeJS.Platform, env: NodeJS.ProcessEn
 }
 
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
-// Modifiers and one key. Electron's register throws on anything it can't parse; this
-// keeps a page from storing something that fails on every later start.
-const ACCELERATOR = /^(?:(?:CommandOrControl|CmdOrCtrl|Command|Cmd|Control|Ctrl|Alt|Option|AltGr|Shift|Super|Meta)\+)+[A-Za-z0-9]{1,3}$/;
 
 /** Ctrl+Alt+N, Cmd+Opt+N. */
 export const QUICK_COMPOSE_SHORTCUT = 'CommandOrControl+Alt+N';
 
 /**
- * Windows reads AltGr as Ctrl+Alt, and on Polish and Latvian keyboards AltGr+N types a
- * letter (ń, ņ), which a global shortcut would take away from every app. The system's
- * language stands in for the keyboard, since Electron can't ask for the layout. Neither
- * has a letter on M.
+ * Windows reads AltGr as Ctrl+Alt, so a global Ctrl+Alt+N would take away whatever AltGr+N
+ * types: `}` on Czech, Hungarian and Romanian keyboards, ń on Polish. On the layouts Windows
+ * ships, every letter and digit types something on at least 18 of them, with or without Shift
+ * (test/fixtures/keyboard-layouts.json). Enter types on none, so this needs no look at the
+ * keyboard, which neither Electron nor the native helper can tell us about anyway.
  */
-export function quickComposeBuiltIn(platform: string, systemLocale: string): string {
-  return platform === 'win32' && /^(pl|lv)\b/i.test(systemLocale) ? 'CommandOrControl+Alt+M' : QUICK_COMPOSE_SHORTCUT;
+export function quickComposeBuiltIn(platform: string): string {
+  return platform === 'win32' ? 'CommandOrControl+Alt+Enter' : QUICK_COMPOSE_SHORTCUT;
 }
 
 /**
@@ -58,8 +56,50 @@ export function quickComposeShortcut(policy: { value: string | null; locked: boo
   return !chosen || chosen.toLowerCase() === 'off' ? null : chosen;
 }
 
-export function isAccelerator(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 64 && ACCELERATOR.test(value);
+const SHORTCUT_KEY = /^(?:[A-Za-z0-9]|F(?:[1-9]|1\d|2[0-4])|Enter)$/;
+/** One name per modifier. AltGr types characters, and the OS keeps the Windows or Super key. */
+const SHORTCUT_MODIFIERS: Record<string, string> = {
+  commandorcontrol: 'cmd',
+  cmdorctrl: 'cmd',
+  command: 'cmd',
+  cmd: 'cmd',
+  control: 'ctrl',
+  ctrl: 'ctrl',
+  alt: 'alt',
+  option: 'alt',
+  shift: 'shift',
+};
+/** What a system or every app already uses, past the rule of two modifiers. `cmd` is Cmd on a Mac and Ctrl elsewhere. */
+const RESERVED_SHORTCUTS = new Set(['cmd+shift+A', 'cmd+shift+C', 'cmd+shift+V', 'cmd+shift+X', 'cmd+shift+Z']);
+const RESERVED_ON_MAC = new Set([
+  'cmd+shift+3', 'cmd+shift+4', 'cmd+shift+5', 'cmd+shift+Q',
+  'cmd+ctrl+Q', 'cmd+ctrl+F',
+  'alt+cmd+D', 'alt+cmd+H', 'alt+cmd+M',
+]);
+
+/**
+ * What a page may hold for every app on this computer, and a same-origin plugin can reach
+ * that call: Ctrl+V or Alt+F4 would stop working everywhere. Ctrl or Cmd with at least one
+ * more modifier, on a letter, digit, function key or Enter. A policy isn't held to this.
+ * It also keeps a page from storing what Electron's register throws on at every start.
+ */
+export function isAccelerator(value: unknown, platform: string = process.platform): value is string {
+  if (typeof value !== 'string' || value.length > 64) return false;
+  const parts = value.split('+');
+  const key = parts.pop() ?? '';
+  if (!SHORTCUT_KEY.test(key)) return false;
+  const mac = platform === 'darwin';
+  const modifiers: string[] = [];
+  for (const part of parts) {
+    const name = SHORTCUT_MODIFIERS[part.toLowerCase()];
+    if (!name) return false;
+    // Off a Mac, Ctrl and CommandOrControl are one key.
+    modifiers.push(name === 'ctrl' && !mac ? 'cmd' : name);
+  }
+  const distinct = new Set(modifiers);
+  if (distinct.size !== modifiers.length || distinct.size < 2 || !(distinct.has('cmd') || distinct.has('ctrl'))) return false;
+  const named = `${[...distinct].sort().join('+')}+${key.toUpperCase()}`;
+  return !RESERVED_SHORTCUTS.has(named) && !(mac && RESERVED_ON_MAC.has(named));
 }
 
 /** What a page may change: known keys of the right type, nothing else. */
