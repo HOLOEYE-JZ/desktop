@@ -52,6 +52,7 @@ function cleanSummary(value: unknown): OsSummary {
     unread: cleanMessages(s.unread, MAX_SUMMARY_ROWS),
     recent: cleanMessages(s.recent, MAX_SUMMARY_ROWS),
     nextEvent: next && typeof next.title === 'string' && typeof next.when === 'string' ? { title: next.title.slice(0, 200), when: next.when.slice(0, 60) } : null,
+    ...(typeof s.account === 'string' && s.account ? { account: s.account.slice(0, 200) } : {}),
   };
 }
 
