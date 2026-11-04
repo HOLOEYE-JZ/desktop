@@ -52,7 +52,7 @@ const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.
 const FIND_KEY_ID = 'edit.forwardOrSearch';
 
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
-const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
+const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import', 'file.uploadFiles']);
 
 /** The part of the app the window shows, as its page reports it. Mail when it says nothing. */
 export type AppSection = 'mail' | 'calendar' | 'contacts' | 'files' | 'settings';
@@ -315,6 +315,7 @@ export class MenuController {
     const win = process.platform === 'win32';
     const { section, composing } = this.shape();
     const mail = section === 'mail';
+    const files = section === 'files';
     // A bare window counts: a preview's Ctrl+P prints the preview, not what's behind it.
     const focused = () => BrowserWindow.getFocusedWindow() ?? windows?.focusedManaged()?.window;
     const onFocused = (run: (window: BrowserWindow) => void) => () => {
@@ -332,21 +333,29 @@ export class MenuController {
         this.command('file.newEvent', text.menuNewEvent),
         this.command('file.newTask', text.menuNewTask),
         this.command('file.newContact', text.menuNewContact),
+        // Files' own: a folder where you are, and files into it.
+        ...(files ? [
+          this.command('file.newFolder', text.menuNewFolder),
+          this.command('file.uploadFiles', text.menuUploadFiles),
+        ] : []),
         ...(this.extensions.get('new') ?? []).flatMap((extension) => extension()),
         { id: 'file.newWindow', label: text.menuNewWindow, accelerator: 'CmdOrCtrl+Shift+N', enabled: !!windows, click: hooks.newWindow },
         { type: 'separator' },
+        // Files has nothing to print: a list of names would be all.
         {
           id: 'file.print',
           label: text.menuPrint,
           accelerator: 'CmdOrCtrl+P',
-          enabled: !!windows && this.stateOf('file.print').enabled,
+          visible: !files,
+          enabled: !files && !!windows && this.stateOf('file.print').enabled,
           click: onFocused(hooks.print),
         },
         {
           id: 'file.savePdf',
           label: text.menuSavePdf,
           accelerator: 'CmdOrCtrl+Shift+S',
-          enabled: !!windows && this.stateOf('file.savePdf').enabled,
+          visible: !files,
+          enabled: !files && !!windows && this.stateOf('file.savePdf').enabled,
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
