@@ -6,6 +6,7 @@ import {
   launchFileCommand,
   LaunchFileBatch,
   launchOpensOwnWindow,
+  onlyMessageFiles,
   OPEN_WITH_EXTENSIONS,
   parseArgv,
   SEND_TO_FLAG,
@@ -34,6 +35,20 @@ test.describe('files opened with the app', () => {
     expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\one.pdf'], sendTo: false })).toBe(true);
     expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\party.ics'], sendTo: false })).toBe(false);
     expect(launchOpensOwnWindow({ ...none, files: [], sendTo: false })).toBe(false);
+  });
+
+  test('a saved message opened with the app gets a message window of its own, where the page opens one', () => {
+    const none = { links: [], commands: [] };
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\letter.eml'], sendTo: false }, true)).toBe(true);
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\a.EML', 'C:\\a\\b.eml'], sendTo: false }, true)).toBe(true);
+    // An older page shows it in the main window, which has to come up.
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\letter.eml'], sendTo: false })).toBe(false);
+    // An .ics beside it goes to the main window's calendar.
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\letter.eml', 'C:\\a\\party.ics'], sendTo: false }, true)).toBe(false);
+    expect(onlyMessageFiles({ files: [{ name: 'a.eml' }, { name: 'B.EML' }], failed: [] })).toBe(true);
+    expect(onlyMessageFiles({ files: [{ name: 'a.eml' }], failed: ['gone.eml'] })).toBe(false);
+    expect(onlyMessageFiles({ files: [{ name: 'a.eml' }, { name: 'party.ics' }], failed: [] })).toBe(false);
+    expect(onlyMessageFiles({ files: [], failed: [] })).toBe(false);
   });
 
   test('Send to\'s marker comes before the terminator, and every file after it counts', () => {

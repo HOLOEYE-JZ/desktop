@@ -467,6 +467,11 @@ export type OsCommand =
   | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[]; ask?: boolean }
   | { type: 'notification'; action: string; context: string; reply?: string };
 
+/** The page's `os.onCommand` options. `messageFileWindows`: it opens an .eml in a window of its own. */
+export interface OsCommandOptions {
+  messageFileWindows?: boolean;
+}
+
 export interface OsNotification {
   /** Tag of the toast. Showing an id again within a few minutes does nothing. */
   id: string;

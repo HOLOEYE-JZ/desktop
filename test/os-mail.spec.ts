@@ -265,10 +265,20 @@ for (const { label, url } of STALWARTS) {
 
       const eml = path.join(profile, 'letter.eml');
       writeFileSync(eml, `From: Someone <someone@example.org>\r\nTo: ${RECIPIENT}\r\nSubject: Opened file ${RUN}\r\nDate: Tue, 3 Nov 2026 09:00:00 +0000\r\nContent-Type: text/plain\r\n\r\nFrom a file.\r\n`);
+      // A saved message: a message window of its own, drawn as received mail, as Outlook opens
+      // one, and the main window stays hidden in the tray.
+      await hide(app);
       await launchFile(app, profile, eml);
-      await expect(page.getByRole('heading', { name: `Opened file ${RUN}` })).toBeVisible({ timeout: 30_000 });
-      await page.keyboard.press('Escape');
-      await expect(page.getByRole('heading', { name: `Opened file ${RUN}` })).toHaveCount(0, { timeout: 15_000 });
+      const opened = await pageWith(app, '/popout/message/');
+      await expect(opened.getByRole('heading', { name: `Opened file ${RUN}` })).toBeVisible({ timeout: 30_000 });
+      await expect(opened.getByTitle(/^Reply/).first()).toBeVisible();
+      await expect(opened.getByTestId('reader-delete')).toHaveCount(0);
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.isVisible())).toBe(false);
+      await expect(page.getByRole('heading', { name: `Opened file ${RUN}` })).toHaveCount(0);
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().includes('/popout/message/')) window.destroy();
+      });
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.show());
 
       // A document opened with the app, as Send to: a compose window with it attached, as a
       // mail link gets, and the main window stays hidden in the tray.

@@ -48,6 +48,7 @@ import {
   type LocalImportScanResult,
   type MenuState,
   type OsCommand,
+  type OsCommandOptions,
   type PasswordSignInAnswer,
   type OsDefaultAppStatus,
   type OsFile,
@@ -310,10 +311,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       /**
        * What the OS asks for: tray, jump list, toast buttons, opened files. Main holds
        * these until the main window's page subscribes, so a cold start loses nothing.
+       * `messageFileWindows`: the page opens an .eml in a window of its own.
        */
-      onCommand: (listener: (command: OsCommand) => void) => {
+      onCommand: (listener: (command: OsCommand) => void, options?: OsCommandOptions) => {
         const stop = subscribe(CHANNEL.osCommand, listener);
-        ipcRenderer.send(CHANNEL.osSubscribe);
+        ipcRenderer.send(CHANNEL.osSubscribe, { messageFileWindows: options?.messageFileWindows === true });
         return stop;
       },
       getStatus: (): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osGetStatus),
