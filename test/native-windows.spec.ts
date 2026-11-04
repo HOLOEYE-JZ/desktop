@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launchStandalone, prompts, removeProfile, requireAccount, shownPage, STALWARTS, tempProfile, launch } from './helpers';
-import { destroyMessages, draftsWithSubject, jmap, lastMenu, menuCount, menuItem, pageWith, pickNext, recordMenus, seedMessage, type SeenItem } from './native-helpers';
+import { destroyMessages, draftsWithSubject, jmap, menuCount, menuItem, pageWith, recordMenus, seedMessage } from './native-helpers';
 
 /**
  * Multi-window on a real account, with a webmail build of this branch:
@@ -52,7 +52,6 @@ const flagged = async (id: string, keyword: string) => {
  */
 const clickOwnClose = (composer: Page) => composer.getByTestId('composer-close').evaluate((el) => (el as HTMLElement).click());
 
-const labels = (items: SeenItem[] | undefined) => (items ?? []).map((item) => item.label).filter(Boolean);
 
 test.describe.configure({ mode: 'serial' });
 test.beforeAll(requireAccount);
@@ -158,34 +157,34 @@ test.describe('windows, signed in', () => {
     });
   });
 
-  test('right-click on a message: the HTML menu\'s entries, natively', async () => {
+  /** The rows of the menu on screen, by their words. */
+  const menuRows = () => page.locator('[role="menu"] [role="menuitem"] [data-menu-label]').allInnerTexts();
+  const pickRow = (label: string) =>
+    page.locator('[role="menu"] [role="menuitem"]').filter({ has: page.locator('[data-menu-label]', { hasText: new RegExp(`^${label}$`) }) }).first().click();
+
+  test('right-click on a message: the same menu as in a browser, with no native copy', async () => {
     await page.keyboard.press('Escape');
     const before = await menuCount(app);
     await rowOf(page, messageId).click({ button: 'right' });
-    await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
-    const menu = (await lastMenu(app))!;
-    expect(labels(menu)).toEqual(expect.arrayContaining(['Reply', 'Forward', 'Open in new window', 'Delete']));
-    const move = menu.find((item) => /^Move to/.test(item.label));
-    expect(move?.submenu && labels(move.submenu).length).toBeGreaterThan(0);
-    // The HTML copy is off the screen.
-    const visible = await page.locator('[role="menu"]').evaluateAll((menus) => menus.filter((m) => getComputedStyle(m as HTMLElement).visibility === 'visible').length);
-    expect(visible).toBe(0);
+    await expect(page.locator('[role="menu"]').first()).toBeVisible({ timeout: 10_000 });
+    expect(await menuRows()).toEqual(expect.arrayContaining(['Reply', 'Forward', 'Open in new window', 'Delete', 'Move to', 'More actions']));
+    // Icons and the keys as keycaps, as in a browser.
+    expect(await page.locator('[role="menu"] [data-testid="ctx-delete"] svg').count()).toBe(1);
+    expect(await page.locator('[role="menu"] [data-testid="ctx-delete"] [data-menu-shortcut]').innerText()).toBe('Del');
+    expect(await menuCount(app)).toBe(before);
+    await page.keyboard.press('Escape');
   });
 
-  test('picking from it does what the HTML entry does', async () => {
-    const before = await menuCount(app);
-    await pickNext(app, 'Mark as unread');
+  test('picking from it does what it says', async () => {
     await rowOf(page, messageId).click({ button: 'right' });
-    await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
+    await pickRow('Mark as unread');
     await expect.poll(() => flagged(messageId, '$seen'), { timeout: 20_000 }).toBe(false);
     await expect(rowOf(page, messageId)).toHaveAttribute('data-unread', 'true', { timeout: 20_000 });
   });
 
   test('Open in new window from the menu: the same one window', async () => {
-    const before = await menuCount(app);
-    await pickNext(app, 'Open in new window');
     await rowOf(page, messageId).click({ button: 'right' });
-    await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
+    await pickRow('Open in new window');
     await pageWith(app, `/popout/message/${encodeURIComponent(messageId)}`);
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/message/'))!.close();
@@ -193,11 +192,13 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
-  test('a folder has a native menu too', async () => {
+  test('a folder has the same menu as in a browser', async () => {
     const before = await menuCount(app);
     await page.getByRole('navigation').getByText(/^Inbox/).first().click({ button: 'right' });
-    await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
-    expect(labels(await lastMenu(app)).length).toBeGreaterThan(1);
+    await expect(page.locator('[role="menu"]').first()).toBeVisible({ timeout: 10_000 });
+    expect((await menuRows()).length).toBeGreaterThan(1);
+    expect(await menuCount(app)).toBe(before);
+    await page.keyboard.press('Escape');
   });
 
   test('the Message menu follows the selection, and runs the app\'s own action', async () => {

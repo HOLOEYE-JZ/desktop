@@ -62,6 +62,13 @@ import {
   type RecentFileAttachResult,
   type RecentFilesResult,
   type DevToolsState,
+  type FilesChangeEvent,
+  type FilesControls,
+  type FilesDriveControls,
+  type FilesDriveState,
+  type FilesExpect,
+  type FilesFetchRequest,
+  type FilesPlaceholder,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -72,6 +79,7 @@ import {
 import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
 
 let appLockClaimed = false;
+let filesClaimed = false;
 
 /**
  * A real click or key press in the last few seconds. Read here, in the preload's own world, so a
@@ -373,6 +381,57 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     },
   };
 
+  // The page's sync engine takes these once, in its first render: see FilesControls.
+  // Main takes them only from the main window, and checks every path against its root.
+  const filesDrive: FilesDriveControls | undefined = platform === 'win32'
+    ? {
+        state: (): Promise<FilesDriveState> => ipcRenderer.invoke(CHANNEL.filesDriveState),
+        onStateChange: (listener: (state: FilesDriveState) => void) => subscribe(CHANNEL.filesDriveStateChanged, listener),
+        enable: (account: string, label: string) => ipcRenderer.invoke(CHANNEL.filesDriveEnable, account, label, clicked()),
+        disable: (account: string, reason: 'user' | 'signed-out' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
+        place: (rootId: string, entries: FilesPlaceholder[]) => ipcRenderer.invoke(CHANNEL.filesDrivePlace, rootId, entries),
+        update: (rootId: string, path: string, meta: { size: number; mtimeMs: number; identity: string; dehydrate: boolean }, expect: FilesExpect | null) =>
+          ipcRenderer.invoke(CHANNEL.filesDriveUpdate, rootId, path, meta, expect),
+        markInSync: (rootId: string, path: string, identity: string, expect: FilesExpect) => ipcRenderer.invoke(CHANNEL.filesDriveMarkInSync, rootId, path, identity, expect),
+        onFetch: (listener: (request: FilesFetchRequest) => void) => subscribe(CHANNEL.filesDriveFetch, listener),
+        onFetchCancel: (listener: (fetchId: string) => void) => subscribe(CHANNEL.filesDriveFetchCancel, listener),
+        supply: (fetchId: string, offset: number, data: Uint8Array) => ipcRenderer.invoke(CHANNEL.filesDriveSupply, fetchId, offset, data),
+        fail: (fetchId: string, error: 'offline' | 'missing' | 'failed') => ipcRenderer.send(CHANNEL.filesDriveFail, fetchId, error),
+        setLetter: (letter: string | null) => ipcRenderer.invoke(CHANNEL.filesDriveSetLetter, letter, clicked()),
+      }
+    : undefined;
+  const filesControls: FilesControls = {
+    roots: () => ipcRenderer.invoke(CHANNEL.filesRoots),
+    addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string }) => ipcRenderer.invoke(CHANNEL.filesAddFolder, request, clicked()),
+    removeRoot: (rootId: string) => ipcRenderer.invoke(CHANNEL.filesRemoveRoot, rootId),
+    setPaused: (rootId: string, paused: boolean) => ipcRenderer.invoke(CHANNEL.filesSetPaused, rootId, paused),
+    scan: (rootId: string, under?: string) => ipcRenderer.invoke(CHANNEL.filesScan, rootId, under),
+    stat: (rootId: string, path: string) => ipcRenderer.invoke(CHANNEL.filesStat, rootId, path),
+    openRead: (rootId: string, path: string) => ipcRenderer.invoke(CHANNEL.filesOpenRead, rootId, path),
+    beginWrite: (rootId: string, path: string, options: { expect: FilesExpect | null; mtimeMs: number; size: number }) =>
+      ipcRenderer.invoke(CHANNEL.filesBeginWrite, rootId, path, options),
+    writeChunk: (writeId: string, data: Uint8Array) => ipcRenderer.invoke(CHANNEL.filesWriteChunk, writeId, data),
+    commitWrite: (writeId: string) => ipcRenderer.invoke(CHANNEL.filesCommitWrite, writeId),
+    abortWrite: (writeId: string) => ipcRenderer.invoke(CHANNEL.filesAbortWrite, writeId),
+    mkdir: (rootId: string, path: string) => ipcRenderer.invoke(CHANNEL.filesMkdir, rootId, path),
+    move: (rootId: string, from: string, to: string, expect: FilesExpect | null) => ipcRenderer.invoke(CHANNEL.filesMove, rootId, from, to, expect),
+    remove: (rootId: string, path: string, expect: FilesExpect | null) => ipcRenderer.invoke(CHANNEL.filesRemove, rootId, path, expect),
+    onChange: (listener: (event: FilesChangeEvent) => void) => subscribe(CHANNEL.filesChanged, listener),
+    loadState: (rootId: string) => ipcRenderer.invoke(CHANNEL.filesLoadState, rootId),
+    saveState: (rootId: string, state: string) => ipcRenderer.invoke(CHANNEL.filesSaveState, rootId, state),
+    showInFolder: (rootId: string, path: string) => ipcRenderer.invoke(CHANNEL.filesShowInFolder, rootId, path),
+    ...(filesDrive ? { drive: filesDrive } : {}),
+  };
+  const files = {
+    files: {
+      claim: (): FilesControls | null => {
+        if (filesClaimed) return null;
+        filesClaimed = true;
+        return filesControls;
+      },
+    },
+  };
+
   const standalone = mode === 'standalone'
     ? {
         servers: {
@@ -405,5 +464,5 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       }
     : {};
 
-  contextBridge.exposeInMainWorld('bulwarkDesktop', { ...common, ...standalone, ...keystore });
+  contextBridge.exposeInMainWorld('bulwarkDesktop', { ...common, ...files, ...standalone, ...keystore });
 }

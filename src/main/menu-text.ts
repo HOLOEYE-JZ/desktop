@@ -67,6 +67,8 @@ export function lineMnemonics(texts: string[]): number[] {
 
 /** What the drawn menu bar needs of a menu item. Electron's MenuItem has all of it. */
 export interface BarSourceItem {
+  /** The line's command id, which the page draws an icon by. */
+  id?: string | null;
   label: string;
   type: string;
   enabled: boolean;
@@ -98,8 +100,11 @@ export function barItemsOf(items: readonly BarSourceItem[], prefix: string): Men
     texts.push(text);
     const accelerator = item.accelerator || item.getDefaultRoleAccelerator?.() || undefined;
     const sub = item.submenu?.items;
+    // The page draws a line's icon by its id: a command's own, or the role's.
+    const id = item.id || (item.role ? `role.${item.role}` : undefined);
     const line: MenuBarItem = {
       key,
+      ...(id ? { id } : {}),
       label: text,
       type: sub ? 'submenu' : item.type === 'checkbox' || item.type === 'radio' ? item.type : 'normal',
       enabled: item.enabled !== false,
