@@ -142,7 +142,7 @@ if (gotLock) clientAuth.start(stateFile);
 
 /** A production build has refused the switches that move the profile by now. */
 function runKeyInit(run: string): void {
-  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
+  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run, __BULWARK_TEST_BUILD__ ? '--bulwark-user-data=' : undefined), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
 }
 
 // Holding the lock, so no other run of the app is making a key for this profile.
