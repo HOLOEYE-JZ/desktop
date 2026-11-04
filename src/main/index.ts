@@ -17,6 +17,7 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
+import { parseWelcomeAddress } from '../shared/welcome-address';
 import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
@@ -489,7 +490,8 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
   const questions = privacy.firstRunQuestions();
   const window = new BrowserWindow({
     width: 620,
-    height: 520,
+    // Room for both choices, the address field and its message, in the longer languages.
+    height: 600,
     resizable: false,
     show: false,
     autoHideMenuBar: true,
@@ -515,8 +517,10 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
     if (choice?.mode === 'standalone') {
       if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
     } else if (choice?.mode === 'instance') {
-      const parsed = parseInstanceUrl(decision.urlLocked ? decision.instanceUrl : choice.url, policies.snapshot.AllowInsecureInstance.value);
-      if (!parsed.ok) return { ok: false, error: 'invalid_url' };
+      const allowInsecure = policies.snapshot.AllowInsecureInstance.value;
+      // A locked address is the admin's, already full. A typed one may be a bare host.
+      const parsed = decision.urlLocked ? parseInstanceUrl(decision.instanceUrl, allowInsecure) : parseWelcomeAddress(choice.url, allowInsecure);
+      if (!parsed.ok) return { ok: false, error: 'error' in parsed ? parsed.error : 'invalid_url' };
       // A forced one needs no listing, and only a forced one is locked here.
       if (!decision.urlLocked && !jmapServerAllowed(policies.snapshot.AllowedJmapServers.value, parsed.value)) return { ok: false, error: 'policy' };
       instanceUrl = parsed.value;

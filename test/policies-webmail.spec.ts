@@ -295,6 +295,8 @@ test.describe('on an instance', () => {
     setString(forced(root, 'Recommended'), 'InstanceUrl', instance);
     const { page } = await start(root);
     await waitForLogin(page);
-    await expect(page.locator('#jmap-endpoint')).toBeVisible();
+    // Email first: once an address is typed, the server shows (found, with Change) or its field opens.
+    await page.fill('#username', ACCOUNT);
+    await expect(page.locator('#jmap-endpoint').or(page.getByTestId('login-server-change'))).toBeVisible({ timeout: 30_000 });
   });
 });

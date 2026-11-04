@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https';
 import { connect, type AddressInfo } from 'node:net';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, launchStandalone, opened, prompts, removeProfile, requireAccount, SCREENSHOTS, serverPort, shownPage, signIn, STALWARTS, tempProfile, waitForLogin } from './helpers';
+import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, fillServer, launch, launchStandalone, opened, prompts, removeProfile, requireAccount, SCREENSHOTS, serverPort, shownPage, signIn, STALWARTS, tempProfile, waitForLogin } from './helpers';
 
 test.beforeAll(requireAccount);
 
@@ -57,7 +57,7 @@ for (const { label, url } of STALWARTS) {
       const { app, page } = await launchStandalone(profile);
       await fakeOsIntegration(app);
       await waitForLogin(page);
-      await page.fill('#jmap-endpoint', url);
+      await fillServer(page, url);
       await page.getByTestId('desktop-browser-sign-in').click();
 
       await expect.poll(() => opened(app), { timeout: 30_000 }).toHaveLength(1);

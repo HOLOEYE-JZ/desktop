@@ -412,7 +412,7 @@ test.describe('the first run', () => {
     // It says what goes, in plain words, before anyone agrees.
     await expect(page.locator('#crash-text')).toContainText('a random ID');
     await expect(page.locator('#crash-text')).toContainText('text of your mail');
-    for (const words of ['a random ID', 'Node version', 'how long the app has been running', 'how many plugins and themes']) {
+    for (const words of ['a random ID', "the app's version numbers", 'how long the app has been running', 'how many plugins and themes']) {
       await expect(page.locator('#telemetry-text')).toContainText(words);
     }
     await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-telemetry-first-run.png') });
