@@ -29,8 +29,8 @@ export const KEY_CHECK_SWITCH = `${KEY_INIT_SWITCH}=check`;
 export const KEY_CHECK_FOLDER = 'key-check';
 
 /** What such a run is started with: only what says which profile this is, and which run it is. */
-export function keyInitArgs(argv: readonly string[], isPackaged: boolean, mainScript: string, run: string): string[] {
-  const profile = argv.filter((arg) => arg.startsWith('--bulwark-user-data=') || arg.startsWith('--user-data-dir='));
+export function keyInitArgs(argv: readonly string[], isPackaged: boolean, mainScript: string, run: string, devProfileSwitch?: string): string[] {
+  const profile = argv.filter((arg) => (devProfileSwitch !== undefined && arg.startsWith(devProfileSwitch)) || arg.startsWith('--user-data-dir='));
   return [...(isPackaged ? [] : [mainScript]), ...profile, run];
 }
 

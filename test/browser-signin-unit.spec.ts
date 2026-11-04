@@ -4,6 +4,7 @@ import { networkInterfaces } from 'node:os';
 import { expect, test } from '@playwright/test';
 import { CALLBACK_PATH, LoopbackSignIn, navigationAllowed, SCHEME_REDIRECT_URI, type SignInText } from '../src/main/browser-sign-in';
 import { deepLinkFromArgv, parseDeepLink } from '../src/main/deep-link';
+import { LABEL_KEY, labelKeepsPlaceholders } from '../src/main/label-keys';
 import { requestFromUrl } from '../src/main/features/os-rules';
 
 /**
@@ -513,6 +514,13 @@ test.describe('the password page, for a server with no OAuth', () => {
     signIn.closeAll();
     squatter.close();
   });
+});
+
+test('a page\'s translation can\'t take the server\'s name off the password page', () => {
+  expect(LABEL_KEY.test('signInPageTitle')).toBe(true);
+  expect(labelKeepsPlaceholders('signInPageTitle', 'Bei {server} anmelden')).toBe(true);
+  expect(labelKeepsPlaceholders('signInPageTitle', 'Sign in to your bank')).toBe(false);
+  expect(labelKeepsPlaceholders('signInPageIntro', 'Your password goes somewhere')).toBe(false);
 });
 
 test('the navigation rule, as a table', () => {

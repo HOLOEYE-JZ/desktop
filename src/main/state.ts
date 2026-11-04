@@ -99,6 +99,11 @@ export interface ShellState {
   keystoreOrigins?: string[];
   /** The browser sign-in page's port per mail server, so what a password manager saved keeps matching. */
   signInPorts?: Record<string, number>;
+  /**
+   * The client certificate remembered for a `host:port`, by fingerprint, and a hash of the account
+   * it was chosen in. Gone at that account's sign-out, and all of them at the last one.
+   */
+  certificateChoices?: Record<string, { fingerprint: string; account?: string }>;
   /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
   importJobs?: StoredImportJob[];
 }

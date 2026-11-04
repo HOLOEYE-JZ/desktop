@@ -27,6 +27,7 @@ import { keystoreFeature } from './keystore';
 import { appLockFeature } from './app-lock';
 import { privacyFeature } from './privacy';
 import { browserSignInFeature } from './browser-sign-in';
+import { clientCertificatesFeature } from './client-certificates';
 
 export interface FeatureContext {
   mode: Mode;
@@ -57,7 +58,7 @@ export interface Feature {
 }
 
 // The lock first: whatever comes after reads it as it starts.
-export const FEATURES: Feature[] = [appLockFeature, policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature, importFeature, browserSignInFeature];
+export const FEATURES: Feature[] = [appLockFeature, policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature, importFeature, clientCertificatesFeature, browserSignInFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {
