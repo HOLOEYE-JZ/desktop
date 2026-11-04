@@ -220,10 +220,9 @@ test.beforeAll(() => {
 
 test.afterAll(() => {
   for (const close of closers) close();
+  // Only this run's own key. reg.exe names the hive in full, so a check for `HKCU\\...` in
+  // its answer never matched and this took every other run's key with it.
   spawnSync('reg.exe', ['delete', POLICY_ROOT, '/f'], { windowsHide: true });
-  // The shared parent too, unless another run is using it.
-  const others = spawnSync('reg.exe', ['query', `${POLICY_BASE}\\Policies`], { encoding: 'utf8', windowsHide: true });
-  if (others.status === 0 && !others.stdout.includes(`${POLICY_BASE}\\Policies\\`)) spawnSync('reg.exe', ['delete', POLICY_BASE, '/f'], { windowsHide: true });
   certs.finish();
 });
 

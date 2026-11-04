@@ -180,7 +180,7 @@ test.describe('when reg.exe gives no answer', () => {
       expect(read.ok && read.layers.forcedMachine.InstanceUrl).toBe('https://m\u00fcller.de');
       if (read.ok) expect(resolvePolicies(read.layers).InstanceUrl.value).toBe('https://xn--mller-kva.de/');
     } finally {
-      spawnSync('reg.exe', ['delete', 'HKCU\\Software\\BulwarkTest', '/f'], { windowsHide: true });
+      spawnSync('reg.exe', ['delete', key, '/f'], { windowsHide: true });
     }
   });
 
