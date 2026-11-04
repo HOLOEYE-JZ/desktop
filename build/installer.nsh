@@ -18,6 +18,9 @@
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 
+; The window: build/installer-theme.nsh.
+!include "${__FILEDIR__}\installer-theme.nsh"
+
 !ifndef BUILD_UNINSTALLER
 ; Not ${GetOptions}: it ends a value at the next "/", which is most of an address.
 ; A value runs to the next space, or is in double quotes. Sets the error flag if absent.
@@ -273,6 +276,9 @@ bulwarkPoliciesDone:
 ; ${isUpdated} set, and those stay: the app keeps its pending download, the app writes the
 ; rest again at its next start, and only a real uninstall should drop the login item.
 !macro customUnInstall
+  !ifmacrodef bulwarkThemeUninstallerPage
+    !insertmacro bulwarkThemeUninstallerPage
+  !endif
   ${ifNot} ${isUpdated}
     DeleteRegValue HKCU "Software\RegisteredApplications" "Bulwark"
     DeleteRegKey HKCU "Software\Bulwark"

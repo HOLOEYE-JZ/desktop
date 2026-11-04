@@ -10,6 +10,8 @@
 //   build/icon.icns       macOS, the white mark on the brand field, on Apple's icon grid.
 //   build/icons/NxN.png   Linux hicolor sizes, the colour mark.
 //   build/icon.png        What electron-builder wants as the default, 1024.
+//   build/installer-logo.ico  The installer window's logo (installer-theme.nsh): 48 at 100 %
+//                         and each step to 300 %, so it's loaded at its size and never scaled.
 //
 // Windows and Linux use the favicon, drawn for small sizes. Tray variants aren't here.
 
@@ -60,9 +62,9 @@ async function bitmapEntry(svg, size) {
   return Buffer.concat([header, pixels, mask]);
 }
 
-async function ico(svg, sizes) {
+async function ico(svg, sizes, { png = false } = {}) {
   const entries = [];
-  for (const size of sizes) entries.push({ size, data: size >= 256 ? await render(svg, size) : await bitmapEntry(svg, size) });
+  for (const size of sizes) entries.push({ size, data: png || size >= 256 ? await render(svg, size) : await bitmapEntry(svg, size) });
   const head = Buffer.alloc(6 + 16 * entries.length);
   head.writeUInt16LE(1, 2);
   head.writeUInt16LE(entries.length, 4);
@@ -120,6 +122,8 @@ const out = path.join(ROOT, 'build');
 mkdirSync(path.join(out, 'icons'), { recursive: true });
 
 writeFileSync(path.join(out, 'icon.ico'), await ico(favicon, [16, 20, 24, 32, 40, 48, 64, 128, 256]));
+// LoadImage reads PNG entries, which keeps this small. 100, 125, 150, 175, 200, 225, 250, 300 %.
+writeFileSync(path.join(out, 'installer-logo.ico'), await ico(favicon, [48, 60, 72, 84, 96, 108, 120, 144], { png: true }));
 for (const size of [16, 24, 32, 48, 64, 128, 256, 512, 1024]) {
   writeFileSync(path.join(out, 'icons', `${size}x${size}.png`), await render(favicon, size));
 }

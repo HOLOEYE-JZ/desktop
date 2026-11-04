@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="380" viewBox="0 0 540 380">
+  <!--
+    The macOS DMG window's background, 540 by 380 points. scripts/make-dmg-background.mjs
+    renders it to build/dmg-background.png and @2x. Finder puts the app at (130, 220) and
+    Applications at (410, 220), electron-builder's default places, 80-point icons with their
+    names under them. Finder writes those names black in light mode and white in dark mode,
+    so the field behind them is a slate both read on, 4.5:1 or better either way
+    (test/installer-look.spec.ts checks the picture).
+  -->
+  <defs>
+    <radialGradient id="glow" cx="270" cy="-40" r="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="540" height="380" fill="#6d758a"/>
+  <rect width="540" height="380" fill="url(#glow)"/>
+  <!-- Bulwark's red along the top. -->
+  <rect width="540" height="4" fill="#db2d54"/>
+  <!-- From the app to Applications. -->
+  <g fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M196 214 C 240 188, 300 188, 340 210"/>
+    <path d="M329 192.5 L 340 210 L 319.5 210"/>
+  </g>
+</svg>
