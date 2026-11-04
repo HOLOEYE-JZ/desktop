@@ -210,10 +210,12 @@ export class OsHub extends EventEmitter<{
     this.pending.push(command);
     this.flush();
     const { windows } = this.ctx;
-    // A mail link opens a compose window of its own (the page's mail-app.tsx) and the main
-    // window stays where it is, as with Outlook. The page brings it up when it has to ask
-    // something or the composer opens there after all. Locked, the lock screen shows.
-    const ownWindow = command.type === 'mailto' && !this.locked && !!windows.mainWindow();
+    // A mail link, and files for a new message (Send to, Open with), open a compose window of
+    // their own (the page's mail-app.tsx) and the main window stays where it is, as with Outlook.
+    // The page brings it up when it has to ask something or the composer opens there after all.
+    // Locked, the lock screen shows.
+    const forNewMessage = command.type === 'mailto' || (command.type === 'files' && command.reason === 'attach' && !command.ask);
+    const ownWindow = forNewMessage && !this.locked && !!windows.mainWindow();
     if (options.show && !ownWindow) {
       this.ctx.showMain();
     } else if (!windows.mainWindow()) {

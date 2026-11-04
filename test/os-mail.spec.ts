@@ -270,12 +270,20 @@ for (const { label, url } of STALWARTS) {
       await page.keyboard.press('Escape');
       await expect(page.getByRole('heading', { name: `Opened file ${RUN}` })).toHaveCount(0, { timeout: 15_000 });
 
+      // A document opened with the app, as Send to: a compose window with it attached, as a
+      // mail link gets, and the main window stays hidden in the tray.
+      await hide(app);
       const pdf = path.join(profile, 'dropped.pdf');
       writeFileSync(pdf, '%PDF-1.4 test');
       await launchFile(app, profile, pdf);
-      await composer(page).waitFor({ state: 'visible', timeout: 30_000 });
-      await expect(composer(page).getByText('dropped.pdf')).toBeVisible({ timeout: 30_000 });
-      await closeComposer(page);
+      const attached = await pageWith(app, '/popout/compose');
+      await expect(composer(attached).getByText('dropped.pdf')).toBeVisible({ timeout: 30_000 });
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.isVisible())).toBe(false);
+      await expect(composer(page)).toHaveCount(0);
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().includes('/popout/compose')) window.destroy();
+      });
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.show());
     });
 
     test('a file dropped or pasted on the window attaches', async () => {
