@@ -16,10 +16,15 @@ mod keystore;
 #[cfg_attr(not(any(windows, target_os = "macos")), path = "no_os.rs")]
 mod os;
 
+#[cfg_attr(windows, path = "files_windows.rs")]
+#[cfg_attr(not(windows), path = "files_none.rs")]
+mod files;
+
 use std::time::Duration;
 
-use napi::bindgen_prelude::{AsyncTask, Buffer};
-use napi::{Env, Error, Result, Task};
+use napi::bindgen_prelude::{AsyncTask, Buffer, ToNapiValue, TypeName, Unknown};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Env, Error, Result, Status, Task};
 use napi_derive::napi;
 
 use keystore::{DecryptPlan, KeystoreError, Listed, PeerKey, SignPlan};
@@ -263,4 +268,298 @@ pub fn policy_is_forced(key: String) -> Result<bool> {
         return Err(Error::from_reason("policy: bad key"));
     }
     Ok(os::policy_is_forced(&key))
+}
+
+// ─── Files drive (Windows Cloud Files) ───────────────────────
+//
+// Main decides what to place and fetch, and checks every path against its root first. These
+// check what they're given anyway: lengths, absolute paths, names without separators.
+
+const MAX_PATH_CHARS: usize = 32_767;
+const MAX_NAME_CHARS: usize = 255;
+const MAX_IDENTITY_BYTES: usize = 4096;
+const MAX_TRANSFER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PLACE_BATCH: usize = 4096;
+/// The largest integer a JS number holds exactly.
+const MAX_SAFE: f64 = 9_007_199_254_740_991.0;
+
+fn files_error(message: String) -> Error {
+    Error::from_reason(message)
+}
+
+fn invalid(what: &str) -> Error {
+    Error::from_reason(format!("files:invalid ({what})"))
+}
+
+fn checked_path(path: &str) -> Result<&str> {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\';
+    if !drive || path.chars().count() > MAX_PATH_CHARS || path.contains('\0') || path.contains('/') {
+        return Err(invalid("path"));
+    }
+    Ok(path)
+}
+
+fn checked_name(name: &str) -> Result<&str> {
+    if name.is_empty() || name.chars().count() > MAX_NAME_CHARS || name == "." || name == ".." || name.chars().any(|c| c == '\\' || c == '/' || c == '\0') {
+        return Err(invalid("name"));
+    }
+    Ok(name)
+}
+
+fn checked_identity(identity: &str) -> Result<&str> {
+    if identity.is_empty() || identity.len() > MAX_IDENTITY_BYTES {
+        return Err(invalid("identity"));
+    }
+    Ok(identity)
+}
+
+fn checked_count(value: f64, what: &str) -> Result<i64> {
+    if !value.is_finite() || !(0.0..=MAX_SAFE).contains(&value) || value.fract() != 0.0 {
+        return Err(invalid(what));
+    }
+    Ok(value as i64)
+}
+
+fn checked_key(key: &str) -> Result<i64> {
+    key.parse::<i64>().map_err(|_| invalid("key"))
+}
+
+fn checked_label(value: &str, max: usize, what: &str, allowed: impl Fn(char) -> bool) -> Result<()> {
+    if value.is_empty() || value.chars().count() > max || !value.chars().all(allowed) {
+        return Err(invalid(what));
+    }
+    Ok(())
+}
+
+type FilesJobRun<T> = Box<dyn FnOnce() -> std::result::Result<T, String> + Send>;
+
+/// A files call off the JS thread.
+pub struct FilesJob<T: Send + 'static> {
+    run: Option<FilesJobRun<T>>,
+}
+
+impl<T: Send + ToNapiValue + TypeName + 'static> Task for FilesJob<T> {
+    type Output = T;
+    type JsValue = T;
+
+    fn compute(&mut self) -> Result<T> {
+        match self.run.take() {
+            Some(run) => run().map_err(files_error),
+            None => Err(Error::from_reason("files:failed (ran twice)")),
+        }
+    }
+
+    fn resolve(&mut self, _env: Env, output: T) -> Result<T> {
+        Ok(output)
+    }
+}
+
+fn files_job<T: Send + ToNapiValue + TypeName + 'static>(run: impl FnOnce() -> std::result::Result<T, String> + Send + 'static) -> AsyncTask<FilesJob<T>> {
+    AsyncTask::new(FilesJob { run: Some(Box::new(run)) })
+}
+
+#[napi(object)]
+pub struct FilesRegistration {
+    /// The provider part of the id: `Bulwark`, or `Bulwark Test <pid>` in tests.
+    pub provider: String,
+    /// The account part of the id: a hash main makes, never an address.
+    pub account: String,
+    /// The folder, absolute. It must exist.
+    pub path: String,
+    pub display_name: String,
+    /// `<file>,<index>` as Explorer reads icons.
+    pub icon: String,
+    pub version: String,
+}
+
+#[napi(object)]
+pub struct FilesSyncRoot {
+    pub id: String,
+    pub path: String,
+    pub display_name: String,
+}
+
+#[napi(object)]
+pub struct FilesFetchEvent {
+    /// `fetch` or `cancel`.
+    pub kind: String,
+    pub connection: String,
+    pub transfer_key: String,
+    pub request_key: String,
+    /// The file's absolute path.
+    pub path: String,
+    pub identity: String,
+    pub offset: f64,
+    pub length: f64,
+    pub total: f64,
+    /// The process that opened it, 0 if Windows didn't say.
+    pub pid: u32,
+}
+
+#[napi(object)]
+pub struct FilesPlacement {
+    /// One name, no separators: placed in the parent the call names.
+    pub name: String,
+    pub directory: bool,
+    pub size: f64,
+    pub mtime_ms: f64,
+    pub identity: String,
+}
+
+#[napi(object)]
+pub struct FilesPlaceholderInfo {
+    pub placeholder: bool,
+    pub directory: bool,
+    pub identity: Option<String>,
+    pub in_sync: bool,
+    /// All of its content is on disk.
+    pub hydrated: bool,
+    /// Some of it is.
+    pub partial: bool,
+    /// `pinned`, `unpinned` or `unspecified`.
+    pub pin: String,
+    pub size: f64,
+    pub on_disk: f64,
+}
+
+#[napi(object)]
+pub struct FilesUpdate {
+    pub size: Option<f64>,
+    pub mtime_ms: Option<f64>,
+    pub identity: Option<String>,
+    pub mark_in_sync: bool,
+    pub dehydrate: bool,
+    /// Refuse (`files:changed`) if it isn't in sync now: someone changed it here.
+    pub verify_in_sync: bool,
+}
+
+/// Registers a sync root with Windows, so Explorer shows it. Answers its id,
+/// `<provider>!<user SID>!<account>`. Registering an id again updates it.
+#[napi]
+pub fn files_drive_register(options: FilesRegistration) -> Result<AsyncTask<FilesJob<String>>> {
+    checked_label(&options.provider, 64, "provider", |c| c.is_ascii_alphanumeric() || " ._-".contains(c))?;
+    checked_label(&options.account, 64, "account", |c| c.is_ascii_alphanumeric() || "_-".contains(c))?;
+    checked_label(&options.display_name, 256, "display name", |c| !c.is_control())?;
+    checked_label(&options.icon, 1024, "icon", |c| !c.is_control())?;
+    checked_label(&options.version, 64, "version", |c| c.is_ascii_alphanumeric() || ".-+".contains(c))?;
+    checked_path(&options.path)?;
+    Ok(files_job(move || files::register(&options)))
+}
+
+#[napi]
+pub fn files_drive_unregister(id: String) -> Result<AsyncTask<FilesJob<()>>> {
+    checked_label(&id, 512, "id", |c| !c.is_control())?;
+    Ok(files_job(move || files::unregister(&id)))
+}
+
+/// This user's sync roots, every provider's: main and the cleanup pick theirs by id.
+#[napi]
+pub fn files_drive_roots() -> AsyncTask<FilesJob<Vec<FilesSyncRoot>>> {
+    files_job(files::roots)
+}
+
+type FetchCallback = ThreadsafeFunction<FilesFetchEvent, Unknown<'static>, FilesFetchEvent, Status, false, true>;
+
+/// Connects to a registered sync root. Windows' FETCH_DATA and CANCEL_FETCH_DATA come to
+/// `callback`, on the JS thread. Answers the connection key.
+#[napi]
+pub fn files_drive_connect(path: String, callback: FetchCallback) -> Result<String> {
+    checked_path(&path)?;
+    let sink: files::Sink = Box::new(move |event| callback.call(event, ThreadsafeFunctionCallMode::NonBlocking) == Status::Ok);
+    files::connect(&path, sink).map_err(files_error)
+}
+
+#[napi]
+pub fn files_drive_disconnect(connection: String) -> Result<()> {
+    files::disconnect(checked_key(&connection)?).map_err(files_error)
+}
+
+/// Bytes for a fetch: from a 4 KB aligned offset, a multiple of 4 KB long unless they end
+/// the file.
+#[napi]
+pub fn files_drive_transfer(connection: String, transfer_key: String, request_key: String, offset: f64, data: Buffer) -> Result<AsyncTask<FilesJob<()>>> {
+    let (connection, transfer_key, request_key) = (checked_key(&connection)?, checked_key(&transfer_key)?, checked_key(&request_key)?);
+    let offset = checked_count(offset, "offset")?;
+    if offset % 4096 != 0 || data.is_empty() || data.len() > MAX_TRANSFER_BYTES {
+        return Err(invalid("transfer"));
+    }
+    let data = data.to_vec();
+    Ok(files_job(move || files::transfer(connection, transfer_key, request_key, offset, &data)))
+}
+
+/// Ends a fetch with an error: `offline`, `denied`, `timeout`, `not-running` or `failed`.
+#[napi]
+pub fn files_drive_transfer_failed(connection: String, transfer_key: String, request_key: String, offset: f64, length: f64, reason: String) -> Result<()> {
+    let (connection, transfer_key, request_key) = (checked_key(&connection)?, checked_key(&transfer_key)?, checked_key(&request_key)?);
+    let (offset, length) = (checked_count(offset, "offset")?, checked_count(length, "length")?);
+    if !["offline", "denied", "timeout", "not-running", "failed"].contains(&reason.as_str()) {
+        return Err(invalid("reason"));
+    }
+    files::transfer_failed(connection, transfer_key, request_key, offset, length, &reason).map_err(files_error)
+}
+
+/// Placeholders in one folder, in sync, with nothing fetched. One answer per entry: `""` for
+/// placed, else a code (`exists`, `name`, ...).
+#[napi]
+pub fn files_drive_place(parent: String, entries: Vec<FilesPlacement>) -> Result<Vec<String>> {
+    checked_path(&parent)?;
+    if entries.len() > MAX_PLACE_BATCH {
+        return Err(invalid("batch"));
+    }
+    for entry in &entries {
+        checked_name(&entry.name)?;
+        checked_identity(&entry.identity)?;
+        checked_count(entry.size, "size")?;
+        if !entry.mtime_ms.is_finite() {
+            return Err(invalid("mtime"));
+        }
+    }
+    files::place(&parent, &entries).map_err(files_error)
+}
+
+/// What a path under a sync root is now. Fetches nothing.
+#[napi]
+pub fn files_drive_info(path: String) -> Result<FilesPlaceholderInfo> {
+    files::info(checked_path(&path)?).map_err(files_error)
+}
+
+#[napi]
+pub fn files_drive_update(path: String, change: FilesUpdate) -> Result<()> {
+    checked_path(&path)?;
+    if let Some(identity) = &change.identity {
+        checked_identity(identity)?;
+    }
+    if let Some(size) = change.size {
+        checked_count(size, "size")?;
+    }
+    if change.mtime_ms.is_some_and(|ms| !ms.is_finite()) {
+        return Err(invalid("mtime"));
+    }
+    files::update(&path, &change).map_err(files_error)
+}
+
+/// Makes something created here a placeholder with this identity, in sync.
+#[napi]
+pub fn files_drive_convert(path: String, identity: String) -> Result<()> {
+    files::convert(checked_path(&path)?, checked_identity(&identity)?).map_err(files_error)
+}
+
+/// Fetches all of a file, through this process's own connection. Resolves when it's on disk.
+#[napi]
+pub fn files_drive_hydrate(path: String) -> Result<AsyncTask<FilesJob<()>>> {
+    checked_path(&path)?;
+    Ok(files_job(move || files::hydrate(&path)))
+}
+
+/// Drops a file's content from the disk. Refused (`files:pinned`) for a pinned one.
+#[napi]
+pub fn files_drive_dehydrate(path: String) -> Result<()> {
+    files::dehydrate(checked_path(&path)?).map_err(files_error)
+}
+
+/// Drive letters in use now, A as bit 0. For picking a free one for the drive.
+#[napi]
+pub fn files_used_drive_letters() -> u32 {
+    files::used_drive_letters()
 }

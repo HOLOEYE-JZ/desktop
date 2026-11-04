@@ -24,7 +24,8 @@ import type { StateFile } from '../state';
 
 export type WipeReason = 'policy-nonce' | 'remote' | 'settings';
 
-export type WipeStep = (session: Session, partition: string, reason: WipeReason) => Promise<void>;
+/** `account`: the page's account id when only that account's things go, null for everything. */
+export type WipeStep = (session: Session, partition: string, reason: WipeReason, account: string | null) => Promise<void>;
 
 const steps = new Set<WipeStep>();
 /** The steps that also go for one account of several: what can't be told apart, and costs little. */
@@ -136,7 +137,7 @@ export async function wipeForPage({ reason, account }: { reason: 'remote' | 'set
   if (account !== null) {
     try {
       await sender.clearCache();
-      for (const step of accountSteps) await step(sender, '', reason);
+      for (const step of accountSteps) await step(sender, '', reason, account);
     } catch (error) {
       console.error('Wiping an account failed:', error);
       failed.push('account');
@@ -174,7 +175,7 @@ export async function wipeForPage({ reason, account }: { reason: 'remote' | 'set
   // Once, not per partition: none of them looks at which it's given, and a step that throws names what's left.
   for (const step of steps) {
     try {
-      await step(sender, partitions[0] ?? '', reason);
+      await step(sender, partitions[0] ?? '', reason, null);
     } catch (error) {
       console.error('A wipe step failed:', error);
       failed.push((error as Error)?.message || 'step');
@@ -238,7 +239,7 @@ export async function runLocalWipe(reason: WipeReason, userData: string, state: 
       await session.clearStorageData();
       await session.clearCache();
       await session.clearAuthCache();
-      for (const step of steps) await step(session, partition, reason);
+      for (const step of steps) await step(session, partition, reason, null);
     } catch (error) {
       console.error(`Wiping ${partition} failed:`, error);
       failed.push(partition);

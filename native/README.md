@@ -1,6 +1,6 @@
 # The native helper
 
-What the app can't do from JavaScript: Windows Hello, the OS keystore for S/MIME, and the macOS check for forced preferences. Rust with [napi-rs](https://napi.rs). `npm run build:native` runs cargo and writes `native/dist/<platform>-<arch>/bulwark-native.node`. The binary isn't committed. On Windows it links the C runtime statically and loads its DLLs from System32 only (`native/.cargo/config.toml`). Node-API is stable across Electron versions, so there's no rebuild per Electron version.
+What the app can't do from JavaScript: Windows Hello, the OS keystore for S/MIME, the macOS check for forced preferences, and the Files drive on Windows (the Cloud Files API). Rust with [napi-rs](https://napi.rs). `npm run build:native` runs cargo and writes `native/dist/<platform>-<arch>/bulwark-native.node`. The binary isn't committed. On Windows it links the C runtime statically and loads its DLLs from System32 only (`native/.cargo/config.toml`). Node-API is stable across Electron versions, so there's no rebuild per Electron version.
 
 Nothing in here can read a private key or hand one out.
 
@@ -16,9 +16,35 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `keystoreDecrypt(id, data, scheme, hwnd?)`: RSA key transport with OAEP or v1.5. v1.5 answers only with 16, 24 or 32 bytes, OAEP with up to 64.
 - `keystoreAgree(id, peerPublicKey, hwnd?)`: ECDH, the raw shared secret.
 - `policyIsForced(key)`: macOS, whether a configuration profile forces this preference. False elsewhere.
+- `filesDriveRegister(options)`: registers a Files drive sync root with Windows, so Explorer lists it. Promise of its id, `<provider>!<user SID>!<account>`. Registering the same id again updates its name.
+- `filesDriveUnregister(id)`: promise. Removes a sync root's registration, not its folder.
+- `filesDriveRoots()`: promise of this user's sync roots, every provider's, with their folders.
+- `filesDriveConnect(path, callback)`: connects to a registered sync root. Windows' FETCH_DATA and CANCEL_FETCH_DATA reach `callback` on the JS thread. Answers the connection key.
+- `filesDriveDisconnect(connection)`: ends a connection.
+- `filesDriveTransfer(connection, transferKey, requestKey, offset, data)`: promise. Bytes for a fetch, from a 4 KB aligned offset.
+- `filesDriveTransferFailed(connection, transferKey, requestKey, offset, length, reason)`: ends a fetch with an error, so the program that opened the file gets one.
+- `filesDrivePlace(parent, entries)`: placeholders in one folder, in sync, nothing fetched. One answer per entry.
+- `filesDriveInfo(path)`: what a path under a sync root is: placeholder or not, identity, in sync, on disk, pin. Fetches nothing.
+- `filesDriveUpdate(path, change)`: new metadata or identity for a placeholder, marks it in sync, drops its content.
+- `filesDriveConvert(path, identity)`: makes a file made here a placeholder with this identity, in sync.
+- `filesDriveHydrate(path)`: promise. Fetches all of a file through this process's own connection.
+- `filesDriveDehydrate(path)`: drops a file's content from the disk. Refused for a pinned one.
+- `filesUsedDriveLetters()`: the drive letters in use, as GetLogicalDrives' mask.
 <!-- /exports -->
 
 macOS Touch ID needs no helper: Electron has `systemPreferences.promptTouchID`.
+
+## The Files drive
+
+Windows only: macOS and Linux have the same exports, which answer `files:unsupported` (`roots` an empty list). Main decides what goes in a drive (`src/main/files/drive-controller.ts`) and checks every path against its root before it gets here; these check lengths, absolute paths and names without separators again.
+
+**Registration** goes through `StorageProviderSyncRootManager.Register`, so Explorer shows the drive in its navigation pane. Full hydration: a program that opens a file gets it whole, never the first bytes of one whose fetch then failed. Population is always full, since the page places every placeholder itself. Changing a file's last write time or its read-only, hidden or system attribute takes it out of sync. Pinning is allowed, which gives Explorer "Always keep on this device" and "Free up space". Listing reads the registry key Windows keeps the registrations in, because `GetCurrentSyncRoots` only lists a packaged app's own.
+
+**Callbacks** come on Windows' threads and go to JS through a threadsafe function, without waiting. With nobody listening the fetch fails at once. Main's own reads never fetch (`CF_CONNECT_FLAG_BLOCK_SELF_IMPLICIT_HYDRATION`): only `filesDriveHydrate` does, on libuv's pool, since the JS thread has to answer the callback it causes.
+
+**Errors** are in the message: `files:<code> (0x<hresult>)` with `missing`, `exists`, `busy`, `denied`, `name`, `full`, `changed`, `pinned`, `not-placeholder`, `outside`, `cancelled`, `unsupported`, `timeout`, `failed`, and `files:invalid (<what>)` for an argument main never sends. `src/main/files/drive-places.ts` turns them into the bridge's errors.
+
+It links `cldapi.dll` from System32. `scripts/files-drive-cleanup.mjs` removes the test sync roots a crashed test run leaves behind.
 
 ## Hello
 
@@ -57,4 +83,4 @@ rustup target add aarch64-apple-darwin x86_64-unknown-linux-gnu
 cd native && cargo check --target aarch64-apple-darwin && cargo check --target x86_64-unknown-linux-gnu
 ```
 
-Crates: `napi`, `napi-derive`, `napi-build`, `windows` with `windows-core` and `windows-future`, and on macOS `security-framework` with the `security-framework-sys`, `core-foundation` and `core-foundation-sys` it's built on.
+Crates: `napi`, `napi-derive`, `napi-build`, `windows` with `windows-core`, `windows-future` and the `windows-collections` it brings, and on macOS `security-framework` with the `security-framework-sys`, `core-foundation` and `core-foundation-sys` it's built on.

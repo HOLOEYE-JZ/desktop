@@ -133,7 +133,7 @@ const run = promisify(execFile);
  * inherited. If the tools are blocked, as AppLocker can do, it holds only where the OS's
  * own defaults for a home folder apply.
  */
-async function makeRootPrivate(root: string): Promise<boolean> {
+export async function makeRootPrivate(root: string): Promise<boolean> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {
     await chmod(root, 0o700);
