@@ -13,6 +13,7 @@ import { effectivePolicyValue } from '../../shared/policy-schema';
 import { LoopbackSignIn } from '../browser-sign-in';
 import { serverOrigin } from '../server-address';
 import { strings } from '../strings';
+import { addWipeStep } from './local-wipe';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
 
@@ -72,6 +73,7 @@ export function setupBrowserSignIn(ctx: FeatureContext): LoopbackSignIn {
     },
   });
   active = signIn;
+  addWipeStep(async () => remembered.clear());
 
   ctx.handle(CHANNEL.authBegin, async (event: IpcMainInvokeEvent, window, request): Promise<BrowserSignInBegin> => {
     if (!allowedByPolicy()) return { ok: false, error: 'policy' };

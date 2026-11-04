@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer, request as httpRequest, type Server } from 'node:http';
 import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { connect, type AddressInfo } from 'node:net';
@@ -489,6 +489,20 @@ test.describe('the calls themselves', () => {
 test.describe('policies', () => {
   const server = STALWARTS[0].url;
 
+  test('a remote wipe takes the list of servers signed in to through the browser', async () => {
+    const policy = forcedPolicies({ WipeOfflineData: `wipe-${Date.now()}` });
+    const profile = tempProfile('bs-wipe');
+    const file = path.join(profile, 'shell-state.json');
+    writeFileSync(file, JSON.stringify({ approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {}, signInPorts: { 'https://mail.example.org': 31234 } }));
+    const { app, page } = await launchStandalone(profile, policy.arg);
+    await waitForLogin(page);
+    await expect.poll(() => (JSON.parse(readFileSync(file, 'utf8')) as { signInPorts?: unknown }).signInPorts, { timeout: 30_000 }).toBeUndefined();
+    await app.close();
+    expect((JSON.parse(readFileSync(file, 'utf8')) as { signInPorts?: unknown }).signInPorts).toBeUndefined();
+    removeProfile(profile);
+    policy.remove();
+  });
+
   test('BrowserSignIn off: no button, and main refuses the flow', async () => {
     const policy = forcedPolicies({ BrowserSignIn: 0 });
     const profile = tempProfile('bs-off');
@@ -785,6 +799,10 @@ for (const { label, server } of INSTANCES) {
       expect(await isFocused(app)).toBe(true);
       await expect.poll(() => portState(listener)).toBe('closed');
 
+      // Tokens rather than the password, and still a password account, under the name typed (#1432).
+      const account = await page.evaluate(() => (JSON.parse(localStorage.getItem('account-registry') ?? '{}') as { state?: { accounts?: { id: string; authMode: string; providerSession?: boolean; username: string }[] } }).state?.accounts?.[0]);
+      expect(account).toMatchObject({ authMode: 'oauth', providerSession: false, username: ACCOUNT });
+
       // No session in the browser: not a cookie, and the instance shows it the login page.
       const cookies = await context.cookies(relay.origin);
       expect(cookies.filter((cookie) => /^(jmap|session|bulwark)/i.test(cookie.name)).map((cookie) => cookie.name)).toEqual([]);
@@ -834,6 +852,7 @@ for (const { label, server } of INSTANCES) {
       await expectMailShown(page);
       const registry = JSON.parse((await page.evaluate(() => localStorage.getItem('account-registry'))) ?? '{}');
       expect(JSON.stringify(registry)).toContain('"authMode":"oauth"');
+      expect(JSON.stringify(registry)).toContain('"providerSession":false');
       const cookies = await context.cookies(relay.origin);
       expect(cookies.filter((cookie) => cookie.name.startsWith('jmap_')).map((cookie) => cookie.name)).toEqual([]);
       const appCookies = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.session.cookies.get({}));
@@ -847,28 +866,80 @@ for (const { label, server } of INSTANCES) {
       removeProfile(profile);
     });
 
-    test('a link someone sends: what it signs in to goes nowhere, and the app stays as it is', async () => {
+    test('a link someone sends: nothing arrives before the question, "Not now" sends no code, and the app stays as it is', async () => {
       test.skip(label !== '1.0', 'once is enough');
       const { profile, app, page } = await start();
-      // The attacker's own link, with a challenge of theirs and no flow in this app.
+      // What another user on a shared computer runs: a listener of their own and a link to it.
+      const arrived: string[] = [];
+      const evil = createHttpServer((req, res) => {
+        arrived.push(req.url ?? '');
+        res.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>Evil</title>');
+      });
+      await new Promise<void>((resolve) => evil.listen(0, '127.0.0.1', resolve));
+      const port = (evil.address() as AddressInfo).port;
       const link = new URL(`${relay.origin}/en/login`);
-      link.searchParams.set('mobile_redirect_uri', 'http://127.0.0.1:59999/bulwark-desktop/callback');
+      link.searchParams.set('mobile_redirect_uri', `http://127.0.0.1:${port}/bulwark-desktop/callback`);
       link.searchParams.set('mobile_state', 'attacker');
       link.searchParams.set('mobile_code_challenge', 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM');
       const context = await systemBrowser();
       const tab = await context.newPage();
       await tab.goto(link.toString());
-      await expect(tab.getByTestId('desktop-handoff-banner')).toBeVisible({ timeout: 60_000 });
+      await expect(tab.getByTestId('desktop-handoff-banner')).toContainText("didn't start this", { timeout: 60_000 });
       await tab.fill('#username', ACCOUNT);
       await tab.fill('#password', ENT_PASSWORD);
       await tab.keyboard.press('Enter');
-      // The user is told what this is for, and asked.
-      await tab.getByRole('button', { name: 'Sign in to the app' }).click({ timeout: 30_000 });
-      // Nothing listens there. The code never reaches the attacker, and the app knows nothing of it.
-      await tab.waitForLoadState('domcontentloaded').catch(() => {});
+      const dialog = tab.getByRole('dialog').or(tab.getByRole('alertdialog')).first();
+      // The question names the port and what to do if this wasn't you. Until it's answered, nothing has gone.
+      await expect(dialog).toContainText(String(port), { timeout: 30_000 });
+      await expect(dialog).toContainText(/trying to get into your account/);
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      expect(arrived).toEqual([]);
+
+      await tab.getByRole('button', { name: 'Not now' }).click();
+      await expect.poll(() => arrived.length).toBe(1);
+      expect(arrived[0]).toContain('error=access_denied');
+      expect(arrived[0]).not.toContain('code=');
+
+      // And with a yes, only a code: never the password, and it's no use without the verifier.
+      const again = await context.newPage();
+      await again.goto(link.toString());
+      await expect(again.getByTestId('desktop-handoff-banner')).toBeVisible({ timeout: 60_000 });
+      await again.fill('#username', ACCOUNT);
+      await again.fill('#password', ENT_PASSWORD);
+      await again.keyboard.press('Enter');
+      await again.getByRole('button', { name: 'Sign in to the app' }).click({ timeout: 30_000 });
+      await expect.poll(() => arrived.length, { timeout: 30_000 }).toBe(2);
+      expect(new URL(arrived[1], 'http://x').searchParams.get('code')).toMatch(/^[0-9a-f]{64}$/);
+      expect(arrived[1]).not.toContain(encodeURIComponent(ENT_PASSWORD));
+
       await expect(page.locator('#username')).toBeVisible();
       expect(await opened(app)).toEqual([]);
       expect(await page.evaluate(() => localStorage.getItem('account-registry') ?? '')).not.toContain('authMode');
+      await context.close();
+      await app.close();
+      removeProfile(profile);
+      evil.close();
+      evil.closeAllConnections();
+    });
+
+    test('"Not now" in the browser ends the flow in the app at once', async () => {
+      test.skip(label !== '1.0', 'once is enough');
+      const { profile, app, page } = await start();
+      await page.getByTestId('desktop-browser-sign-in').click();
+      const opening = new URL(await nextOpened(app));
+      const listener = Number(new URL(opening.searchParams.get('mobile_redirect_uri')!).port);
+      const context = await systemBrowser();
+      const tab = await context.newPage();
+      await tab.goto(opening.toString());
+      await tab.fill('#username', ACCOUNT);
+      await tab.fill('#password', ENT_PASSWORD);
+      await tab.keyboard.press('Enter');
+      await tab.getByRole('button', { name: 'Not now' }).click({ timeout: 30_000 });
+      await expect(tab.locator('body')).toContainText('Nothing was handed over', { timeout: 15_000 });
+      await expect(page.getByTestId('desktop-notice')).toContainText('said no', { timeout: 15_000 });
+      await expect.poll(() => portState(listener)).toBe('closed');
+      // No session in the browser from it either.
+      expect((await context.cookies(relay.origin)).filter((cookie) => cookie.name.startsWith('jmap_')).map((cookie) => cookie.name)).toEqual([]);
       await context.close();
       await app.close();
       removeProfile(profile);
@@ -910,22 +981,46 @@ test.describe('on an OAuth-only instance', () => {
     await button.waitFor({ timeout: 90_000 });
     await expect(page.locator('#password')).toHaveCount(0);
     await button.click();
-    const opening = await nextOpened(app);
 
     const context = await systemBrowser();
-    const tab = await context.newPage();
-    await tab.goto(opening);
-    await expect(tab.getByTestId('desktop-handoff-banner')).toBeVisible({ timeout: 60_000 });
-    await expect(tab.locator('#password')).toHaveCount(0);
-    await tab.getByRole('button', { name: /single sign-on|sso|sign in/i }).first().click();
-    await tab.waitForURL(/\/login\?/, { timeout: 30_000 });
-    await tab.fill('input[autocomplete="username"]', ACCOUNT);
-    await tab.fill('input[autocomplete="current-password"]', ENT_PASSWORD);
-    await tab.keyboard.press('Enter');
-    // Back on the instance's callback page, which asks first.
-    await tab.getByRole('button', { name: 'Sign in to the app' }).click({ timeout: 60_000 });
+    /** Through the provider's page, to the instance's question. */
+    async function toTheQuestion(count: number) {
+      const tab = await context.newPage();
+      await tab.goto(await nextOpened(app, count));
+      await expect(tab.getByTestId('desktop-handoff-banner')).toBeVisible({ timeout: 60_000 });
+      await expect(tab.locator('#password')).toHaveCount(0);
+      await tab.getByRole('button', { name: /single sign-on|sso|sign in/i }).first().click();
+      await tab.waitForURL(/\/login\?/, { timeout: 30_000 });
+      const username = tab.locator('input[autocomplete="username"]');
+      await username.waitFor({ timeout: 30_000 });
+      await username.fill(ACCOUNT);
+      await tab.fill('input[autocomplete="current-password"]', ENT_PASSWORD);
+      await tab.keyboard.press('Enter');
+      const dialog = tab.getByRole('dialog').or(tab.getByRole('alertdialog')).first();
+      await expect(dialog).toContainText('Sign in to the Bulwark app', { timeout: 60_000 });
+      return { tab, dialog };
+    }
+
+    // "Not now" lands on no login page, ends the flow in the app at once, and leaves nothing.
+    const declined = await toTheQuestion(1);
+    // The account, not the server's address.
+    await expect(declined.dialog).toContainText(ACCOUNT.split('@')[0]);
+    await expect(declined.dialog).not.toContainText(new URL(server).host);
+    await declined.tab.getByRole('button', { name: 'Not now' }).click();
+    await expect(declined.tab.locator('body')).toContainText('Nothing was handed over', { timeout: 15_000 });
+    expect(declined.tab.url()).toContain('error=access_denied');
+    expect(declined.tab.url()).not.toContain('code=');
+    await expect(page.getByTestId('desktop-notice')).toContainText('said no', { timeout: 15_000 });
+    expect((await context.cookies(relay.origin)).filter((cookie) => cookie.name.startsWith('jmap_')).map((cookie) => cookie.name)).toEqual([]);
+    await page.getByTestId('desktop-browser-sign-in').click();
+
+    const accepted = await toTheQuestion(2);
+    const { tab } = accepted;
+    await tab.getByRole('button', { name: 'Sign in to the app' }).click();
     await expect(tab.locator('body')).toContainText('close this tab', { timeout: 30_000 });
     await expectMailShown(page);
+    // Through a provider's page: a provider session, as any SSO sign-in.
+    expect(await page.evaluate(() => localStorage.getItem('account-registry') ?? '')).toContain('"providerSession":true');
     const cookies = await context.cookies(relay.origin);
     expect(cookies.filter((cookie) => cookie.name.startsWith('jmap_')).map((cookie) => cookie.name)).toEqual([]);
     await page.reload();

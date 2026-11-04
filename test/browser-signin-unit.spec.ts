@@ -16,6 +16,7 @@ const TEXT: SignInText = {
   signInDone: 'DONE',
   signInFailed: 'FAILED',
   signInLinkUsed: 'USED',
+  signInDeclined: 'DECLINED',
   signInPageTitle: 'Sign in to {server}',
   signInPageIntro: 'Goes to {server}',
   signInUsername: 'User',
@@ -209,6 +210,18 @@ test.describe('the listener', () => {
     const answer = await raw(port, `${CALLBACK_PATH}?error=access_denied&error_description=${encodeURIComponent('<script>x</script>')}&state=${begun.state}`);
     expect(answer.body).not.toContain('script>');
     expect(await result).toEqual({ ok: false, error: 'denied' });
+  });
+
+  test('a no from the page tells the app at once and says so in the tab, with the right state only', async () => {
+    const { begun, port, result, forward } = await started();
+    const forged = await raw(port, `${CALLBACK_PATH}?error=access_denied&state=wrong`);
+    expect(forged.status).toBe(400);
+    expect(await portState(port)).toBe('open');
+    const answer = await raw(port, `${CALLBACK_PATH}?error=access_denied&state=${begun.state}`);
+    expect(answer.body).toContain('DECLINED');
+    expect(await result).toEqual({ ok: false, error: 'denied' });
+    expect(forward).toEqual([OWNER]);
+    await expect.poll(() => portState(port)).toBe('closed');
   });
 
   test('an expired flow fails clearly, closes, and can be started again', async () => {
@@ -474,6 +487,47 @@ test.describe('the password page, for a server with no OAuth', () => {
     expect(answer.status).toBe(502);
     expect(answer.body).toContain('NO ANSWER');
     signIn.closeAll();
+  });
+
+  /** A post whose tab has gone by the time the app answers. */
+  async function abandonedPost(port: number, token: string, nonce: string) {
+    const socket = connect({ host: '127.0.0.1', port });
+    await new Promise((resolve) => socket.once('connect', resolve));
+    const body = new URLSearchParams({ nonce, username: 'a', password: 'b' }).toString();
+    socket.write(`POST ${token} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nOrigin: http://127.0.0.1:${port}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ${body.length}\r\n\r\n${body}`);
+    return socket;
+  }
+
+  test('a good login with its tab already closed ends at once, not after ten minutes', async () => {
+    const { signIn, port, token, flowId, forward } = await page();
+    const nonce = nonceOf((await raw(port, token)).body);
+    const next = signIn.nextPassword(flowId, OWNER);
+    const socket = await abandonedPost(port, token, nonce);
+    await next;
+    socket.destroy();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const outcome = signIn.outcome(flowId, OWNER);
+    signIn.answerPassword(flowId, OWNER, { ok: true });
+    expect(await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve('hung'), 2000))])).toMatchObject({ ok: true });
+    expect(forward).toEqual([OWNER]);
+    await expect.poll(() => portState(port)).toBe('closed');
+  });
+
+  test('cancelling frees the port, with a tab still waiting or one already gone', async () => {
+    for (const leaveFirst of [false, true]) {
+      const { signIn, port, token, flowId } = await page();
+      const nonce = nonceOf((await raw(port, token)).body);
+      const next = signIn.nextPassword(flowId, OWNER);
+      const socket = await abandonedPost(port, token, nonce);
+      await next;
+      if (leaveFirst) {
+        socket.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      signIn.cancel(flowId, OWNER);
+      await expect.poll(() => portState(port)).toBe('closed');
+      socket.destroy();
+    }
   });
 
   test('expiry ends it for the app and the tab', async () => {

@@ -43,6 +43,7 @@ export interface SignInText {
   signInDone: string;
   signInFailed: string;
   signInLinkUsed: string;
+  signInDeclined: string;
   signInPageTitle: string;
   signInPageIntro: string;
   signInUsername: string;
@@ -157,6 +158,12 @@ function send(res: ServerResponse, status: number, body: string, nonce: string):
   res.end(body);
 }
 
+/** A response that has already gone, a closed tab's, never says 'close' again. */
+function whenClosed(res: ServerResponse, then: () => void): void {
+  if (res.destroyed || res.closed) then();
+  else res.once('close', then);
+}
+
 function refuse(res: ServerResponse, status: number): void {
   res.writeHead(status, { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', connection: 'close' }).end();
 }
@@ -262,8 +269,9 @@ export class LoopbackSignIn {
       ? { ok: true, code, state: flow.state, iss: url.searchParams.get('iss') ?? undefined }
       : { ok: false, error: 'denied' };
     // Closed once the browser has its page, not before.
-    res.once('close', () => this.delivered(flow, result));
-    sendMessage(res, code ? 200 : 400, code ? text.signInDone : text.signInFailed);
+    whenClosed(res, () => this.delivered(flow, result));
+    const declined = url.searchParams.get('error') === 'access_denied';
+    sendMessage(res, code ? 200 : declined ? 403 : 400, code ? text.signInDone : declined ? text.signInDeclined : text.signInFailed);
   }
 
   private delivered(flow: Flow, result: BrowserSignInResult): void {
@@ -481,7 +489,7 @@ export class LoopbackSignIn {
     const text = this.deps.text();
     if (answer.ok) {
       flow.answered = true;
-      pending.response.once('close', () => this.delivered(flow, { ok: true, code: '', state: flow.state }));
+      whenClosed(pending.response, () => this.delivered(flow, { ok: true, code: '', state: flow.state }));
       return sendMessage(pending.response, 200, text.signInDone);
     }
     const message = answer.error === 'invalid_credentials' ? text.signInWrongPassword : answer.error === 'totp_required' ? text.signInCodeNeeded : text.signInNoAnswer;
@@ -539,7 +547,7 @@ export class LoopbackSignIn {
     if (pending) {
       // A tab still waiting on a post gets its answer before the listener goes.
       clearTimeout(pending.timer);
-      pending.response.once('close', () => this.closeServer(flow));
+      whenClosed(pending.response, () => this.closeServer(flow));
       sendMessage(pending.response, 410, this.deps.text().signInFailed);
     } else {
       this.closeServer(flow);
