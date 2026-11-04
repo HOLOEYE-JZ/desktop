@@ -27,6 +27,9 @@ import { pageSetPause, settingsAllowedWithoutClick } from './os-rules';
 import { setupTray } from './os-tray';
 
 // Bundled into dist/main.mjs, so this is dist/.
+// Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
+declare const __BULWARK_TEST_BUILD__: boolean;
+
 const ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-icons');
 const MAX_SUMMARY_ROWS = 10;
 
@@ -52,6 +55,7 @@ function cleanSummary(value: unknown): OsSummary {
     unread: cleanMessages(s.unread, MAX_SUMMARY_ROWS),
     recent: cleanMessages(s.recent, MAX_SUMMARY_ROWS),
     nextEvent: next && typeof next.title === 'string' && typeof next.when === 'string' ? { title: next.title.slice(0, 200), when: next.when.slice(0, 60) } : null,
+    ...(typeof s.account === 'string' && s.account ? { account: s.account.slice(0, 200) } : {}),
   };
 }
 
@@ -139,7 +143,7 @@ function setup(ctx: FeatureContext): void {
   ctx.handle(CHANNEL.osDefaultAppOpen, () => defaultApp.open());
 
   // The checks in test/ read these back. An installed app has none of it.
-  if (!app.isPackaged) {
+  if (__BULWARK_TEST_BUILD__) {
     (globalThis as unknown as { __bulwarkOs: unknown }).__bulwarkOs = {
       hub,
       gate: appLockGate,

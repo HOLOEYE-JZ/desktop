@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app } from 'electron';
+import { isInstalledBuild } from './installed';
 import { addonMayLoad, type AddonPins } from './addon-pins';
 import { helperFile, loadHelperModule, wrapHelper, type NativeHelper } from './native-loader';
 
@@ -19,10 +19,9 @@ let helper: NativeHelper | null = null;
 
 export function native(): NativeHelper {
   if (helper) return helper;
-  // Not by app.isPackaged alone: Electron decides that by the exe's name, and the helper
-  // vouches for what a macOS profile forces, so a rename mustn't lose it.
+  // The helper vouches for what a macOS profile forces, so a rename mustn't lose it.
   const disabled = __BULWARK_TEST_BUILD__ && process.argv.includes('--bulwark-test-no-native');
-  const packaged = app.isPackaged || !__BULWARK_TEST_BUILD__;
+  const packaged = isInstalledBuild();
   const file = helperFile({ packaged, mainDir: HERE, platform: process.platform, arch: process.arch });
   const allowed = addonMayLoad({ file, name: 'native', packaged, platform: process.platform, arch: process.arch, pins: __BULWARK_ADDON_PINS__ });
   helper = wrapHelper(disabled || !allowed ? null : loadHelperModule(file));

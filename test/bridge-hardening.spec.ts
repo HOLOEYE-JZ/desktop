@@ -248,12 +248,14 @@ test.describe('one app, one hostile server', () => {
     expect(none).toBeNull();
   });
 
-  test('dialogs.confirm: titled with its caller, and only a few wait at once', async () => {
+  test('dialogs.confirm: titled with the app, never the internal address, and only a few wait at once', async () => {
     await setAnswer(app, 0);
     expect(await noGesture(app, 'return d.dialogs.confirm({ message: "Bulwark needs your OK", buttons: ["Allow", "Cancel"], defaultId: 0 });')).toBe(0);
     const [question] = (await prompts(app)) as unknown as { title: string }[];
-    expect(question.title).toContain(CALLER);
-    expect(question.title).not.toBe('Bulwark');
+    // Standalone: the page is the app's own, so it asks as Bulwark. In instance mode the
+    // server's name stays in the title (dialogs.ts).
+    expect(question.title).toBe('Bulwark');
+    expect(question.title).not.toContain(CALLER);
 
     await app.evaluate(({ dialog }) => {
       const g = globalThis as unknown as { __waiting: ((answer: { response: number }) => void)[] };

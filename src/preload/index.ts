@@ -33,6 +33,8 @@ import {
   type LanguagesUpdate,
   type MenuBarEntry,
   type MenuBarEvent,
+  type MenuBarMenu,
+  type MenuBarReport,
   type KeystoreDecryptScheme,
   type KeystoreAccessState,
   type KeystoreCertificate,
@@ -55,6 +57,7 @@ import {
   type OsSummary,
   type NativeMenuItem,
   type PrivacyState,
+  type DevToolsState,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -183,6 +186,10 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         entries: (): Promise<MenuBarEntry[]> => ipcRenderer.invoke(CHANNEL.menuBarEntries),
         open: (id: string, at: { x: number; y: number }) => ipcRenderer.send(CHANNEL.menuBarOpen, id, at),
         onEvent: (listener: (event: MenuBarEvent) => void) => subscribe(CHANNEL.menuBarEvent, listener),
+        menus: (): Promise<MenuBarMenu[]> => ipcRenderer.invoke(CHANNEL.menuBarMenus),
+        run: (key: string, label: string) => ipcRenderer.send(CHANNEL.menuBarRun, key, label),
+        report: (report: MenuBarReport) => ipcRenderer.send(CHANNEL.menuBarReport, report),
+        setPinned: (pinned: boolean) => ipcRenderer.send(CHANNEL.menuBarSetPinned, pinned),
       },
     },
     appLock: {
@@ -271,6 +278,12 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
       deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
       onChange: (listener: (state: PrivacyState) => void) => subscribe(CHANNEL.privacyChanged, listener),
+    },
+    devTools: {
+      get: (): Promise<DevToolsState> => ipcRenderer.invoke(CHANNEL.devToolsGet),
+      // Main also needs its own record of a click to turn them on, and asks natively.
+      set: (on: boolean): Promise<DevToolsState> => ipcRenderer.invoke(CHANNEL.devToolsSet, on),
+      onChange: (listener: (state: DevToolsState) => void) => subscribe(CHANNEL.devToolsChanged, listener),
     },
     os: {
       /**

@@ -74,10 +74,8 @@ test.afterAll(async () => {
   await new Promise((resolve) => collector.close(resolve));
   instance.closeAllConnections();
   await new Promise((resolve) => instance.close(resolve));
+  // Only this run's own key: another run may be using the one next to it.
   spawnSync('reg.exe', ['delete', REG_ROOT, '/f'], { windowsHide: true });
-  // The base goes only when nothing else is under it: another spec may be running.
-  const left = spawnSync('reg.exe', ['query', `${REG_BASE}\\Policies`], { encoding: 'utf8', windowsHide: true });
-  if (!left.stdout?.includes(`${REG_BASE}\\Policies\\`)) spawnSync('reg.exe', ['delete', REG_BASE, '/f'], { windowsHide: true });
 });
 
 test.beforeEach(() => {

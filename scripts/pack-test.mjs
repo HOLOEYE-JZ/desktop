@@ -15,7 +15,8 @@ import path from 'node:path';
 const strict = process.argv.includes('--strict');
 const shell = process.platform === 'win32';
 const env = { ...process.env, BULWARK_TEST_PACK: '1', CSC_IDENTITY_AUTO_DISCOVERY: 'false' };
-const profile = path.join(tmpdir(), 'bw-strict-profile');
+// Per checkout: one lock per profile, and another checkout's run would make this one quit.
+const profile = path.join(tmpdir(), `bw-strict-profile-${path.basename(process.cwd())}`);
 
 function run(command, args) {
   const result = spawnSync(command, args, { stdio: 'inherit', env, shell });

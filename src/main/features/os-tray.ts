@@ -10,7 +10,8 @@ import path from 'node:path';
 import { app, Menu, nativeImage, nativeTheme, Tray, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import type { OsSummary } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
-import { strings } from '../strings';
+import { onUiLanguage, strings, uiLanguageNow } from '../strings';
+import { PAUSE_UNTIL_TURNED_ON, pausedText } from './os-rules';
 import { withUnreadDot } from './os-icons';
 import type { OsHub } from './os-hub';
 
@@ -87,10 +88,17 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
     showMain();
   };
 
-  const pauseItem = (): MenuItemConstructorOptions => {
+  const pauseItems = (): MenuItemConstructorOptions[] => {
     const text = strings();
-    if (hub.pausedUntil() !== null) return { label: text.trayResume, click: () => hub.setPaused(null) };
-    return {
+    const until = hub.pausedUntil();
+    if (until !== null) {
+      // What it's paused for, greyed, above the way to end it.
+      return [
+        { label: pausedText(until, Date.now(), text, uiLanguageNow()), enabled: false },
+        { label: text.trayResume, click: () => hub.setPaused(null) },
+      ];
+    }
+    return [{
       label: text.trayPause,
       submenu: [
         { label: text.trayPauseHour, click: () => hub.setPaused(Date.now() + 3600_000) },
@@ -102,8 +110,9 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
             hub.setPaused(tomorrow.getTime());
           },
         },
+        { label: text.trayPauseForever, click: () => hub.setPaused(PAUSE_UNTIL_TURNED_ON) },
       ],
-    };
+    }];
   };
 
   const build = (summary: OsSummary): MenuItemConstructorOptions[] => {
@@ -122,13 +131,14 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
         click: () => hub.dispatch({ type: 'new-message' }),
       },
       ...(appLockGate.enrolled && !appLockGate.locked ? [{ label: text.trayLockNow, click: () => appLockGate.requestLock() }] : []),
-      ...(unread.length ? [{ type: 'separator' } as const, { label: text.trayUnread, enabled: false }, ...unread] : []),
+      // With more than one account the page names the one the list is for.
+      ...(unread.length ? [{ type: 'separator' } as const, { label: summary.account ? line(text.trayUnreadIn(summary.account)) : text.trayUnread, enabled: false }, ...unread] : []),
       ...(event.length ? [{ type: 'separator' } as const, ...event] : []),
       { type: 'separator' },
-      pauseItem(),
+      ...pauseItems(),
       { type: 'separator' },
       { label: text.trayOpen, click: showMain },
-      { label: text.trayQuit, click: () => app.quit() },
+      { label: process.platform === 'win32' ? text.trayExit : text.trayQuit, click: () => app.quit() },
     ];
   };
 
@@ -156,6 +166,11 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
   appLockGate.on('locked', refreshMenu);
   hub.on('badge', refreshIcon);
   nativeTheme.on('updated', refreshIcon);
+  // The app's language, once the page has said: the tray was built in the OS's.
+  onUiLanguage(() => {
+    refreshMenu();
+    refreshIcon();
+  });
   windows.on('created', (managed) => {
     if (managed.type === 'main') managed.window.on('blur', () => { lastBlur = Date.now(); });
   });

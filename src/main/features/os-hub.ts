@@ -210,7 +210,11 @@ export class OsHub extends EventEmitter<{
     this.pending.push(command);
     this.flush();
     const { windows } = this.ctx;
-    if (options.show) {
+    // A mail link opens a compose window of its own (the page's mail-app.tsx) and the main
+    // window stays where it is, as with Outlook. The page brings it up when it has to ask
+    // something or the composer opens there after all. Locked, the lock screen shows.
+    const ownWindow = command.type === 'mailto' && !this.locked && !!windows.mainWindow();
+    if (options.show && !ownWindow) {
       this.ctx.showMain();
     } else if (!windows.mainWindow()) {
       windows.startMainHidden();

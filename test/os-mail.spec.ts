@@ -250,10 +250,18 @@ for (const { label, url } of STALWARTS) {
       });
       await expect.poll(() => quick.isClosed(), { timeout: 30_000 }).toBe(true);
 
+      // A mail link from another program: a compose window of its own, as Outlook opens,
+      // and the main window stays as it was, hidden in the tray here.
+      await hide(app);
       await press(app, { type: 'mailto', url: `mailto:someone@example.org?subject=${encodeURIComponent(`mailto ${RUN}`)}` }, true);
-      await composer(page).waitFor({ state: 'visible', timeout: 30_000 });
-      await expect(page.locator('[data-testid="composer-subject"]')).toHaveValue(`mailto ${RUN}`);
-      await closeComposer(page);
+      const linked = await pageWith(app, '/popout/compose');
+      await expect(linked.locator('[data-testid="composer-subject"]')).toHaveValue(`mailto ${RUN}`, { timeout: 30_000 });
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.isVisible())).toBe(false);
+      await expect(composer(page)).toHaveCount(0);
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const window of BrowserWindow.getAllWindows()) if (window.webContents.getURL().includes('/popout/compose')) window.destroy();
+      });
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.show());
 
       const eml = path.join(profile, 'letter.eml');
       writeFileSync(eml, `From: Someone <someone@example.org>\r\nTo: ${RECIPIENT}\r\nSubject: Opened file ${RUN}\r\nDate: Tue, 3 Nov 2026 09:00:00 +0000\r\nContent-Type: text/plain\r\n\r\nFrom a file.\r\n`);

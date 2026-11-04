@@ -9,7 +9,7 @@ import { launch, removeProfile, shownPage, tempProfile } from './helpers';
  */
 
 const BASE = 'HKCU\\Software\\BulwarkTest';
-const ROOT = `${BASE}\\Policies\\updater-policy`;
+const ROOT = `${BASE}\\Policies\\updater-policy${process.pid}`;
 const ARGS = [`--bulwark-test-policy-root=${ROOT}`, '--bulwark-test-policy-poll=250', '--standalone'];
 
 function setValue(where: string, name: string, type: 'REG_DWORD' | 'REG_SZ', value: string): void {
@@ -39,7 +39,7 @@ test.describe('update policies through the real reader', () => {
   test.afterEach(async () => {
     await app?.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => {});
     if (profile) removeProfile(profile);
-    spawnSync('reg.exe', ['delete', BASE, '/f'], { windowsHide: true });
+    spawnSync('reg.exe', ['delete', ROOT, '/f'], { windowsHide: true });
   });
 
   test('nothing set: no policy, and the schema\'s default locks nothing', async () => {
