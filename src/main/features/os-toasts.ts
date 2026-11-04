@@ -75,7 +75,8 @@ export interface ToastHandle {
   notify: (request: unknown) => Promise<OsNotifyResult>;
   focusAssist: () => Promise<FocusAssist>;
   setFocusAssistForTest: (value: FocusAssist | null) => void;
-  showNotice: (title: string, body: string) => void;
+  /** `onClick`: what a click does; without it, the main window shows. */
+  showNotice: (title: string, body: string, onClick?: () => void) => void;
 }
 
 function text(value: unknown, limit: number): string {
@@ -253,11 +254,11 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     return { shown: true, playSound };
   };
 
-  function showNotice(title: string, body: string): void {
+  function showNotice(title: string, body: string, onClick?: () => void): void {
     const notice = new Notification({ title, body, silent: true });
     live.add(notice);
     notice.once('close', () => live.delete(notice));
-    notice.on('click', () => hub.ctx.showMain());
+    notice.on('click', () => (onClick ? onClick() : hub.ctx.showMain()));
     notice.show();
   }
 

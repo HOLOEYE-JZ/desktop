@@ -150,6 +150,25 @@ test('adding a folder takes a real click, and the same folder twice overlaps', a
   expect(stored.roots.map((root) => [root.id, root.dir])).toEqual([[added.value!.id, sync]]);
 });
 
+test('the folder on this computer first: a click picks it, its Files side comes after without another picker (settings-p3-4)', async () => {
+  const docs = path.join(base, 'Docs');
+  mkdirSync(docs);
+  await pick(docs);
+  expect(await files<Answer>(page, 'chooseFolder')).toEqual({ ok: false, error: 'gesture' });
+  const chosen = await clicked<Answer<{ token: string; name: string }>>('chooseFolder');
+  expect(chosen).toMatchObject({ ok: true, value: { name: 'Docs' } });
+  const picks = await mainGlobal<number>('__picks');
+  const request = { account: 'acct-3', remoteId: 'n-docs', remoteLabel: 'Docs', chosen: chosen.value!.token };
+  // No click needed now: the pick had one.
+  const added = await files<Answer<Root>>(page, 'addFolder', request);
+  expect(added).toMatchObject({ ok: true, value: { path: docs, remoteId: 'n-docs', account: 'acct-3' } });
+  expect(await mainGlobal<number>('__picks')).toBe(picks);
+  // A token works once.
+  expect(await files<Answer>(page, 'addFolder', request)).toEqual({ ok: false, error: 'gesture' });
+  expect(await files<Answer>(page, 'addFolder', { ...request, chosen: 'made-up' })).toEqual({ ok: false, error: 'gesture' });
+  await files(page, 'removeRoot', added.value!.id);
+});
+
 test('a path through a junction is refused, and a scan leaves the junction out', async () => {
   const [root] = await files<Root[]>(page, 'roots');
   const elsewhere = path.join(base, 'Elsewhere');

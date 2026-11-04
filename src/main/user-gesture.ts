@@ -6,6 +6,8 @@
  *
  * A left mouse button or Enter or Space reaching a window, as Chromium's browser process
  * sees it, and a pick from a native menu, which main itself recorded. Taking it spends it.
+ * The keys that choose in a closed list (arrows, Home, End, Page Up and Down) count too: a
+ * drive letter picked with them changes the list without Enter (pass-3 files-p3-15).
  */
 
 import type { WebContents } from 'electron';
@@ -14,6 +16,8 @@ import type { WebContents } from 'electron';
 const GESTURE_LIFE_MS = 5_000;
 
 const gestures = new WeakMap<WebContents, number>();
+/** Enter, Space, and the keys that choose in a list. Chromium's names, and the DOM's. */
+const GESTURE_KEYS = new Set(['Enter', 'Return', 'Space', ' ', 'Up', 'Down', 'ArrowUp', 'ArrowDown', 'Left', 'Right', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown', 'Prior', 'Next']);
 const watched = new WeakSet<WebContents>();
 
 export function noteUserGesture(contents: WebContents): void {
@@ -33,7 +37,7 @@ export function watchUserGestures(contents: WebContents): void {
     const button = (input as unknown as { button?: string }).button;
     const key = (input as unknown as { keyCode?: string }).keyCode;
     const clicked = input.type === 'mouseDown' && button === 'left';
-    const pressed = input.type === 'rawKeyDown' && (key === 'Enter' || key === 'Return' || key === 'Space' || key === ' ');
+    const pressed = input.type === 'rawKeyDown' && !!key && GESTURE_KEYS.has(key);
     if (clicked || pressed) noteUserGesture(contents);
   });
 }
