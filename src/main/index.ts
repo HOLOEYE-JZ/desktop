@@ -682,7 +682,7 @@ async function boot(theme: ThemeController): Promise<void> {
   const decision = startDecision();
   bootedKey = restartKey(decision, policies.snapshot);
   bootedDecision = decision;
-  menu?.allowSwitchingMode(decision.canSwitch ? switchMode : undefined);
+  menu?.allowSwitchingMode(decision.canSwitch ? askThenSwitchMode : undefined, switchMode);
   if (decision.kind === 'policy-error') await showPolicyError(decision);
   else if (decision.kind === 'welcome') showWelcome(theme, decision);
   else if (!(await keySafeOnDisk(decision.kind === 'instance'))) await showErrorPage(strings().errorKeyNotSavedTitle, strings().errorKeyNotSavedBody);
@@ -754,6 +754,15 @@ let switching = false;
 function switchMode(): void {
   switching = true;
   app.quit();
+}
+
+/** Where the page can't ask (an older webmail, an error page): the OS's question, never none. */
+function askThenSwitchMode(): void {
+  const text = strings();
+  void dialog.showMessageBox({ type: 'question', title: 'Bulwark', message: text.menuSwitchModeTitle, detail: text.menuSwitchModeDetail, buttons: [text.menuSwitchModeConfirm, text.menuSwitchModeCancel], defaultId: 0, cancelId: 1, noLink: true })
+    .then(({ response }) => {
+      if (response === 0) switchMode();
+    });
 }
 
 function finishSwitch(): void {

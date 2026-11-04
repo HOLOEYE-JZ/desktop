@@ -883,6 +883,7 @@ export const CHANNEL = {
   menuBarRun: 'bulwark:menu.barRun',
   menuBarReport: 'bulwark:menu.barReport',
   menuBarSetPinned: 'bulwark:menu.barSetPinned',
+  menuChangeConnection: 'bulwark:menu.changeConnection',
   shellOpenExternal: 'bulwark:shell.openExternal',
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',

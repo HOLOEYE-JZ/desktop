@@ -328,6 +328,8 @@ test.describe('closing and quitting', () => {
       });
     await switchMode();
     await expect.poll(async () => (await prompts(app)).length).toBe(1);
+    // A page that can't ask itself: the app asks before anything closes (settings-p3-5).
+    expect(JSON.stringify((await prompts(app))[0])).toContain('Change how Bulwark connects?');
     await page.waitForTimeout(500);
     expect(JSON.parse(readFileSync(stateFile, 'utf8')).mode).toBe('standalone');
     expect(page.isClosed()).toBe(false);
@@ -361,6 +363,26 @@ test.describe('closing and quitting', () => {
       };
       (find(Menu.getApplicationMenu())!.click as unknown as () => void)();
     });
+    await closed;
+    expect(JSON.parse(readFileSync(stateFile, 'utf8')).mode).toBeUndefined();
+    removeProfile(profile);
+  });
+});
+
+test.describe('changing the connection from the page', () => {
+  test('after the page asked, the bridge restarts on the first screen without a second question', async () => {
+    const profile = tempProfile('switch3');
+    mkdirSync(profile, { recursive: true });
+    const stateFile = path.join(profile, 'shell-state.json');
+    writeFileSync(stateFile, JSON.stringify({ mode: 'standalone' }));
+    const app = await launch(profile);
+    const page = await shownPage(app);
+    await waitForLogin(page);
+    await fakeOsIntegration(app, 0);
+    await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = () => {}; });
+    const closed = app.waitForEvent('close', { timeout: 120_000 });
+    const answer = page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { changeConnection: () => Promise<boolean> } } }).bulwarkDesktop.menu.changeConnection()).catch(() => true);
+    expect(await answer).toBe(true);
     await closed;
     expect(JSON.parse(readFileSync(stateFile, 'utf8')).mode).toBeUndefined();
     removeProfile(profile);
