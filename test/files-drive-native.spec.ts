@@ -519,6 +519,27 @@ test.describe('the drive controller', () => {
     }
   });
 
+  test('the app sets "Always keep on this device" and "Free up space" as Explorer does (files-p3-8)', async () => {
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    const { drive } = controllerWith(native, page, store);
+    try {
+      const on = await drive.enable('acct-1', 'alice@example.org', yes);
+      if (!on.ok) throw new Error(on.error);
+      await drive.place(on.value.id, [{ path: 'Plan.bin', kind: 'file', size: 60_000, mtimeMs: Date.now(), identity: 'q1' }]);
+      page.serve.set('q1', content('q1', 60_000));
+      const file = path.join(on.value.path, 'Plan.bin');
+      expect(await drive.setPin(on.value.id, 'Plan.bin', 'pinned')).toEqual({ ok: true, value: null });
+      await expect.poll(() => native.filesDriveInfo(file), { timeout: 20_000 }).toMatchObject({ pin: 'pinned', hydrated: true });
+      expect(await drive.setPin(on.value.id, 'Plan.bin', 'unpinned')).toEqual({ ok: true, value: null });
+      await expect.poll(() => native.filesDriveInfo(file), { timeout: 20_000 }).toMatchObject({ pin: 'unpinned', onDisk: 0 });
+      expect(await drive.setPin(on.value.id, '../x', 'pinned')).toMatchObject({ ok: false });
+      expect(await drive.setPin('nope', 'Plan.bin', 'pinned')).toEqual({ ok: false, error: 'inactive' });
+    } finally {
+      await drive.wipe();
+    }
+  });
+
   test('an update of a pinned file fetches the new content by itself, watcher or not', async () => {
     const page = newPage();
     const store = { value: {} as StoredDrive };

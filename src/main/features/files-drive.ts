@@ -267,6 +267,10 @@ export const filesDriveFeature: Feature = {
     ctx.on(CHANNEL.filesDriveFlushed, (_event, window, requestId) => {
       if (isMain(window) && typeof requestId === 'string') flushWaiters.get(requestId)?.();
     });
+    ctx.handle(CHANNEL.filesDriveSetPin, (_event, window, rootId, relative, pin) => {
+      fromMain(window);
+      return drive.setPin(rootId, relative, pin);
+    });
     // Only the folder main itself made: the page can't name one.
     ctx.handle(CHANNEL.filesDriveOpenRescue, async (_event, window) => {
       fromMain(window);

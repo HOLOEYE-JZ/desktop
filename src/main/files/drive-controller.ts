@@ -1200,6 +1200,22 @@ export class DriveController {
     });
   }
 
+  /**
+   * "Always keep on this device" or "Free up space" from the page (the Files screen's menu), set
+   * the way Explorer sets it: the attribute, then the content comes or goes as for Explorer's.
+   */
+  async setPin(rootId: unknown, relative: unknown, pin: unknown): Promise<FilesResult<null>> {
+    const live = this.liveByRoot(rootId);
+    if (!live) return fail('inactive');
+    if (pin !== 'pinned' && pin !== 'unpinned') return fail('failed');
+    const found = this.resolveFile(live, relative);
+    if (typeof found === 'string') return fail(found);
+    const setPin = this.deps.setPin ?? setPinAttribute;
+    if (!(await setPin(found.absolute, pin))) return fail('failed');
+    if (this.live.get(live.account) === live) this.checkPin(found.absolute, null);
+    return ok(null);
+  }
+
   /** Waits for the pinned files queued so far. For tests. */
   hydrated(): Promise<void> {
     return this.hydrating;

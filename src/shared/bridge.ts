@@ -838,6 +838,11 @@ export interface FilesDriveControls {
   flushed?: (requestId: string) => void;
   /** Opens the folder files that weren't uploaded went to last. False when there's none. */
   openRescue?: () => Promise<boolean>;
+  /**
+   * "Always keep on this device" (`pinned`) and "Free up space" (`unpinned`) from the app, as
+   * Explorer's own menu sets them: the content comes or goes the same way. Absent in older shells.
+   */
+  setPin?: (rootId: string, path: string, pin: 'pinned' | 'unpinned') => Promise<FilesResult<null>>;
   /** New placeholders, parents first. One answer per entry. */
   place: (rootId: string, entries: FilesPlaceholder[]) => Promise<FilesResult<{ path: string; error?: FilesError }[]>>;
   /**
@@ -1049,6 +1054,7 @@ export const CHANNEL = {
   filesDriveFlush: 'bulwark:files.drive.flush',
   filesDriveFlushed: 'bulwark:files.drive.flushed',
   filesDriveOpenRescue: 'bulwark:files.drive.openRescue',
+  filesDriveSetPin: 'bulwark:files.drive.setPin',
   recentFilesList: 'bulwark:recentFiles.list',
   recentFilesAttach: 'bulwark:recentFiles.attach',
 } as const;

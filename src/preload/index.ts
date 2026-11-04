@@ -393,6 +393,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         onFlush: (listener: (request: { requestId: string; accounts: string[] }) => void) => subscribe(CHANNEL.filesDriveFlush, listener),
         flushed: (requestId: string) => ipcRenderer.send(CHANNEL.filesDriveFlushed, requestId),
         openRescue: () => ipcRenderer.invoke(CHANNEL.filesDriveOpenRescue),
+        setPin: (rootId: string, path: string, pin: 'pinned' | 'unpinned') => ipcRenderer.invoke(CHANNEL.filesDriveSetPin, rootId, path, pin),
         place: (rootId: string, entries: FilesPlaceholder[]) => ipcRenderer.invoke(CHANNEL.filesDrivePlace, rootId, entries),
         update: (rootId: string, path: string, meta: { size: number; mtimeMs: number; identity: string; dehydrate: boolean }, expect: FilesExpect | null) =>
           ipcRenderer.invoke(CHANNEL.filesDriveUpdate, rootId, path, meta, expect),
