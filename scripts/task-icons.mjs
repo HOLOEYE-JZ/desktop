@@ -17,6 +17,17 @@ export const TASK_ICON_SIZES = [16, 20, 24, 32, 40, 48];
 export const TASK_ICON_FOLDER = 'os-icons';
 
 /**
+ * The app's own icon, for what Windows draws from a file it reads itself: the Files drive in
+ * Explorer's navigation pane. Not the exe's: that's electron.exe in a build from source.
+ * build.mjs copies it into dist/os-icons, electron-builder.yml into resources/os-icons.
+ */
+export const APP_ICON_FILE = 'bulwark.ico';
+/** Where it comes from: the icon electron-builder gives Bulwark.exe. */
+export const APP_ICON_SOURCE = 'build/icon.ico';
+/** The task icons' sizes, and 256 for Explorer's large views. */
+export const APP_ICON_SIZES = [...TASK_ICON_SIZES, 256];
+
+/**
  * @param {typeof TASK_ICONS[number]} name
  * @param {typeof TASK_ICON_VARIANTS[number]} variant
  */
@@ -45,4 +56,14 @@ export function findTaskIconProblems(dir) {
     }
   }
   return problems;
+}
+
+/** What's wrong with the app icon in a folder, as `<file> (<why>)`. Empty if it's there with every size. */
+export function findAppIconProblems(dir) {
+  const full = path.join(dir, APP_ICON_FILE);
+  if (!existsSync(full)) return [`${APP_ICON_FILE} (missing)`];
+  const sizes = icoSizes(readFileSync(full));
+  if (!sizes) return [`${APP_ICON_FILE} (not an icon)`];
+  const missing = APP_ICON_SIZES.filter((size) => !sizes.includes(size));
+  return missing.length ? [`${APP_ICON_FILE} (no ${missing.join(', ')} px)`] : [];
 }

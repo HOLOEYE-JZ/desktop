@@ -13,11 +13,13 @@
 
 import { homedir, release } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, type WebContents } from 'electron';
 import { CHANNEL, type FilesDriveState, type FilesFetchRequest } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
 import { substLetters } from '../files/drive-letter';
+import { registryLetterLabels } from '../files/drive-letter-label';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
 import { setDriveHooks } from '../files/drive-hooks';
 import { filesRegistry } from '../files/registry';
@@ -25,11 +27,15 @@ import { native } from '../native';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { forgetRootState } from './files-folders';
 import { addWipeStep } from './local-wipe';
+import { appIconResource, taskIconsDir } from './os-tasks';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
 
 // Set by build.mjs.
 declare const __BULWARK_TEST_BUILD__: boolean;
+
+/** Where a build from source has the task icons and the app's (build.mjs): main.mjs is in dist/. */
+const BUILD_ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-icons');
 
 /** Windows 10 1809: where StorageProviderSyncRootManager and the placeholder calls are complete. */
 const FIRST_BUILD = 17763;
@@ -38,6 +44,13 @@ function testArgument(name: string): string | null {
   if (!__BULWARK_TEST_BUILD__) return null;
   const prefix = `--bulwark-test-files-${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) ?? null;
+}
+
+/** HKCU, or a test's own key in its place (as os-default-app.ts). A real build has no way to move it. */
+function registryRoot(): string {
+  if (!__BULWARK_TEST_BUILD__) return 'HKCU';
+  const prefix = '--bulwark-test-registry-root=';
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || 'HKCU';
 }
 
 function windowsBuild(): number {
@@ -68,7 +81,9 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
     provider: testArgument('provider') ?? DRIVE_PROVIDER,
     base: testArgument('drive-dir') ?? path.join(homedir(), DRIVE_FOLDER),
     profile: app.getPath('userData'),
-    icon: `${process.execPath},0`,
+    // Explorer shows it beside the drive. A root registered with another (the exe's, before)
+    // gets it at the next start.
+    icon: appIconResource(taskIconsDir(app.isPackaged, process.resourcesPath, BUILD_ICONS)),
     version: app.getVersion(),
     store: {
       read: () => (state ? state.data.filesDrive ?? {} : detached),
@@ -97,6 +112,7 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
     registry: filesRegistry,
     forgetState: forgetRootState,
     letters: helper && testArgument('letters') !== 'off' ? substLetters(() => helper.filesUsedDriveLetters()) : null,
+    letterLabels: helper && testArgument('letters') !== 'off' ? registryLetterLabels(registryRoot(), (letter) => helper.filesDriveLetterChanged(letter)) : null,
     ...(testArgument('fetch-timeout') ? { fetchFirstAnswerMs: Number(testArgument('fetch-timeout')), fetchIdleMs: Number(testArgument('fetch-timeout')) } : {}),
   });
   return controller;
