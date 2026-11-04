@@ -66,6 +66,7 @@ import {
   type FilesControls,
   type FilesDriveControls,
   type FilesDriveState,
+  type FilesDriveStatus,
   type FilesExpect,
   type FilesFetchRequest,
   type FilesPlaceholder,
@@ -398,6 +399,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         supply: (fetchId: string, offset: number, data: Uint8Array) => ipcRenderer.invoke(CHANNEL.filesDriveSupply, fetchId, offset, data),
         fail: (fetchId: string, error: 'offline' | 'missing' | 'failed') => ipcRenderer.send(CHANNEL.filesDriveFail, fetchId, error),
         setLetter: (letter: string | null) => ipcRenderer.invoke(CHANNEL.filesDriveSetLetter, letter, clicked()),
+        status: (account: string, status: FilesDriveStatus) => ipcRenderer.send(CHANNEL.filesDriveStatus, account, status),
       }
     : undefined;
   const filesControls: FilesControls = {

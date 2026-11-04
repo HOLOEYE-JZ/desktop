@@ -25,6 +25,7 @@ import path from 'node:path';
 import type {
   FilesDriveLetterState,
   FilesDriveState,
+  FilesDriveStatus,
   FilesError,
   FilesExpect,
   FilesFetchRequest,
@@ -48,8 +49,10 @@ import {
   freeLetters,
   inside,
   letterTarget,
+  nativeStatusOf,
   relativeParts,
   resolveUnder,
+  statusClassId,
   syncRootPrefix,
   wantedLetter,
 } from './drive-places';
@@ -109,6 +112,16 @@ export interface DriveDeps {
   warn?: (message: string) => void;
   /** Pin changes come through a watcher on each root. Off in tests that don't want it. */
   watchPins?: boolean;
+  /**
+   * Explorer's status for the drive (Windows 11): sync state and storage, from the page. Absent,
+   * or a Windows without it: no status, the drive works the same.
+   */
+  status?: {
+    /** A file: URL of the icon Explorer shows next to the state. Null: none could be made. */
+    icon(): Promise<string | null>;
+    /** The status line in Explorer was clicked. */
+    opened(account: string): void;
+  };
   /** How long a fetch waits for the page: drive-fetch.ts has the defaults. */
   fetchFirstAnswerMs?: number;
   fetchIdleMs?: number;
@@ -155,6 +168,10 @@ export class DriveController {
   private readonly pinTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly warn: (message: string) => void;
   private readonly now: () => number;
+  /** What the page last said for Explorer, per account. */
+  private readonly statuses = new Map<string, FilesDriveStatus>();
+  /** Serving Explorer's status: null until tried, false where Windows has none or it failed. */
+  private statusServed: boolean | null = null;
 
   constructor(private readonly deps: DriveDeps) {
     this.warn = deps.warn ?? console.warn;
@@ -349,6 +366,11 @@ export class DriveController {
       this.relay.dropRoot(live.root.id);
       this.deps.registry.remove(live.root.id);
       try {
+        this.native().filesDriveStatusSet?.(live.syncRootId, undefined);
+      } catch {
+        // Not served: nothing to forget.
+      }
+      try {
         this.native().filesDriveDisconnect(live.connection);
       } catch (error) {
         this.warn(`Disconnecting the drive failed: ${(error as Error).message}`);
@@ -361,10 +383,13 @@ export class DriveController {
     if (removeFolder && dir) this.removeFolder(dir);
     const rootId = live?.root.id ?? stored?.rootId;
     if (removeFolder && rootId) await this.deps.forgetState?.(rootId).catch(() => {});
+    this.statuses.delete(account);
+    // Unregistering takes the status class's value with the sync root's key.
     for (const root of await this.ourRoots()) {
       if (root.id.endsWith(`!${key}`)) await this.unregister(root);
     }
     if (removeFolder && dir) this.removeFolder(dir);
+    this.stopStatusWhenIdle();
   }
 
   /** The base folder as the disk names it: the roots' paths are resolved, so this must be too. */
@@ -423,7 +448,10 @@ export class DriveController {
         });
       } catch (error) {
         this.warn(`Renaming the drive failed: ${(error as Error).message}`);
+        continue;
       }
+      // Registering writes the key anew: the status class goes back in each time.
+      await this.attachStatus(live);
     }
   }
 
@@ -521,6 +549,8 @@ export class DriveController {
 
   /** The app quits: connections end, registrations and folders stay for the next start. */
   shutdown(): void {
+    if (this.statusServed) this.deps.native?.filesDriveStatusStop?.();
+    this.statusServed = null;
     for (const live of this.live.values()) {
       live.watcher?.close();
       this.relay.dropRoot(live.root.id);
@@ -531,6 +561,85 @@ export class DriveController {
       }
     }
     this.live.clear();
+  }
+
+  // ─── Explorer's status ───────────────────────────────────────
+
+  /** The CLSID Explorer creates for this profile's drives. */
+  get statusClassId(): string {
+    return statusClassId(this.deps.profile);
+  }
+
+  /** What the page says Explorer should show for an account's drive. Kept for when it's on. */
+  setStatus(account: unknown, status: unknown): void {
+    if (!validText(account, MAX_ACCOUNT)) return;
+    const shown = nativeStatusOf(status);
+    if (!shown) return;
+    this.statuses.set(account, status as FilesDriveStatus);
+    // At most as many as there are accounts: a page can't grow this by inventing them.
+    if (this.statuses.size > 64) this.statuses.delete(this.statuses.keys().next().value!);
+    const live = this.live.get(account);
+    if (live && this.statusServed) this.pushStatus(live);
+  }
+
+  private async serveStatus(): Promise<boolean> {
+    if (this.statusServed !== null) return this.statusServed;
+    const native = this.deps.native;
+    if (!this.deps.status || !native?.filesDriveStatusServe || !native.filesDriveStatusAttach || !native.filesDriveStatusSet) {
+      this.statusServed = false;
+      return false;
+    }
+    try {
+      const icon = await this.deps.status.icon();
+      this.statusServed = !!icon && native.filesDriveStatusServe(this.statusClassId, icon, (syncRootId) => this.statusOpened(syncRootId));
+    } catch (error) {
+      // Explorer shows no status then; the drive works the same.
+      this.warn(`Serving the drive's status failed: ${(error as Error).message}`);
+      this.statusServed = false;
+    }
+    return this.statusServed;
+  }
+
+  private async attachStatus(live: Live): Promise<void> {
+    if (!(await this.serveStatus())) return;
+    if (this.live.get(live.account) !== live) return;
+    try {
+      this.native().filesDriveStatusAttach!(live.syncRootId, this.statusClassId);
+    } catch (error) {
+      this.warn(`Showing the drive's status in Explorer failed: ${(error as Error).message}`);
+      return;
+    }
+    this.pushStatus(live);
+  }
+
+  private pushStatus(live: Live): void {
+    const status = nativeStatusOf(this.statuses.get(live.account));
+    if (!status) return;
+    try {
+      this.native().filesDriveStatusSet?.(live.syncRootId, status);
+    } catch (error) {
+      this.warn(`Updating the drive's status failed: ${(error as Error).message}`);
+    }
+  }
+
+  private statusOpened(syncRootId: string): void {
+    for (const live of this.live.values()) {
+      if (live.syncRootId === syncRootId) {
+        this.deps.status?.opened(live.account);
+        return;
+      }
+    }
+  }
+
+  /** No drive left: nobody to answer Explorer for. */
+  private stopStatusWhenIdle(): void {
+    if (this.live.size > 0 || !this.statusServed) return;
+    try {
+      this.deps.native?.filesDriveStatusStop?.();
+    } catch {
+      // Gone anyway.
+    }
+    this.statusServed = null;
   }
 
   /** For the folders feature: where no folder pair may go. */

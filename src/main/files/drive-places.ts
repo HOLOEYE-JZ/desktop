@@ -9,7 +9,8 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, type BigIntStats } from 'node:fs';
 import path from 'node:path';
-import type { FilesError, FilesLocalEntry, FilesPlaceholderState } from '../../shared/bridge';
+import type { FilesDriveStatus, FilesError, FilesLocalEntry, FilesPlaceholderState } from '../../shared/bridge';
+import type { NativeDriveStatus } from '../native-loader';
 
 export const DRIVE_PROVIDER = 'Bulwark';
 export const DRIVE_FOLDER = 'Bulwark Files';
@@ -18,6 +19,46 @@ export const DRIVE_NAME = 'Bulwark Files';
 /** The account part of a sync root's id: never the address, and different per profile. */
 export function accountKey(profile: string, account: string): string {
   return createHash('sha256').update(`${profile}\0${account}`).digest('hex').slice(0, 24);
+}
+
+/**
+ * The CLSID Explorer creates for the drive's status, one per profile: a test build, a dev run
+ * and the installed app each serve their own, and none answers for another's sync roots. Never
+ * written to the registry as a class, only into the sync root's own key.
+ */
+export function statusClassId(profile: string): string {
+  const hex = createHash('sha256').update(`Bulwark Files status\0${profile}`).digest('hex');
+  // Version 5 and the RFC 4122 variant, so it reads as a name-based GUID.
+  const version = `5${hex.slice(13, 16)}`;
+  const variant = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16) + hex.slice(17, 20);
+  return `{${hex.slice(0, 8)}-${hex.slice(8, 12)}-${version}-${variant}-${hex.slice(20, 32)}}`.toUpperCase();
+}
+
+const STATUS_STATES = new Set(['synced', 'syncing', 'paused', 'offline', 'error']);
+const MAX_STATUS_LABEL = 200;
+const MAX_STATUS_TEXT = 500;
+
+function plainText(value: unknown, min: number, max: number): value is string {
+  return typeof value === 'string' && value.length >= min && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
+}
+
+/** The page's status for Explorer, in the helper's shape; null when it isn't one. */
+export function nativeStatusOf(value: unknown): NativeDriveStatus | null {
+  const status = value as FilesDriveStatus | null;
+  if (!status || typeof status !== 'object' || !STATUS_STATES.has(status.state)) return null;
+  if (!plainText(status.label, 1, MAX_STATUS_LABEL) || !plainText(status.detail, 0, MAX_STATUS_TEXT)) return null;
+  const out: NativeDriveStatus = { state: status.state, label: status.label, detail: status.detail };
+  if (status.quota !== null && status.quota !== undefined) {
+    const { used, total, label } = status.quota;
+    if (!Number.isSafeInteger(used) || used < 0 || !plainText(label, 1, MAX_STATUS_LABEL)) return null;
+    if (total !== null && (!Number.isSafeInteger(total) || total <= 0)) return null;
+    out.quota = total === null ? { used, label } : { used, total, label };
+  }
+  if (status.notice !== null && status.notice !== undefined) {
+    if (!plainText(status.notice, 0, MAX_STATUS_TEXT)) return null;
+    if (status.notice) out.notice = status.notice;
+  }
+  return out;
 }
 
 export function syncRootPrefix(provider: string): string {

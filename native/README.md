@@ -30,6 +30,11 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `filesDriveHydrate(path)`: promise. Fetches all of a file through this process's own connection.
 - `filesDriveDehydrate(path)`: drops a file's content from the disk. Refused for a pinned one.
 - `filesUsedDriveLetters()`: the drive letters in use, as GetLogicalDrives' mask.
+- `filesDriveStatusServe(clsid, icon, callback)`: serves the drive's status in Explorer (Windows 11) from this process under `clsid`. False where Windows has no such status. A click on the status line in Explorer calls `callback` with the sync root's id.
+- `filesDriveStatusStop()`: stops serving it.
+- `filesDriveStatusAttach(id, clsid)`: names the status class in a sync root's registration, where Explorer looks for it. Again after each `filesDriveRegister`.
+- `filesDriveStatusSet(id, status)`: what Explorer shows for a sync root: state, short label, a longer line, the storage used and the limit, a notice. Undefined forgets it.
+- `filesDriveStatusRead(id, waitMs)`: promise of the status as Explorer reads it, out of process; with `waitMs`, after the next change. For tests and for checking a machine.
 <!-- /exports -->
 
 macOS Touch ID needs no helper: Electron has `systemPreferences.promptTouchID`.
@@ -43,6 +48,8 @@ Windows only: macOS and Linux have the same exports, which answer `files:unsuppo
 **Callbacks** come on Windows' threads and go to JS through a threadsafe function, without waiting. With nobody listening the fetch fails at once. Main's own reads never fetch (`CF_CONNECT_FLAG_BLOCK_SELF_IMPLICIT_HYDRATION`): only `filesDriveHydrate` does, on libuv's pool, since the JS thread has to answer the callback it causes.
 
 **Errors** are in the message: `files:<code> (0x<hresult>)` with `missing`, `exists`, `busy`, `denied`, `name`, `full`, `changed`, `pinned`, `not-placeholder`, `outside`, `cancelled`, `unsupported`, `timeout`, `failed`, and `files:invalid (<what>)` for an argument main never sends. `src/main/files/drive-places.ts` turns them into the bridge's errors.
+
+**Status in Explorer** (Windows 11 22H2 and later): the storage used of the account's limit and whether the drive is up to date, where OneDrive shows its own. Explorer reads a CLSID from the sync root's `StorageProviderStatusUISourceFactory` value and creates that class out of process. `filesDriveStatusServe` registers its class object with `CoRegisterClassObject` on a thread of its own in the multithreaded apartment; COM finds it without any CLSID in the registry, so nothing is left to clean up but that value, which goes with the sync root. With the app closed nobody answers and Explorer shows no status, which is true then. The words come from the page, in its language. The bar keeps Windows' colour: an `IReference<Color>` for `QuotaUsedColor` can't leave the process (Windows has no proxy for it), so nearly full is a notice line instead. On Windows without the status classes `filesDriveStatusServe` answers false and the rest of the drive works as before.
 
 It links `cldapi.dll` from System32. `scripts/files-drive-cleanup.mjs` removes the test sync roots a crashed test run leaves behind.
 
