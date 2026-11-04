@@ -1,0 +1,3 @@
+# A beta is built from webmail main as it is when the release starts.
+# Changing this file starts a beta for webmail changes alone; the line below says which commit was asked for.
+746701751bd0d23bf70ca4197f1c7ce1a936e783
