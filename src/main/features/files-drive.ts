@@ -23,7 +23,7 @@ import { DriveController, type DrivePolicy, type StoredDrive } from '../files/dr
 import { substLetters } from '../files/drive-letter';
 import { registryLetterLabels } from '../files/drive-letter-label';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
-import { driveNotice, setDriveHooks } from '../files/drive-hooks';
+import { driveNotice, driveSummaryChanged, setDriveHooks } from '../files/drive-hooks';
 import type { Rescued } from '../files/drive-rescue';
 import { filesRegistry } from '../files/registry';
 import { native } from '../native';
@@ -162,6 +162,7 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showM
       }),
     },
     documents: testArgument('documents-dir') ?? app.getPath('documents'),
+    summaryChanged: driveSummaryChanged,
     rescued: rescuedNotice,
     status: {
       icon: statusIcon,
@@ -212,7 +213,9 @@ export const filesDriveFeature: Feature = {
       ctx.state.save();
     }
     const drive = driveController(ctx)!;
-    setDriveHooks({ removeRoot: driveRemoveRoot, parentFolders: driveParentFolders, running: () => drive.running });
+    setDriveHooks({ removeRoot: driveRemoveRoot, parentFolders: driveParentFolders, running: () => drive.running, traySummary: () => drive.traySummary() });
+    // Set after the tray was built: it may have drawn its menu without the drive.
+    driveSummaryChanged();
 
     const isMain = (window: BrowserWindow | null): boolean => !!window && window === ctx.windows.mainWindow();
     const fromMain = (window: BrowserWindow | null): void => {

@@ -7,8 +7,9 @@
  */
 
 import path from 'node:path';
-import { app, Menu, nativeImage, nativeTheme, Tray, type MenuItemConstructorOptions, type NativeImage } from 'electron';
+import { app, Menu, nativeImage, nativeTheme, shell, Tray, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import type { OsSummary } from '../../shared/bridge';
+import { driveHooks, onDriveSummary } from '../files/drive-hooks';
 import { appLockGate } from '../app-lock-gate';
 import { onUiLanguage, strings, uiLanguageNow } from '../strings';
 import { PAUSE_UNTIL_TURNED_ON, pausedText } from './os-rules';
@@ -126,6 +127,19 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
     }];
   };
 
+  /** The Files drive's state lines, greyed, and the way to its folder. Nothing while no drive is on. */
+  const driveItems = (): MenuItemConstructorOptions[] => {
+    if (appLockGate.locked) return [];
+    const summary = driveHooks().traySummary?.();
+    if (!summary?.folder) return [];
+    const folder = summary.folder;
+    return [
+      { type: 'separator' },
+      ...summary.lines.map((text): MenuItemConstructorOptions => ({ label: line(text), enabled: false })),
+      { label: strings().trayOpenFiles, click: () => void shell.openPath(folder) },
+    ];
+  };
+
   const build = (summary: OsSummary): MenuItemConstructorOptions[] => {
     const text = strings();
     const unread: MenuItemConstructorOptions[] = summary.unread.map((message) => ({
@@ -147,6 +161,7 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
       // With more than one account the page names the one the list is for.
       ...(unread.length ? [{ type: 'separator' } as const, { label: summary.account ? line(text.trayUnreadIn(summary.account)) : text.trayUnread, enabled: false }, ...unread] : []),
       ...(event.length ? [{ type: 'separator' } as const, ...event] : []),
+      ...driveItems(),
       { type: 'separator' },
       ...pauseItems(),
       { type: 'separator' },
@@ -173,6 +188,7 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
   if (!mac) tray.on('click', toggleMain);
 
   hub.on('summary', refreshMenu);
+  onDriveSummary(refreshMenu);
   hub.on('status', refreshMenu);
   hub.on('locked', refreshMenu);
   appLockGate.on('enrolled', refreshMenu);

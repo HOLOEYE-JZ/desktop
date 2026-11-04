@@ -56,6 +56,7 @@ import {
   letterTarget,
   nativeStatusOf,
   relativeParts,
+  trayLineOf,
   resolveUnder,
   statusClassId,
   syncRootPrefix,
@@ -139,6 +140,8 @@ export interface DriveDeps {
     /** The status line in Explorer was clicked. */
     opened(account: string): void;
   };
+  /** What the tray shows of the drives changed (one on or off, a new status line). */
+  summaryChanged?: () => void;
   /** How long a fetch waits for the page: drive-fetch.ts has the defaults. */
   fetchFirstAnswerMs?: number;
   fetchIdleMs?: number;
@@ -257,6 +260,23 @@ export class DriveController {
     } catch (error) {
       this.warn(`Telling the page about the drive failed: ${(error as Error).message}`);
     }
+    this.deps.summaryChanged?.();
+  }
+
+  /**
+   * What the tray shows: per connected drive its state line in the page's words (when the page
+   * sent one), and the folder "Open Bulwark Files" opens: the account's, or with several the
+   * folder that holds them.
+   */
+  traySummary(): { lines: string[]; folder: string | null } {
+    const live = [...this.live.values()];
+    const lines = live.flatMap((entry) => {
+      const line = trayLineOf(this.statuses.get(entry.account));
+      if (!line) return [];
+      return [live.length > 1 ? `${entry.root.remoteLabel}: ${line}` : line];
+    });
+    const folder = live.length === 1 ? live[0].dir : live.length > 1 ? this.base() : null;
+    return { lines, folder };
   }
 
   /** One change at a time: two enables of one account mustn't both register. */
@@ -737,7 +757,9 @@ export class DriveController {
     if (!validText(account, MAX_ACCOUNT)) return;
     const shown = nativeStatusOf(status);
     if (!shown) return;
+    const before = trayLineOf(this.statuses.get(account));
     this.statuses.set(account, status as FilesDriveStatus);
+    if (trayLineOf(status) !== before) this.deps.summaryChanged?.();
     // At most as many as there are accounts: a page can't grow this by inventing them.
     if (this.statuses.size > 64) this.statuses.delete(this.statuses.keys().next().value!);
     const live = this.live.get(account);

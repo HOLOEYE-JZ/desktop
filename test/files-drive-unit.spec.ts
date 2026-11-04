@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -402,6 +402,68 @@ test.describe('the icon of a drive from before', () => {
       expect(registered).toEqual([]);
     } finally {
       remove();
+    }
+  });
+});
+
+test.describe('the tray line of the drive (files-p3-5)', () => {
+  test("shows the page's line per drive and the folder to open, and says when it changed", async () => {
+    const base = mkdtempSync(path.join(tmpdir(), 'bw-drive-tray-'));
+    let changes = 0;
+    const native = {
+      filesDriveRoots: async () => [],
+      filesDriveRegister: async (options: { provider: string; account: string }) => `${options.provider}!S-1-5-21-1!${options.account}`,
+      filesDriveConnect: () => 'c1',
+      filesDriveDisconnect: () => {},
+      filesDriveUnregister: async () => {},
+      filesDriveInfo: () => ({ placeholder: false, directory: true, inSync: false, hydrated: true, partial: false, pin: 'unspecified', size: 0, onDisk: 0 }),
+    } as unknown as NativeFilesModule;
+    const store = { value: {} as StoredDrive };
+    const drive = new DriveController({
+      native,
+      supported: true,
+      provider: 'Bulwark Test Unit',
+      base,
+      profile: 'C:\\profile',
+      icon: 'x.ico,0',
+      version: '1',
+      store: { read: () => store.value, write: (next) => (store.value = next) },
+      policy: () => ({ forcedOff: false, letter: null }),
+      page: { fetch: () => true, fetchCancelled: () => {}, stateChanged: () => {} },
+      registry: { add: () => {}, remove: () => {} },
+      letters: null,
+      warn: () => {},
+      watchPins: false,
+      summaryChanged: () => changes++,
+    });
+    try {
+      expect(drive.traySummary()).toEqual({ lines: [], folder: null });
+      const on = await drive.enable('acct-1', 'alice@example.org', () => true);
+      expect(on.ok).toBe(true);
+      expect(changes).toBeGreaterThan(0);
+      const status = { state: 'offline', label: 'Offline', detail: 'Offline. 3 changes wait', quota: null, notice: null, tray: 'Bulwark Files: Offline. Waiting: 3' };
+      const before = changes;
+      drive.setStatus('acct-1', status);
+      expect(changes).toBe(before + 1);
+      // The same line again is no change.
+      drive.setStatus('acct-1', { ...status, detail: 'other' });
+      expect(changes).toBe(before + 1);
+      expect(drive.traySummary()).toEqual({ lines: ['Bulwark Files: Offline. Waiting: 3'], folder: path.join(realpathSync.native(base), 'alice@example.org') });
+      // A line that isn't one line of text is left out.
+      drive.setStatus('acct-1', { ...status, tray: 'two\nlines' });
+      expect(drive.traySummary().lines).toEqual([]);
+      await drive.enable('acct-2', 'bob@example.org', () => true);
+      drive.setStatus('acct-1', status);
+      drive.setStatus('acct-2', { ...status, state: 'synced', tray: 'Bulwark Files: Up to date' });
+      expect(drive.traySummary()).toEqual({
+        lines: ['alice@example.org: Bulwark Files: Offline. Waiting: 3', 'bob@example.org: Bulwark Files: Up to date'],
+        folder: realpathSync.native(base),
+      });
+      await drive.disable('acct-1', 'wipe');
+      await drive.disable('acct-2', 'wipe');
+      expect(drive.traySummary()).toEqual({ lines: [], folder: null });
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 });
