@@ -1,0 +1,13 @@
+# The helper's compiler, so a release isn't built by whatever `stable` means that day. The targets
+# are the ones scripts/build-native.mjs builds. rustup reads this from any folder below here.
+[toolchain]
+channel = "1.98.0"
+profile = "minimal"
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+]

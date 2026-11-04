@@ -22,8 +22,9 @@ function run(command, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-run('node', ['build.mjs', strict ? `--baked-profile=${profile}` : '--test']);
+// The helper first: the build pins what it finds.
 run('node', ['scripts/build-native.mjs', '--optional']);
+run('node', ['build.mjs', strict ? `--baked-profile=${profile}` : '--test']);
 run('npx', ['electron-builder', '--dir', '--publish', 'never', ...(strict ? ['-c.directories.output=release-strict'] : [])]);
 if (strict) {
   mkdirSync('release-strict', { recursive: true });
