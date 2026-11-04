@@ -242,6 +242,7 @@ interface FakePage {
 
 function controllerWith(native: NativeFilesModule, page: FakePage, store: { value: StoredDrive }, options: { forcedOff?: () => boolean; letter?: () => string | null; letters?: boolean; timeoutMs?: number; watchPins?: boolean } = {}) {
   const registry = new Map<string, RegisteredRoot>();
+  const forgotten: string[] = [];
   let drive: DriveController;
   drive = new DriveController({
     native,
@@ -272,13 +273,16 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
       stateChanged: (state) => page.states.push(state),
     },
     registry: { add: (entry) => registry.set(entry.root.id, entry), remove: (rootId) => registry.delete(rootId) },
+    forgetState: async (rootId) => {
+      forgotten.push(rootId);
+    },
     letters: options.letters ? substLetters(() => native.filesUsedDriveLetters()) : null,
     warn: () => {},
     fetchFirstAnswerMs: options.timeoutMs,
     fetchIdleMs: options.timeoutMs,
     watchPins: options.watchPins,
   });
-  return { drive, registry };
+  return { drive, registry, forgotten };
 }
 
 const newPage = (): FakePage => ({ requests: [], cancelled: [], states: [], serve: new Map(), answering: true });
@@ -300,7 +304,7 @@ test.describe('the drive controller', () => {
   test('turning it on takes a click the first time; a sign-out keeps the wish and a sign-in brings it back without one', async () => {
     const page = newPage();
     const store = { value: {} as StoredDrive };
-    const { drive, registry } = controllerWith(native, page, store);
+    const { drive, registry, forgotten } = controllerWith(native, page, store);
     try {
       expect(await drive.enable('acct-1', 'alice@example.org', no)).toEqual({ ok: false, error: 'gesture' });
       expect(await ourRoots(native)).toEqual([]);
@@ -318,6 +322,8 @@ test.describe('the drive controller', () => {
       expect(existsSync(root.path)).toBe(false);
       expect(await ourRoots(native)).toEqual([]);
       expect(registry.size).toBe(0);
+      // The folder went, so the page's record of it goes too: an empty folder isn't everything deleted.
+      expect(forgotten).toEqual([root.id]);
       expect(drive.state().wanted).toEqual(['acct-1']);
 
       const back = await drive.enable('acct-1', 'alice@example.org', no);

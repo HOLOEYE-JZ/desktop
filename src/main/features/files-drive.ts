@@ -19,9 +19,11 @@ import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
 import { substLetters } from '../files/drive-letter';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
+import { setDriveHooks } from '../files/drive-hooks';
 import { filesRegistry } from '../files/registry';
 import { native } from '../native';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
+import { forgetRootState } from './files-folders';
 import { addWipeStep } from './local-wipe';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
@@ -93,6 +95,7 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
       stateChanged: (next: FilesDriveState) => mainContents()?.send(CHANNEL.filesDriveStateChanged, next),
     },
     registry: filesRegistry,
+    forgetState: forgetRootState,
     letters: helper && testArgument('letters') !== 'off' ? substLetters(() => helper.filesUsedDriveLetters()) : null,
     ...(testArgument('fetch-timeout') ? { fetchFirstAnswerMs: Number(testArgument('fetch-timeout')), fetchIdleMs: Number(testArgument('fetch-timeout')) } : {}),
   });
@@ -130,6 +133,7 @@ export const filesDriveFeature: Feature = {
       ctx.state.save();
     }
     const drive = driveController(ctx)!;
+    setDriveHooks({ removeRoot: driveRemoveRoot, parentFolders: driveParentFolders });
 
     const isMain = (window: BrowserWindow | null): boolean => !!window && window === ctx.windows.mainWindow();
     const fromMain = (window: BrowserWindow | null): void => {

@@ -99,6 +99,8 @@ export interface DriveDeps {
     stateChanged(state: FilesDriveState): void;
   };
   registry: { add(entry: RegisteredRoot): void; remove(id: string): void };
+  /** The page's record of a root whose folder went: a new folder must not look like everything was deleted. */
+  forgetState?: (rootId: string) => Promise<void>;
   letters: LetterSystem | null;
   now?: () => number;
   warn?: (message: string) => void;
@@ -354,6 +356,8 @@ export class DriveController {
     }
     // While still registered: Windows lets a placeholder go then without asking anyone.
     if (removeFolder && dir) this.removeFolder(dir);
+    const rootId = live?.root.id ?? stored?.rootId;
+    if (removeFolder && rootId) await this.deps.forgetState?.(rootId).catch(() => {});
     for (const root of await this.ourRoots()) {
       if (root.id.endsWith(`!${key}`)) await this.unregister(root);
     }
