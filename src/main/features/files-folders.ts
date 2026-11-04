@@ -19,6 +19,7 @@
 
 import { rmSync } from 'node:fs';
 import { lstat, realpath, statfs } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { app, dialog, shell, type BrowserWindow, type WebContents } from 'electron';
 import { CHANNEL, type FilesChangeEvent, type FilesLocalEntry, type FilesResult, type FilesRoot } from '../../shared/bridge';
@@ -214,10 +215,10 @@ export const filesFoldersFeature: Feature = {
       return appLockGate.locked ? null : filesRegistry.get(id);
     };
 
-    const pickFolder = async (window: BrowserWindow, remoteLabel: string): Promise<string | null> => {
+    const pickFolder = async (window: BrowserWindow, remoteLabel: string | null): Promise<string | null> => {
       const text = strings();
       const answer = await dialog.showOpenDialog(window, {
-        title: fill(text.filesPickFolderTitle, { folder: remoteLabel || '/' }),
+        title: remoteLabel === null ? text.filesChooseFolderTitle : fill(text.filesPickFolderTitle, { folder: remoteLabel || '/' }),
         buttonLabel: text.filesPickFolderButton,
         properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
       });
@@ -267,16 +268,52 @@ export const filesFoldersFeature: Feature = {
     };
 
     let picking = false;
+    /** Folders picked with chooseFolder, waiting for their Files folder. Good for ten minutes, once. */
+    const chosen = new Map<string, { path: string; at: number }>();
+    const CHOSEN_MS = 10 * 60_000;
+
+    ctx.handle(CHANNEL.filesChooseFolder, async (event, window, clicked) => {
+      fromMain(window);
+      await loaded;
+      if (!folderSyncAllowed()) return fail('policy');
+      if (appLockGate.locked) return fail('inactive');
+      const gesture = takeUserGesture(event.sender);
+      if (clicked !== true || !gesture) return fail('gesture');
+      if (picking) return fail('busy');
+      picking = true;
+      try {
+        const picked = await pickFolder(window!, null);
+        if (!picked) return fail('cancelled');
+        const now = Date.now();
+        for (const [token, entry] of chosen) if (now - entry.at > CHOSEN_MS) chosen.delete(token);
+        // One waiting at a time: a new pick replaces the last.
+        chosen.clear();
+        const token = randomUUID();
+        chosen.set(token, { path: picked, at: now });
+        return ok({ token, name: path.basename(picked) || picked });
+      } finally {
+        picking = false;
+      }
+    });
+
     ctx.handle(CHANNEL.filesAddFolder, async (event, window, request, clicked) => {
       fromMain(window);
       await loaded;
-      const { account, remoteId, remoteLabel } = (request ?? {}) as { account?: unknown; remoteId?: unknown; remoteLabel?: unknown };
+      const { account, remoteId, remoteLabel, chosen: token } = (request ?? {}) as { account?: unknown; remoteId?: unknown; remoteLabel?: unknown; chosen?: unknown };
       const valid = typeof account === 'string' && account.length > 0 && account.length <= MAX_ACCOUNT
         && (remoteId === null || (typeof remoteId === 'string' && remoteId.length > 0 && remoteId.length <= MAX_ACCOUNT))
-        && typeof remoteLabel === 'string' && remoteLabel.length <= MAX_LABEL;
+        && typeof remoteLabel === 'string' && remoteLabel.length <= MAX_LABEL
+        && (token === undefined || typeof token === 'string');
       if (!valid) return fail('failed');
       if (!folderSyncAllowed()) return fail('policy');
       if (appLockGate.locked) return fail('inactive');
+      if (typeof token === 'string') {
+        // Picked already, with its own click: this is its Files side.
+        const entry = chosen.get(token);
+        chosen.delete(token);
+        if (!entry || Date.now() - entry.at > CHOSEN_MS) return fail('gesture');
+        return addPicked(entry.path, { account, remoteId, remoteLabel });
+      }
       // Spent whatever comes next: one click is one picker.
       const gesture = takeUserGesture(event.sender);
       if (clicked !== true || !gesture) return fail('gesture');

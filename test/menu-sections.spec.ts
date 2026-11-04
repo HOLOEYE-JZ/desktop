@@ -1,5 +1,5 @@
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
+import { fakeOsIntegration, launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
 import { clickMenuItem, menuItem } from './native-helpers';
 
 /**
@@ -21,6 +21,18 @@ interface ReadBack {
   importLines: { id: string; label: string; enabled: boolean }[];
   views: { id: string; label: string; type: string; checked: boolean; accelerator: string | null; registered: boolean }[];
   readingPane: boolean | null;
+}
+
+/** File menu lines that only some parts of the app have: shown and enabled, or null when absent. */
+function fileLines(app: ElectronApplication): Promise<Record<string, { visible: boolean; enabled: boolean } | null>> {
+  return app.evaluate(({ Menu }) => {
+    const menu = Menu.getApplicationMenu()!;
+    const line = (id: string) => {
+      const item = menu.getMenuItemById(id);
+      return item ? { visible: item.visible, enabled: item.enabled } : null;
+    };
+    return { newFolder: line('file.newFolder'), uploadFiles: line('file.uploadFiles'), print: line('file.print'), savePdf: line('file.savePdf') };
+  });
 }
 
 function readBack(app: ElectronApplication): Promise<ReadBack> {
@@ -55,6 +67,8 @@ test.describe('the menus follow the part of the app on screen', () => {
     requireAccount();
     profile = tempProfile('menu-sections');
     ({ app, page } = await launchStandalone(profile));
+    // Links never reach the user's browser.
+    await fakeOsIntegration(app);
     await signIn(page, SERVER);
   });
 
@@ -88,6 +102,9 @@ test.describe('the menus follow the part of the app on screen', () => {
     ]);
     expect(mail.views).toEqual([]);
     expect(mail.readingPane).toBe(true);
+    const lines = await fileLines(app);
+    expect(lines.newFolder).toBeNull();
+    expect(lines.print).toEqual({ visible: true, enabled: true });
   });
 
   test('Calendar: no Message menu, Search events, and Day, Week, Month and Agenda ticked by the view', async () => {
@@ -128,12 +145,23 @@ test.describe('the menus follow the part of the app on screen', () => {
     expect(new URL(page.url()).pathname).toMatch(/^\/contacts/);
   });
 
-  test('Files: no Message menu, and Search files goes to the files search', async () => {
+  test('Files: no Message menu, New folder and Upload files in File, nothing to print, and Search files goes to the files search', async () => {
     await goTo('go.files', '/files');
     await expect.poll(async () => (await readBack(app)).search, { timeout: 30_000 }).toEqual({ label: 'Search files', enabled: true });
     const files = await readBack(app);
     seen.files = files;
     expect(files.top).not.toContain('Message');
+    // File has Files' own lines, and nothing to print (pim-p3-18).
+    await expect.poll(() => fileLines(app), { timeout: 30_000 }).toEqual({
+      newFolder: { visible: true, enabled: true },
+      uploadFiles: { visible: true, enabled: true },
+      print: { visible: false, enabled: false },
+      savePdf: { visible: false, enabled: false },
+    });
+    await clickMenuItem(app, 'file.newFolder');
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
     await clickMenuItem(app, 'edit.search');
     await expect.poll(activeField).toMatch(/^Search/);
     expect(new URL(page.url()).pathname).toMatch(/^\/files/);

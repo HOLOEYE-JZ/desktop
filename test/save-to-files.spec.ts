@@ -7,9 +7,11 @@ import { clickMenuItem } from './native-helpers';
 
 /**
  * A document opened from Files in its own program goes back into Files when the program
- * saves: "Save to Files" puts the new bytes into the same node (same id), and when the node
- * changed on the server meanwhile it offers Keep both. Real server, webmail build of the
- * matching branch, `shell.openPath` only records; the test saves the file itself.
+ * saves: "Save to Files" puts the new bytes into the same node (same id). After that first
+ * choice each later save goes back by itself, with a toast and no card, and when the node
+ * changed on the server meanwhile the card comes back with Keep both. Real server, webmail
+ * build of the matching branch, `shell.openPath` only records; the test is the program and
+ * saves the file itself.
  *
  *   BULWARK_TEST_WEBMAIL=<dir> BULWARK_TEST_ACCOUNT=<account> IT_ENT_PASSWORD=<its password> npx playwright test test/save-to-files.spec.ts
  */
@@ -112,7 +114,7 @@ for (const server of STALWARTS) {
       removeProfile(profile);
     });
 
-    test('Save to Files updates the same file, and a change on the server meanwhile offers Keep both', async () => {
+    test('Save to Files updates the same file, later saves go there by themselves, and a change on the server meanwhile offers Keep both', async () => {
       const f = await files(server.url);
       const blobId = await f.upload(EMPTY_ZIP);
       const [[, created]] = await f.api([['FileNode/set', { accountId: f.accountId, create: { n: { parentId: null, name, blobId, type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' } } }, 'c']]);
@@ -137,27 +139,45 @@ for (const server of STALWARTS) {
       writeFileSync(file, first);
       const offer = pageOf(app).locator('[data-testid="edited-file"]');
       await expect(offer).toBeVisible({ timeout: 30_000 });
-      // The first of the card's actions (the X beside the name only discards).
+      // The card's actions; the X beside the name only hides it until the next save (pim-p3-6).
       const actions = async () => (await offer.locator('button').allInnerTexts()).map((text) => text.trim()).filter(Boolean);
-      await expect.poll(actions, { timeout: 30_000 }).toEqual(['Save to Files', 'Attach to a new message', 'Save a copy…']);
-      await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p2-fix-1-save-offer-${server.label}.png`) });
+      await expect.poll(actions, { timeout: 30_000 }).toEqual(['Save to Files', 'Attach to a new message', 'Save a copy…', 'Discard edits…']);
+      // In the toast corner, not over the middle of the file list.
+      const box = (await pageOf(app).locator('[data-testid="edited-files"]').boundingBox())!;
+      const width = await pageOf(app).evaluate(() => window.innerWidth);
+      expect(box.x + box.width).toBeGreaterThan(width - 40);
+      await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p3-fix-6-save-offer-${server.label}.png`) });
       await offer.getByRole('button', { name: 'Save to Files' }).click();
-      await expect(page.getByRole('region', { name: 'Notifications' }).getByText(`${name} saved to Files.`)).toBeVisible({ timeout: 30_000 });
+      // The user goes back to the program: the pointer leaves the corner, where it would hold the toasts still.
+      await page.mouse.move(5, 5);
+      const toasts = page.getByRole('region', { name: 'Notifications' });
+      await expect(toasts.getByText(`${name} saved to Files. Later saves from its program go there on their own.`)).toBeVisible({ timeout: 30_000 });
       // By size: Stalwart 1.0 stores an upload under a blob id of its own.
       await expect.poll(async () => (await f.all()).find((n) => n.id === nodeId)?.size ?? null, { timeout: 30_000 }).toBe(first.length);
       expect((await f.all()).filter((n) => n.name.startsWith(prefix))).toHaveLength(1);
       await expect(offer).toHaveCount(0, { timeout: 30_000 });
 
-      // Someone changes it in Files, then the program saves again: Keep both.
+      // The program saves again: into the same file, by itself, with no card and no false
+      // conflict (pim-p3-1), and once more.
+      for (const text of ['second edit ', 'third edit, a bit longer ']) {
+        const bytes = zipWith(text);
+        writeFileSync(file, bytes);
+        await expect.poll(async () => (await f.all()).find((n) => n.id === nodeId)?.size ?? null, { timeout: 30_000 }).toBe(bytes.length);
+        await expect(toasts.getByText(`${name} saved to Files.`, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+        await expect(offer).toHaveCount(0);
+        expect((await f.all()).filter((n) => n.name.startsWith(prefix))).toHaveLength(1);
+      }
+      await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p3-fix-1-second-save-${server.label}.png`) });
+
+      // Someone changes it in Files, then the program saves again: the card comes back with Keep both.
       const theirs = zipWith('changed on the server ');
       const theirBlob = await f.upload(theirs);
       await f.api([['FileNode/set', { accountId: f.accountId, update: { [nodeId!]: { blobId: theirBlob } } }, 'u']]);
-      const second = zipWith('second edit, longer than the first ');
+      const second = zipWith('fourth edit, longer than the others ');
       writeFileSync(file, second);
       await expect(offer).toBeVisible({ timeout: 30_000 });
-      await offer.getByRole('button', { name: 'Save to Files' }).click();
       await expect(offer.locator('[data-testid="edited-file-conflict"]')).toBeVisible({ timeout: 30_000 });
-      await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p2-fix-1-conflict-${server.label}.png`) });
+      await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p3-fix-1-conflict-${server.label}.png`) });
       await offer.getByRole('button', { name: 'Keep both' }).click();
       await expect.poll(async () => (await f.all()).filter((n) => n.name.startsWith(prefix)).length, { timeout: 30_000 }).toBe(2);
       const after = (await f.all()).filter((n) => n.name.startsWith(prefix));

@@ -7,10 +7,14 @@
  * - Turned on (`enable`): needs a real click the first time. After that the wish is kept, and
  *   the page turns it on again after each sign-in without one. Never before a sign-in: at a
  *   start nothing registers or connects until the page asks.
- * - Turned off (`disable`): the sync root goes, with its folder and everything in it, whatever
- *   the reason. Only `signed-out` keeps the wish, so the next sign-in brings it back.
- * - `FilesDriveEnabled` off: every sync root goes, and none comes back while it's off. The
- *   wishes stay, for when it's on again.
+ * - Turned off (`disable`): the sync root goes, with its folder. What was written here and isn't
+ *   in Files yet is copied to `Documents\Bulwark – not uploaded\<date>` first (drive-rescue.ts);
+ *   only a wipe deletes without that. `signed-out` keeps the wish and the pins, so the next
+ *   sign-in brings both back. `suspended` (a sign-out nobody chose: the session ran out, the
+ *   login was refused) only disconnects: the folder, its edits and its pins stay, and the next
+ *   sign-in connects it again.
+ * - `FilesDriveEnabled` off: the page gets a moment to upload what waits, then every sync root
+ *   goes (rescued as above), and none comes back while it's off. The wishes stay.
  * - A wipe: every sync root of this provider, their folders, the letter and the wishes.
  * - "Always keep on this device" and "Free up space": the shell sets the pin attribute. A
  *   watcher sees it change, and this fetches the file or drops its content.
@@ -37,6 +41,7 @@ import type {
 } from '../../shared/bridge';
 import { filesErrorCode, type NativeFilesModule, type NativeSyncRoot } from '../native-loader';
 import { FetchRelay, type FetchFailure } from './drive-fetch';
+import { pinnedPaths, rescueFiles, setPinAttribute, unsyncedFiles, type PlaceholderInfo, type Rescued } from './drive-rescue';
 import { settleLetter, type LetterSystem } from './drive-letter';
 import { claimLetterLabel, releaseLetterLabel, type LetterLabelSystem } from './drive-letter-label';
 import {
@@ -51,6 +56,7 @@ import {
   letterTarget,
   nativeStatusOf,
   relativeParts,
+  trayLineOf,
   resolveUnder,
   statusClassId,
   syncRootPrefix,
@@ -58,7 +64,13 @@ import {
 } from './drive-places';
 import type { RegisteredRoot } from './registry';
 
-export type DisableReason = 'user' | 'signed-out' | 'wipe' | 'refused';
+export type DisableReason = 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused';
+const REASONS: readonly string[] = ['user', 'signed-out', 'suspended', 'wipe', 'refused'];
+
+/** What `disable` did with what wasn't uploaded. */
+export interface DisableResult {
+  rescued: Rescued | null;
+}
 
 export interface StoredDriveAccount {
   label: string;
@@ -68,6 +80,10 @@ export interface StoredDriveAccount {
   createdAt: number;
   /** Signed out: no sync root now, and the next sign-in brings it back. */
   signedOut?: boolean;
+  /** Signed out without asking for it: registered, folder kept, not connected until the next sign-in. */
+  suspended?: boolean;
+  /** "Always keep on this device" from before a sign-out, put back as the page places these paths. */
+  pins?: string[];
 }
 
 export interface StoredDrive {
@@ -101,6 +117,8 @@ export interface DriveDeps {
     fetch(request: FilesFetchRequest): FetchFailure | true;
     fetchCancelled(fetchId: string): void;
     stateChanged(state: FilesDriveState): void;
+    /** Upload what waits in these accounts' drives, before the policy removes them. Resolves when done or given up. */
+    flush?(accounts: string[]): Promise<void>;
   };
   registry: { add(entry: RegisteredRoot): void; remove(id: string): void };
   /** The page's record of a root whose folder went: a new folder must not look like everything was deleted. */
@@ -122,9 +140,17 @@ export interface DriveDeps {
     /** The status line in Explorer was clicked. */
     opened(account: string): void;
   };
+  /** What the tray shows of the drives changed (one on or off, a new status line). */
+  summaryChanged?: () => void;
   /** How long a fetch waits for the page: drive-fetch.ts has the defaults. */
   fetchFirstAnswerMs?: number;
   fetchIdleMs?: number;
+  /** Where files that weren't uploaded go (`Documents`). Absent: nowhere, and nothing is copied. */
+  documents?: string;
+  /** Files were copied there. `reason`: why the folder went (`policy` for FilesDriveEnabled). */
+  rescued?: (rescued: Rescued, reason: DisableReason | 'policy' | 'start') => void;
+  /** The pin attribute, as the shell sets it. Tests give a fake. */
+  setPin?: (absolute: string, pin: 'pinned' | 'unpinned' | 'unspecified') => Promise<boolean>;
 }
 
 interface Live {
@@ -134,6 +160,8 @@ interface Live {
   syncRootId: string;
   connection: string;
   watcher: FSWatcher | null;
+  /** Pins from before a sign-out still to put back, by path in the root. */
+  pins: Set<string>;
 }
 
 const MAX_ACCOUNT = 200;
@@ -194,6 +222,11 @@ export class DriveController {
     return this.deps.supported && this.deps.native !== null;
   }
 
+  /** Some account's drive is connected now. */
+  get running(): boolean {
+    return this.live.size > 0;
+  }
+
   // ─── State ───────────────────────────────────────────────────
 
   state(): FilesDriveState {
@@ -227,6 +260,25 @@ export class DriveController {
     } catch (error) {
       this.warn(`Telling the page about the drive failed: ${(error as Error).message}`);
     }
+    this.deps.summaryChanged?.();
+  }
+
+  /**
+   * What the tray shows: per connected drive its state line in the page's words (when the page
+   * sent one), and the folder "Open Bulwark Files" opens: the account's, or with several the
+   * folder that holds them.
+   */
+  traySummary(): { lines: string[]; folder: string | null; paused: boolean } {
+    const live = [...this.live.values()];
+    // Every drive the page says is paused: the tray offers to resume.
+    const paused = live.length > 0 && live.every((entry) => this.statuses.get(entry.account)?.state === 'paused');
+    const lines = live.flatMap((entry) => {
+      const line = trayLineOf(this.statuses.get(entry.account));
+      if (!line) return [];
+      return [live.length > 1 ? `${entry.root.remoteLabel}: ${line}` : line];
+    });
+    const folder = live.length === 1 ? live[0].dir : live.length > 1 ? this.base() : null;
+    return { lines, folder, paused };
   }
 
   /** One change at a time: two enables of one account mustn't both register. */
@@ -323,7 +375,7 @@ export class DriveController {
       paused: false,
       createdAt: stored?.createdAt ?? this.now(),
     };
-    const live: Live = { account, root, dir: real, syncRootId, connection, watcher: null };
+    const live: Live = { account, root, dir: real, syncRootId, connection, watcher: null, pins: new Set(stored?.pins ?? []) };
     this.live.set(account, live);
     this.deps.registry.add({
       root,
@@ -332,35 +384,153 @@ export class DriveController {
       contentAbsent: (absolute) => this.contentAbsent(absolute),
     });
     this.writeAccounts((accounts) => {
-      accounts[account] = { label, folder, rootId: root.id, createdAt: root.createdAt };
+      // Pins wait until the page has placed their paths again.
+      accounts[account] = { label, folder, rootId: root.id, createdAt: root.createdAt, ...(live.pins.size > 0 ? { pins: [...live.pins] } : {}) };
     });
     if (this.deps.watchPins !== false) live.watcher = this.watchPins(live);
     return ok(root);
   }
 
-  disable(account: unknown, reason: unknown): Promise<void> {
+  disable(account: unknown, reason: unknown): Promise<DisableResult> {
     return this.serial(async () => {
-      if (typeof account !== 'string' || !['user', 'signed-out', 'wipe', 'refused'].includes(reason as string)) return;
-      await this.stop(account, true);
+      if (typeof account !== 'string' || !REASONS.includes(reason as string)) return { rescued: null };
+      const why = reason as DisableReason;
+      if (why === 'suspended') {
+        this.suspend(account);
+        this.writeAccounts((accounts) => {
+          const entry = accounts[account];
+          if (entry) accounts[account] = { ...entry, suspended: true };
+        });
+        await this.applyLetter();
+        this.emit();
+        return { rescued: null };
+      }
+      // A wipe and a refusal delete: that's what they are for. Everything else keeps what wasn't uploaded.
+      const keep = why === 'user' || why === 'signed-out';
+      const pins = why === 'signed-out' ? this.pinsOf(account) : [];
+      const rescued = await this.stop(account, true, keep ? why : null);
       this.writeAccounts((accounts) => {
         const entry = accounts[account];
         if (!entry) return;
-        if (reason === 'signed-out') accounts[account] = { ...entry, signedOut: true };
-        else delete accounts[account];
+        if (why === 'signed-out') {
+          const { suspended: _suspended, ...rest } = entry;
+          accounts[account] = { ...rest, signedOut: true, ...(pins.length > 0 ? { pins } : {}) };
+        } else delete accounts[account];
       });
       await this.relabel();
       await this.applyLetter();
       this.emit();
+      return { rescued };
     });
   }
 
-  /** Disconnects, deletes the folder and unregisters. The wish is the caller's. */
-  private async stop(account: string, removeFolder: boolean): Promise<void> {
+  private placeholderInfo(): PlaceholderInfo {
+    return (absolute) => {
+      try {
+        return this.native().filesDriveInfo(absolute);
+      } catch {
+        return null;
+      }
+    };
+  }
+
+  /** The folder an account's drive is in now, connected or not. */
+  private folderOf(account: string): string | null {
+    const live = this.live.get(account);
+    if (live) return live.dir;
+    const stored = this.deps.store.read().accounts?.[account];
+    return stored ? path.win32.join(this.base(), stored.folder) : null;
+  }
+
+  /** What the user pinned, to put back after the next sign-in; with pins not placed again yet. */
+  private pinsOf(account: string): string[] {
+    const dir = this.folderOf(account);
+    const now = dir ? pinnedPaths(dir, this.placeholderInfo()) : [];
+    const waiting = this.live.get(account)?.pins ?? new Set(this.deps.store.read().accounts?.[account]?.pins ?? []);
+    return [...new Set([...now, ...waiting])].slice(0, 5000);
+  }
+
+  /**
+   * Files written here that aren't in Files, copied out of a folder that's about to go. Only a
+   * process connected to the sync root sees placeholders as such (to any other, Windows shows
+   * plain files), so a folder without a live drive is connected for this, with nobody to fetch.
+   * Can't connect: `failed`, and the caller keeps the folder.
+   */
+  private async rescue(dir: string, reason: DisableReason | 'policy' | 'start'): Promise<Rescued | null> {
+    if (!this.deps.documents || !this.deps.native) return null;
+    const live = [...this.live.values()].some((entry) => entry.dir.toLowerCase() === dir.toLowerCase());
+    let connection: string | null = null;
+    if (!live) {
+      const native = this.native();
+      try {
+        connection = native.filesDriveConnect(dir, (event) => {
+          if (event.kind === 'fetch') native.filesDriveTransferFailed(event.connection, event.transferKey, event.requestKey, event.offset, event.length, 'not-running');
+        });
+      } catch (error) {
+        this.warn(`Reading what wasn't uploaded failed: ${(error as Error).message}`);
+        return { folder: '', count: 0, failed: 1 };
+      }
+    }
+    let rescued: Rescued | null = null;
+    try {
+      rescued = await rescueFiles(dir, unsyncedFiles(dir, this.placeholderInfo()), this.deps.documents, new Date(this.now()));
+    } catch (error) {
+      this.warn(`Keeping the files that weren't uploaded failed: ${(error as Error).message}`);
+      return { folder: '', count: 0, failed: 1 };
+    } finally {
+      if (connection) {
+        try {
+          this.native().filesDriveDisconnect(connection);
+        } catch {
+          // Going anyway.
+        }
+      }
+    }
+    if (rescued && rescued.count > 0) {
+      try {
+        this.deps.rescued?.(rescued, reason);
+      } catch {
+        // Telling about it is extra.
+      }
+    }
+    return rescued;
+  }
+
+  /** A sign-out nobody chose: disconnected, still registered, the folder and its edits stay. */
+  private suspend(account: string): void {
+    const live = this.live.get(account);
+    if (!live) return;
+    this.live.delete(account);
+    live.watcher?.close();
+    this.relay.dropRoot(live.root.id);
+    this.deps.registry.remove(live.root.id);
+    this.statuses.delete(account);
+    try {
+      this.native().filesDriveStatusSet?.(live.syncRootId, undefined);
+    } catch {
+      // Not served: nothing to forget.
+    }
+    try {
+      this.native().filesDriveDisconnect(live.connection);
+    } catch (error) {
+      this.warn(`Disconnecting the drive failed: ${(error as Error).message}`);
+    }
+    this.stopStatusWhenIdle();
+  }
+
+  /**
+   * Disconnects, deletes the folder and unregisters. The wish is the caller's. `keep`: copy what
+   * wasn't uploaded out first, and keep the folder if any of it couldn't be copied.
+   */
+  private async stop(account: string, removeFolder: boolean, keep: DisableReason | 'policy' | null = null): Promise<Rescued | null> {
     const live = this.live.get(account);
     const stored = this.deps.store.read().accounts?.[account];
     const key = accountKey(this.deps.profile, account);
     let dir: string | null = null;
+    let rescued: Rescued | null = null;
     if (live) {
+      // Read while connected: only then are placeholders told apart from files made here.
+      if (removeFolder && keep) rescued = await this.rescue(live.dir, keep);
       this.live.delete(account);
       live.watcher?.close();
       this.relay.dropRoot(live.root.id);
@@ -378,7 +548,10 @@ export class DriveController {
       dir = live.dir;
     } else if (stored) {
       dir = path.win32.join(this.base(), stored.folder);
+      if (removeFolder && keep && lstatOrNull(dir)) rescued = await this.rescue(dir, keep);
     }
+    // Something couldn't be copied: the folder stays, with it.
+    if (rescued && rescued.failed > 0) removeFolder = false;
     // While still registered: Windows lets a placeholder go then without asking anyone.
     if (removeFolder && dir) this.removeFolder(dir);
     const rootId = live?.root.id ?? stored?.rootId;
@@ -390,6 +563,7 @@ export class DriveController {
     }
     if (removeFolder && dir) this.removeFolder(dir);
     this.stopStatusWhenIdle();
+    return rescued;
   }
 
   /** The base folder as the disk names it: the roots' paths are resolved, so this must be too. */
@@ -507,6 +681,8 @@ export class DriveController {
   policyChanged(): Promise<void> {
     return this.serial(async () => {
       if (!this.available) return;
+      // Turned off: the page uploads what waits first, as far as it can in a short while.
+      if (this.deps.policy().forcedOff && this.live.size > 0) await this.deps.page.flush?.([...this.live.keys()]).catch(() => {});
       await this.settleWithPolicy();
       await this.applyLetter();
       this.emit();
@@ -518,18 +694,26 @@ export class DriveController {
     const accounts = this.deps.store.read().accounts ?? {};
     const wanted = new Set(Object.entries(accounts).filter(([, entry]) => !forcedOff && !entry.signedOut).map(([account]) => accountKey(this.deps.profile, account)));
     if (forcedOff) {
-      for (const account of [...this.live.keys()]) await this.stop(account, true);
-      for (const entry of Object.values(accounts)) this.removeFolder(path.win32.join(this.base(), entry.folder));
+      for (const account of [...this.live.keys()]) await this.stop(account, true, 'policy');
+      for (const entry of Object.values(accounts)) await this.rescueAndRemove(path.win32.join(this.base(), entry.folder), 'policy');
     }
     for (const root of await this.ourRoots()) {
       const key = root.id.split('!').at(-1) ?? '';
       if (wanted.has(key)) continue;
       // Ours by id, but only a folder inside the drive's own is ever deleted.
-      if (root.path) this.removeFolder(root.path);
+      if (root.path) await this.rescueAndRemove(root.path, 'start');
       await this.unregister(root);
     }
     // Signed out: its folder went at the sign-out. One left behind by a crash goes now.
-    for (const entry of Object.values(accounts)) if (entry.signedOut) this.removeFolder(path.win32.join(this.base(), entry.folder));
+    for (const entry of Object.values(accounts)) if (entry.signedOut) await this.rescueAndRemove(path.win32.join(this.base(), entry.folder), 'start');
+  }
+
+  /** A folder that goes without a live drive: what wasn't uploaded is copied out first. */
+  private async rescueAndRemove(dir: string, reason: 'policy' | 'start'): Promise<void> {
+    if (!lstatOrNull(dir)) return;
+    const rescued = await this.rescue(dir, reason);
+    if (rescued && rescued.failed > 0) return;
+    this.removeFolder(dir);
   }
 
   /** The wipe: every sync root of ours, their folders, the letter and every wish. */
@@ -575,7 +759,9 @@ export class DriveController {
     if (!validText(account, MAX_ACCOUNT)) return;
     const shown = nativeStatusOf(status);
     if (!shown) return;
+    const old = this.statuses.get(account);
     this.statuses.set(account, status as FilesDriveStatus);
+    if (trayLineOf(status) !== trayLineOf(old) || old?.state !== (status as FilesDriveStatus).state) this.deps.summaryChanged?.();
     // At most as many as there are accounts: a page can't grow this by inventing them.
     if (this.statuses.size > 64) this.statuses.delete(this.statuses.keys().next().value!);
     const live = this.live.get(account);
@@ -648,8 +834,8 @@ export class DriveController {
   }
 
   /** `removeRoot` on a drive root. */
-  removeRoot(root: FilesRoot): Promise<void> {
-    return this.disable(root.account, 'user');
+  async removeRoot(root: FilesRoot): Promise<void> {
+    await this.disable(root.account, 'user');
   }
 
   // ─── The letter ──────────────────────────────────────────────
@@ -794,7 +980,28 @@ export class DriveController {
         });
       }
     }
+    if (live.pins.size > 0) this.restorePins(live, entries as FilesPlaceholder[], answers);
     return ok(answers);
+  }
+
+  /** Pins from before the sign-out, on paths placed again just now. The watcher fetches the content. */
+  private restorePins(live: Live, entries: FilesPlaceholder[], answers: { path: string; error?: FilesError }[]): void {
+    const setPin = this.deps.setPin ?? setPinAttribute;
+    entries.forEach((entry, index) => {
+      if (answers[index].error || !live.pins.has(entry.path)) return;
+      live.pins.delete(entry.path);
+      const resolved = resolveUnder(live.dir, entry.path);
+      if (!resolved.ok) return;
+      void setPin(resolved.absolute, 'pinned').then(() => {
+        if (this.live.get(live.account) === live) this.checkPin(resolved.absolute, null);
+      });
+    });
+    this.writeAccounts((accounts) => {
+      const entry = accounts[live.account];
+      if (!entry) return;
+      const { pins: _pins, ...rest } = entry;
+      accounts[live.account] = live.pins.size > 0 ? { ...rest, pins: [...live.pins] } : rest;
+    });
   }
 
   private resolveFile(live: Live, relative: unknown): { absolute: string; relative: string; stats: BigIntStats } | FilesError {
@@ -936,7 +1143,8 @@ export class DriveController {
     } catch {
       return;
     }
-    const pin = info.pin === 'unspecified' ? inherited : info.pin;
+    // A file that just came, in a pinned folder: the folder's pin is its.
+    const pin = info.pin === 'unspecified' ? inherited ?? this.ancestorPin(absolute) : info.pin;
     if (info.directory) {
       if (!pin) return;
       let names: string[] = [];
@@ -960,6 +1168,21 @@ export class DriveController {
     }
   }
 
+  /** The nearest pin set on a folder above, inside the drive. */
+  private ancestorPin(absolute: string): 'pinned' | 'unpinned' | null {
+    const live = [...this.live.values()].find((entry) => inside(entry.dir, absolute));
+    if (!live) return null;
+    for (let dir = path.win32.dirname(absolute); dir.length >= live.dir.length && inside(live.dir, dir); dir = path.win32.dirname(dir)) {
+      try {
+        const pin = this.native().filesDriveInfo(dir).pin;
+        if (pin !== 'unspecified') return pin;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   /**
    * One at a time: a hydrate holds a libuv thread until the page has sent every byte, and the
    * transfers need threads of their own.
@@ -977,6 +1200,22 @@ export class DriveController {
         this.warn(`Keeping a file on this device failed: ${(error as Error).message}`);
       }
     });
+  }
+
+  /**
+   * "Always keep on this device" or "Free up space" from the page (the Files screen's menu), set
+   * the way Explorer sets it: the attribute, then the content comes or goes as for Explorer's.
+   */
+  async setPin(rootId: unknown, relative: unknown, pin: unknown): Promise<FilesResult<null>> {
+    const live = this.liveByRoot(rootId);
+    if (!live) return fail('inactive');
+    if (pin !== 'pinned' && pin !== 'unpinned') return fail('failed');
+    const found = this.resolveFile(live, relative);
+    if (typeof found === 'string') return fail(found);
+    const setPin = this.deps.setPin ?? setPinAttribute;
+    if (!(await setPin(found.absolute, pin))) return fail('failed');
+    if (this.live.get(live.account) === live) this.checkPin(found.absolute, null);
+    return ok(null);
   }
 
   /** Waits for the pinned files queued so far. For tests. */

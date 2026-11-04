@@ -465,7 +465,9 @@ export type OsCommand =
   | { type: 'webcal'; url: string }
   /** `ask`: opened with the app, so the user picks between a new message and Files. Without it, attach. */
   | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[]; ask?: boolean }
-  | { type: 'notification'; action: string; context: string; reply?: string };
+  | { type: 'notification'; action: string; context: string; reply?: string }
+  /** The tray's "Pause syncing" and "Resume syncing": every drive and synced folder. Older pages ignore it. */
+  | { type: 'files-sync'; action: 'pause-all' | 'resume-all' };
 
 export interface OsNotification {
   /** Tag of the toast. Showing an id again within a few minutes does nothing. */
@@ -551,6 +553,8 @@ export interface RecentFile {
   path: string;
   /** When it was last used, in milliseconds since 1970. */
   usedAt: number;
+  /** Its size in bytes, so the page can grey out one larger than the server takes. */
+  size?: number;
   /** A small icon as a data: URL, when the OS gave one in time. */
   icon?: string;
 }
@@ -772,6 +776,8 @@ export interface FilesDriveStatus {
   quota: { used: number; total: number | null; label: string } | null;
   /** Storage nearly full or full, in words. */
   notice: string | null;
+  /** The tray menu's line: "Bulwark Files: Up to date", "Bulwark Files: Offline. Waiting: 3". Absent from older pages. */
+  tray?: string;
 }
 
 /**
@@ -781,8 +787,17 @@ export interface FilesDriveStatus {
  */
 export interface FilesControls {
   roots: () => Promise<FilesRoot[]>;
-  /** Shows the OS folder picker. Needs a real click. */
-  addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string }) => Promise<FilesResult<FilesRoot>>;
+  /**
+   * Shows the OS folder picker. Needs a real click, unless `chosen` names a folder the user
+   * already picked with `chooseFolder`: then it's added without another picker.
+   */
+  addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string; chosen?: string }) => Promise<FilesResult<FilesRoot>>;
+  /**
+   * The folder on this computer first, as OneDrive asks (settings-p3-4): shows the OS picker
+   * (needs a real click) and answers a token for `addFolder` and the folder's name, to offer a
+   * Files folder of the same name. Absent in older shells.
+   */
+  chooseFolder?: () => Promise<FilesResult<{ token: string; name: string }>>;
   /** A folder: forgotten, its files stay. The drive: as `drive.disable(account, 'user')`. */
   removeRoot: (rootId: string) => Promise<void>;
   setPaused: (rootId: string, paused: boolean) => Promise<void>;
@@ -825,10 +840,26 @@ export interface FilesDriveControls {
   enable: (account: string, label: string) => Promise<FilesResult<FilesRoot>>;
   /**
    * `user`: turned off. `signed-out`: the account signed out, and comes back at the next
-   * sign-in. `wipe` and `refused`: a wipe or a refused login. Each unregisters the sync root
-   * and deletes it with everything in it; only `signed-out` keeps the wish.
+   * sign-in, pins included. Both unregister the sync root and delete its folder, after
+   * copying what wasn't uploaded to `Documents\Bulwark – not uploaded\<date>` (`rescued`).
+   * `suspended`: a sign-out nobody chose; only disconnects, the folder stays. `wipe` and
+   * `refused` delete everything, nothing is copied.
    */
-  disable: (account: string, reason: 'user' | 'signed-out' | 'wipe' | 'refused') => Promise<void>;
+  disable: (account: string, reason: 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused') => Promise<FilesDriveDisableResult | void>;
+  /**
+   * Main is about to remove the drives of these accounts (the policy): say `working` at once,
+   * upload what waits, then `flushed` without a phase. A page that says nothing within a few
+   * seconds isn't waited for.
+   */
+  onFlush?: (listener: (request: { requestId: string; accounts: string[] }) => void) => () => void;
+  flushed?: (requestId: string, phase?: 'working') => void;
+  /** Opens the folder files that weren't uploaded went to last. False when there's none. */
+  openRescue?: () => Promise<boolean>;
+  /**
+   * "Always keep on this device" (`pinned`) and "Free up space" (`unpinned`) from the app, as
+   * Explorer's own menu sets them: the content comes or goes the same way. Absent in older shells.
+   */
+  setPin?: (rootId: string, path: string, pin: 'pinned' | 'unpinned') => Promise<FilesResult<null>>;
   /** New placeholders, parents first. One answer per entry. */
   place: (rootId: string, entries: FilesPlaceholder[]) => Promise<FilesResult<{ path: string; error?: FilesError }[]>>;
   /**
@@ -851,6 +882,11 @@ export interface FilesDriveControls {
 
 export interface FilesBridge {
   claim: () => FilesControls | null;
+}
+
+/** What turning the drive off did with the files that weren't uploaded. */
+export interface FilesDriveDisableResult {
+  rescued: { folder: string; count: number; failed: number } | null;
 }
 
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
@@ -1006,6 +1042,7 @@ export const CHANNEL = {
   devToolsChanged: 'bulwark:devTools.changed',
   filesRoots: 'bulwark:files.roots',
   filesAddFolder: 'bulwark:files.addFolder',
+  filesChooseFolder: 'bulwark:files.chooseFolder',
   filesRemoveRoot: 'bulwark:files.removeRoot',
   filesSetPaused: 'bulwark:files.setPaused',
   filesScan: 'bulwark:files.scan',
@@ -1035,6 +1072,10 @@ export const CHANNEL = {
   filesDriveFail: 'bulwark:files.drive.fail',
   filesDriveSetLetter: 'bulwark:files.drive.setLetter',
   filesDriveStatus: 'bulwark:files.drive.status',
+  filesDriveFlush: 'bulwark:files.drive.flush',
+  filesDriveFlushed: 'bulwark:files.drive.flushed',
+  filesDriveOpenRescue: 'bulwark:files.drive.openRescue',
+  filesDriveSetPin: 'bulwark:files.drive.setPin',
   recentFilesList: 'bulwark:recentFiles.list',
   recentFilesAttach: 'bulwark:recentFiles.attach',
 } as const;
