@@ -46,8 +46,94 @@ export interface DecryptScheme {
   label?: Uint8Array;
 }
 
+/** A Files drive sync root as Windows lists it. */
+export interface NativeSyncRoot {
+  id: string;
+  path: string;
+  displayName: string;
+}
+
+/** What Windows' FETCH_DATA and CANCEL_FETCH_DATA callbacks bring. Keys are 64-bit, so text. */
+export interface NativeFetchEvent {
+  kind: 'fetch' | 'cancel';
+  connection: string;
+  transferKey: string;
+  requestKey: string;
+  /** Absolute. */
+  path: string;
+  identity: string;
+  offset: number;
+  length: number;
+  total: number;
+  pid: number;
+}
+
+export interface NativePlacement {
+  name: string;
+  directory: boolean;
+  size: number;
+  mtimeMs: number;
+  identity: string;
+}
+
+export interface NativePlaceholderInfo {
+  placeholder: boolean;
+  directory: boolean;
+  identity?: string;
+  inSync: boolean;
+  hydrated: boolean;
+  partial: boolean;
+  pin: 'pinned' | 'unpinned' | 'unspecified';
+  size: number;
+  onDisk: number;
+}
+
+/**
+ * The Files drive's calls (native/src/files_windows.rs). They throw `files:<code> (0x...)`;
+ * see filesErrorCode. Optional on NativeModule: a helper built before them has none.
+ */
+export interface NativeFilesModule {
+  filesDriveRegister(options: { provider: string; account: string; path: string; displayName: string; icon: string; version: string }): Promise<string>;
+  filesDriveUnregister(id: string): Promise<void>;
+  filesDriveRoots(): Promise<NativeSyncRoot[]>;
+  filesDriveConnect(path: string, callback: (event: NativeFetchEvent) => void): string;
+  filesDriveDisconnect(connection: string): void;
+  filesDriveTransfer(connection: string, transferKey: string, requestKey: string, offset: number, data: Buffer): Promise<void>;
+  filesDriveTransferFailed(connection: string, transferKey: string, requestKey: string, offset: number, length: number, reason: 'offline' | 'denied' | 'timeout' | 'not-running' | 'failed'): void;
+  filesDrivePlace(parent: string, entries: NativePlacement[]): string[];
+  filesDriveInfo(path: string): NativePlaceholderInfo;
+  filesDriveUpdate(path: string, change: { size?: number; mtimeMs?: number; identity?: string; markInSync: boolean; dehydrate: boolean; verifyInSync: boolean }): void;
+  filesDriveConvert(path: string, identity: string): void;
+  filesDriveHydrate(path: string): Promise<void>;
+  filesDriveDehydrate(path: string): void;
+  filesUsedDriveLetters(): number;
+}
+
+export const FILES_NATIVE_EXPORTS = [
+  'filesDriveConnect',
+  'filesDriveConvert',
+  'filesDriveDehydrate',
+  'filesDriveDisconnect',
+  'filesDriveHydrate',
+  'filesDriveInfo',
+  'filesDrivePlace',
+  'filesDriveRegister',
+  'filesDriveRoots',
+  'filesDriveTransfer',
+  'filesDriveTransferFailed',
+  'filesDriveUnregister',
+  'filesDriveUpdate',
+  'filesUsedDriveLetters',
+] as const satisfies readonly (keyof NativeFilesModule)[];
+
+/** The code in a files call's error: `missing`, `busy`, `changed`, ... `failed` when there's none. */
+export function filesErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^files:([a-z-]+)/.exec(message)?.[1] ?? 'failed';
+}
+
 /** Every export of the helper. test/native.spec.ts holds the binary to this list. */
-export interface NativeModule {
+export interface NativeModule extends Partial<NativeFilesModule> {
   helloAvailable(): Promise<boolean>;
   helloVerify(reason: string, hwnd: Buffer, timeoutMs: number): Promise<HelloResult>;
   keystoreList(): Promise<NativeCertificate[]>;
@@ -217,6 +303,8 @@ export interface NativeHelper {
     /** macOS: is this preference forced by a configuration profile? False elsewhere. */
     isForced(key: string): boolean;
   };
+  /** The Files drive's calls, on Windows with a helper that has them. Null elsewhere. */
+  files: NativeFilesModule | null;
 }
 
 export function wrapHelper(
@@ -305,5 +393,6 @@ export function wrapHelper(
         }
       },
     },
+    files: platform === 'win32' && native && FILES_NATIVE_EXPORTS.every((name) => typeof native[name] === 'function') ? (native as NativeFilesModule) : null,
   };
 }
