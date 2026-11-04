@@ -107,6 +107,34 @@ export interface NativeFilesModule {
   filesDriveHydrate(path: string): Promise<void>;
   filesDriveDehydrate(path: string): void;
   filesUsedDriveLetters(): number;
+  // Explorer's status for the drive (Windows 11). Optional: without them the drive works and
+  // Explorer shows no status.
+  filesDriveStatusServe?(clsid: string, icon: string, callback: (syncRootId: string) => void): boolean;
+  filesDriveStatusStop?(): void;
+  filesDriveStatusAttach?(id: string, clsid: string): void;
+  filesDriveStatusSet?(id: string, status: NativeDriveStatus | undefined): void;
+  filesDriveStatusRead?(id: string, waitMs: number): Promise<NativeDriveStatusSeen>;
+}
+
+/** What Explorer shows for a sync root. Absent, not null, for what isn't there: the helper takes undefined only. */
+export interface NativeDriveStatus {
+  state: 'synced' | 'syncing' | 'paused' | 'offline' | 'error';
+  label: string;
+  detail: string;
+  quota?: { used: number; total?: number; label: string };
+  notice?: string;
+}
+
+/** The status as Explorer reads it, out of process. */
+export interface NativeDriveStatusSeen {
+  state: string;
+  label: string;
+  detail: string;
+  quotaUsed?: number;
+  quotaTotal?: number;
+  quotaLabel?: string;
+  notice?: string;
+  changed: boolean;
 }
 
 export const FILES_NATIVE_EXPORTS = [

@@ -11,10 +11,12 @@
  * tools skip that.
  */
 
+import { writeFileSync } from 'node:fs';
 import { homedir, release } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, type WebContents } from 'electron';
-import { CHANNEL, type FilesDriveState, type FilesFetchRequest } from '../../shared/bridge';
+import { CHANNEL, type FilesDriveState, type FilesFetchRequest, type OsCommand } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
 import { substLetters } from '../files/drive-letter';
@@ -40,6 +42,22 @@ function testArgument(name: string): string | null {
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) ?? null;
 }
 
+/**
+ * The app's icon as a PNG Explorer can read, next to the drive's state. Explorer can't read
+ * inside app.asar, so it's written to the profile once per start.
+ */
+async function statusIcon(): Promise<string | null> {
+  try {
+    const image = await app.getFileIcon(process.execPath, { size: 'large' });
+    if (image.isEmpty()) return null;
+    const file = path.join(app.getPath('userData'), 'files-drive-status.png');
+    writeFileSync(file, image.toPNG());
+    return pathToFileURL(file).href;
+  } catch {
+    return null;
+  }
+}
+
 function windowsBuild(): number {
   return Number(release().split('.')[2] ?? 0);
 }
@@ -52,7 +70,7 @@ export function drivePolicy(): DrivePolicy {
 let controller: DriveController | null = null;
 
 /** The drive's controller, made once: the wipe can come before the feature starts. */
-function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): DriveController | null {
+function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showMain'>): DriveController | null {
   if (process.platform !== 'win32') return null;
   if (controller) return controller;
   const helper = native().files;
@@ -93,6 +111,15 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
       },
       fetchCancelled: (fetchId) => mainContents()?.send(CHANNEL.filesDriveFetchCancel, fetchId),
       stateChanged: (next: FilesDriveState) => mainContents()?.send(CHANNEL.filesDriveStateChanged, next),
+    },
+    status: {
+      icon: statusIcon,
+      // The status line in Explorer: Settings > Files on this computer, in the main window.
+      opened: () => {
+        ctx?.showMain();
+        const command: OsCommand = { type: 'navigate', target: 'settings/files_sync' };
+        mainContents()?.send(CHANNEL.osCommand, command);
+      },
     },
     registry: filesRegistry,
     forgetState: forgetRootState,
@@ -178,6 +205,9 @@ export const filesDriveFeature: Feature = {
     ctx.handle(CHANNEL.filesDriveSetLetter, (event, window, letter, clicked) => {
       fromMain(window);
       return drive.setLetter(letter, clickedNow(event.sender, clicked));
+    });
+    ctx.on(CHANNEL.filesDriveStatus, (_event, window, account, status) => {
+      if (isMain(window)) drive.setStatus(account, status);
     });
 
     let before = drivePolicy();

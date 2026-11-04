@@ -20,6 +20,10 @@ mod os;
 #[cfg_attr(not(windows), path = "files_none.rs")]
 mod files;
 
+#[cfg_attr(windows, path = "files_status_windows.rs")]
+#[cfg_attr(not(windows), path = "files_status_none.rs")]
+mod files_status;
+
 use std::time::Duration;
 
 use napi::bindgen_prelude::{AsyncTask, Buffer, ToNapiValue, TypeName, Unknown};
@@ -562,4 +566,134 @@ pub fn files_drive_dehydrate(path: String) -> Result<()> {
 #[napi]
 pub fn files_used_drive_letters() -> u32 {
     files::used_drive_letters()
+}
+
+
+// ─── The drive's status in Explorer (Windows 11) ─────────────
+
+const MAX_STATUS_LABEL: usize = 200;
+const MAX_STATUS_DETAIL: usize = 500;
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FilesDriveQuota {
+    pub used: f64,
+    /// None: the server sets no limit, only what's used is shown.
+    pub total: Option<f64>,
+    /// "1.2 GB of 5 GB used", translated.
+    pub label: String,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FilesDriveStatus {
+    /// `synced`, `syncing`, `paused`, `offline` or `error`.
+    pub state: String,
+    /// Short, next to the state in Explorer.
+    pub label: String,
+    /// The longer line in Explorer's flyout.
+    pub detail: String,
+    pub quota: Option<FilesDriveQuota>,
+    /// A line of its own in the flyout: storage nearly full, or full.
+    pub notice: Option<String>,
+}
+
+#[napi(object)]
+pub struct FilesDriveStatusSeen {
+    pub state: String,
+    pub label: String,
+    pub detail: String,
+    pub quota_used: Option<f64>,
+    pub quota_total: Option<f64>,
+    pub quota_label: Option<String>,
+    pub notice: Option<String>,
+    /// StatusUIChanged came while waiting.
+    pub changed: bool,
+}
+
+fn checked_status(status: &FilesDriveStatus) -> Result<()> {
+    if !["synced", "syncing", "paused", "offline", "error"].contains(&status.state.as_str()) {
+        return Err(invalid("state"));
+    }
+    checked_label(&status.label, MAX_STATUS_LABEL, "label", |c| !c.is_control())?;
+    if status.detail.chars().count() > MAX_STATUS_DETAIL || status.detail.chars().any(char::is_control) {
+        return Err(invalid("detail"));
+    }
+    if let Some(quota) = &status.quota {
+        checked_count(quota.used, "used")?;
+        if let Some(total) = quota.total {
+            checked_count(total, "total")?;
+        }
+        checked_label(&quota.label, MAX_STATUS_LABEL, "quota label", |c| !c.is_control())?;
+    }
+    if let Some(notice) = &status.notice {
+        if notice.chars().count() > MAX_STATUS_DETAIL || notice.chars().any(char::is_control) {
+            return Err(invalid("notice"));
+        }
+    }
+    Ok(())
+}
+
+fn checked_clsid(clsid: &str) -> Result<()> {
+    checked_label(clsid, 38, "clsid", |c| c.is_ascii_hexdigit() || "{}-".contains(c))
+}
+
+/// A sync root's id as the registry key's name: no backslash, which would reach another key.
+fn checked_root_id(id: &str) -> Result<()> {
+    checked_label(id, 512, "id", |c| !c.is_control() && c != '\\')
+}
+
+type StatusCommandCallback = ThreadsafeFunction<String, Unknown<'static>, String, Status, false, true>;
+
+/// Serves Explorer's status for the drive from this process, under `clsid`, until
+/// `filesDriveStatusStop`. False: this Windows has no status in Explorer (before Windows 11
+/// 22H2). `icon` is a file: URL Explorer shows next to the state. A click on the state line
+/// in Explorer calls `callback` with the sync root's id.
+#[napi]
+pub fn files_drive_status_serve(clsid: String, icon: String, callback: StatusCommandCallback) -> Result<bool> {
+    checked_clsid(&clsid)?;
+    checked_label(&icon, MAX_PATH_CHARS, "icon", |c| !c.is_control())?;
+    if !icon.starts_with("file:///") {
+        return Err(invalid("icon"));
+    }
+    let sink: files_status::CommandSink = Box::new(move |root| {
+        callback.call(root, ThreadsafeFunctionCallMode::NonBlocking);
+    });
+    files_status::serve(&clsid, &icon, sink).map_err(files_error)
+}
+
+/// Stops serving the status. Nothing in the registry changes.
+#[napi]
+pub fn files_drive_status_stop() {
+    files_status::stop()
+}
+
+/// Names the status class in a registered sync root's key, where Explorer looks for it.
+/// Again after each `filesDriveRegister` of that root. Unregistering removes it with the key.
+#[napi]
+pub fn files_drive_status_attach(id: String, clsid: String) -> Result<()> {
+    checked_root_id(&id)?;
+    checked_clsid(&clsid)?;
+    files_status::attach(&id, &clsid).map_err(files_error)
+}
+
+/// What Explorer shows for a sync root from now on, and tells Explorer windows showing it.
+/// Null forgets the root.
+#[napi]
+pub fn files_drive_status_set(id: String, status: Option<FilesDriveStatus>) -> Result<()> {
+    checked_root_id(&id)?;
+    if let Some(status) = &status {
+        checked_status(status)?;
+    }
+    files_status::set(&id, status);
+    Ok(())
+}
+
+/// The status as Explorer reads it: the class named in the root's key, created out of
+/// process. With `waitMs`, waits up to that long for a change and answers the status after it.
+#[napi]
+pub fn files_drive_status_read(id: String, wait_ms: u32) -> Result<AsyncTask<FilesJob<FilesDriveStatusSeen>>> {
+    checked_root_id(&id)?;
+    let wait = wait_ms.min(60_000);
+    Ok(files_job(move || files_status::read(&id, wait)))
 }

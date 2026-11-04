@@ -8,9 +8,11 @@ import {
   folderNameFor,
   freeLetters,
   letterTarget,
+  nativeStatusOf,
   parseSubst,
   relativeParts,
   resolveUnder,
+  statusClassId,
   wantedLetter,
 } from '../src/main/files/drive-places';
 import type { NativeFetchEvent } from '../src/main/native-loader';
@@ -273,5 +275,46 @@ test.describe('the drive letter', () => {
     const system = fakeLetters({ Y: 'D:\\other' });
     expect(await settleLetter(system, 'C:\\B', 'Y', 'C:\\B\\a', () => {})).toBeNull();
     expect(system.map.get('Y')).toBe('D:\\other');
+  });
+});
+
+test.describe("Explorer's status for the drive", () => {
+  const good = { state: 'syncing', label: 'Syncing', detail: 'Syncing: 1 done, 2 to go', quota: { used: 10, total: 100, label: '10 B of 100 B used' }, notice: null };
+
+  test('a status from the page goes to the helper without nulls, which it refuses', () => {
+    expect(nativeStatusOf(good)).toEqual({ state: 'syncing', label: 'Syncing', detail: 'Syncing: 1 done, 2 to go', quota: { used: 10, total: 100, label: '10 B of 100 B used' } });
+    expect(nativeStatusOf({ ...good, quota: { used: 10, total: null, label: '10 B used' }, notice: 'Almost full' })).toEqual({
+      state: 'syncing',
+      label: 'Syncing',
+      detail: 'Syncing: 1 done, 2 to go',
+      quota: { used: 10, label: '10 B used' },
+      notice: 'Almost full',
+    });
+    expect(nativeStatusOf({ ...good, quota: null })).toEqual({ state: 'syncing', label: 'Syncing', detail: 'Syncing: 1 done, 2 to go' });
+  });
+
+  test('anything else is no status', () => {
+    for (const bad of [
+      null,
+      'synced',
+      { ...good, state: 'idle' },
+      { ...good, label: '' },
+      { ...good, label: 'x'.repeat(201) },
+      { ...good, detail: 'two\nlines' },
+      { ...good, quota: { used: -1, total: 100, label: 'x' } },
+      { ...good, quota: { used: 1.5, total: 100, label: 'x' } },
+      { ...good, quota: { used: 1, total: 0, label: 'x' } },
+      { ...good, quota: { used: 1, total: 100, label: '' } },
+      { ...good, notice: 'x'.repeat(501) },
+    ]) {
+      expect(nativeStatusOf(bad), JSON.stringify(bad)).toBeNull();
+    }
+  });
+
+  test('one CLSID per profile, a name-based GUID, the same each start', () => {
+    const installed = statusClassId('C:\\Users\\a\\AppData\\Roaming\\Bulwark');
+    expect(installed).toMatch(/^\{[0-9A-F]{8}-[0-9A-F]{4}-5[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}\}$/);
+    expect(statusClassId('C:\\Users\\a\\AppData\\Roaming\\Bulwark')).toBe(installed);
+    expect(statusClassId('C:\\Users\\a\\AppData\\Local\\Temp\\bulwark-test')).not.toBe(installed);
   });
 });
