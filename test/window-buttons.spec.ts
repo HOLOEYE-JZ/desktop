@@ -283,6 +283,9 @@ test.describe('the app\'s buttons and the window\'s', () => {
 
   // Last: a page that went offline here leaves the local copy thinking so for a while.
   test('800 px with the offline bar and the notices: nothing under the controls, and a way to close each', async () => {
+    // The pop-out case moved it to the Archive.
+    const inbox = await mailboxIdOf(SERVER, ACCOUNT, ENT_PASSWORD, 'inbox');
+    await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Email/set', { update: { [id]: { mailboxIds: { [inbox]: true } } } }, 'u']]);
     await setSize(800, 600);
     await page.goto(new URL('/', page.url()).toString());
     await expectMailShown(page);
