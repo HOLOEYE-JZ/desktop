@@ -7,7 +7,7 @@ import { fakeOsIntegration, launch, launchStandalone, opened, prompts, removePro
 const ROOT = path.resolve(import.meta.dirname, '..');
 
 test.describe('the first run', () => {
-  test('asks which mode, refuses a bad address, and remembers the choice', async () => {
+  test('asks for an email address or a Bulwark address, refuses a bad one, and remembers the choice', async () => {
     const profile = tempProfile('welcome');
     let app = await launch(profile);
     let page = await shownPage(app);
@@ -19,6 +19,8 @@ test.describe('the first run', () => {
     await page.click('#connect');
     await expect(page.locator('#error')).not.toBeEmpty();
 
+    await page.click('#org-back');
+    await page.fill('#email', 'sam@example.org');
     await page.click('#standalone');
     // The second question: both boxes stay empty.
     await page.click('#continue');

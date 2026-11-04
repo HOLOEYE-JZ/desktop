@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { isNoJmapDomain, parseWelcomeAddress } from '../src/shared/welcome-address';
+import { isNoJmapDomain, parseWelcomeAddress, parseWelcomeEmail } from '../src/shared/welcome-address';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STRINGS = JSON.parse(readFileSync(path.join(ROOT, 'src/pages/welcome-strings.json'), 'utf8')) as Record<string, Record<string, string>>;
@@ -36,6 +36,19 @@ test.describe('the first-run address field', () => {
   });
 });
 
+test.describe('the first-run email field', () => {
+  test('takes an email address, and catches Gmail, Outlook.com and iCloud', () => {
+    expect(parseWelcomeEmail('sam@example.org')).toEqual({ ok: true });
+    expect(parseWelcomeEmail('  sam.lee@mail.example.co.uk ')).toEqual({ ok: true });
+    for (const typed of ['sam@gmail.com', 'sam@outlook.de', 'sam@icloud.com']) expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'no_jmap' });
+  });
+
+  test('anything else asks for an email address', () => {
+    for (const typed of ['', 'sam', 'mail.example.com', 'https://mail.example.com', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 42])
+      expect(parseWelcomeEmail(typed), String(typed)).toEqual({ ok: false, error: 'email_invalid' });
+  });
+});
+
 test.describe('the first-run strings', () => {
   test('every language has every string, and none is left in English', () => {
     expect(Object.keys(STRINGS).sort()).toEqual([...LANGUAGES].sort());
@@ -50,9 +63,11 @@ test.describe('the first-run strings', () => {
   });
 
   test('say what works, in plain words', () => {
-    expect(STRINGS.en.standaloneTitle).toBe('Connect to your mail server');
-    expect(STRINGS.en.standaloneText).toContain('JMAP');
-    expect(STRINGS.en.standaloneText).toMatch(/Stalwart.*Fastmail/);
+    // The first screen asks for an email address, in plain words: no protocol or server names.
+    expect(STRINGS.en.intro).toBe('Sign in with your email address.');
+    expect(STRINGS.en.orgLink).toBe('My organisation gave me a Bulwark web address');
+    for (const language of LANGUAGES)
+      for (const key of ['title', 'intro', 'emailLabel', 'continueLabel', 'orgLink']) expect(STRINGS[language][key], `${language}.${key}`).not.toMatch(/JMAP|Stalwart|Fastmail/);
     expect(STRINGS.en.instanceTitle).toBe("Connect to your organisation's Bulwark");
     expect(STRINGS.en.noJmap).toMatch(/Gmail, Outlook\.com and iCloud/);
     expect(STRINGS.en.privacyIntro).toContain('Settings > Privacy');
@@ -82,7 +97,7 @@ test.describe('the built first-run page', () => {
     const html = readFileSync(built, 'utf8');
     const script = /<script>([\s\S]*)<\/script>/.exec(html)![1];
     expect(script).not.toContain('__WELCOME_STRINGS__');
-    expect(script).toContain('Connect to your mail server');
+    expect(script).toContain('Sign in with your email address.');
     const hash = createHash('sha256').update(script).digest('base64');
     expect(html).toContain(`script-src 'sha256-${hash}'`);
   });

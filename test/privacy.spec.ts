@@ -63,6 +63,12 @@ test.beforeAll(async () => {
 
   instance = createHttpsServer({ key: certificate.keyPem, cert: certificate.certPem }, (req, res) => {
     instanceHits.push({ method: req.method ?? '', path: req.url ?? '', body: Buffer.alloc(0) });
+    // The first run checks an address is a Bulwark before it takes it.
+    if (req.url === '/api/config') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ appName: 'Stand-in', jmapServerUrl: '' }));
+      return;
+    }
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<!doctype html><title>Stand-in instance</title><h1>A Bulwark server</h1>');
   });

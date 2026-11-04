@@ -7,6 +7,7 @@
 
 import { powerMonitor, type BrowserWindow } from 'electron';
 import { strings } from '../strings';
+import { showsLoadErrorPage } from '../load-error';
 import { replacingRenderer } from '../windows';
 import type { OsHub } from './os-hub';
 import { isRetryableLoadError, reloadDelayMs } from './os-rules';
@@ -58,8 +59,10 @@ export function setupResilience(hub: OsHub, notice: (title: string, body: string
     });
 
     webContents.on('did-finish-load', () => {
-      // Chromium's error page finishes loading too, and keeps the address it failed on.
-      if (webContents.getURL().startsWith('chrome-error:')) return;
+      // Chromium's error page finishes loading too, and keeps the address it failed on. So does
+      // the app's own (load-error.ts), and trying again goes on behind it.
+      const url = webContents.getURL();
+      if (url.startsWith('chrome-error:') || showsLoadErrorPage(webContents, url)) return;
       failedUrl = null;
       attempts = 0;
       stopTimer();

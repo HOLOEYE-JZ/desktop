@@ -17,7 +17,7 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { parseWelcomeAddress } from '../shared/welcome-address';
+import { parseWelcomeAddress, parseWelcomeEmail } from '../shared/welcome-address';
 import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
@@ -49,7 +49,10 @@ import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
-import { strings, unsentDetail } from './strings';
+import { strings, uiLanguageNow, unsentDetail } from './strings';
+import { checkInstance } from './instance-check';
+import { useWelcomeMenu } from './welcome-menu';
+import { changeConnectionUrl, loadErrorPage, noteLoadErrorPage, retryTarget, showsLoadError } from './load-error';
 import { leaveLaunchFolder } from './system-exe';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
@@ -87,6 +90,8 @@ const PRELOAD = path.join(HERE, 'preload.cjs');
 const WELCOME_PRELOAD = path.join(HERE, 'welcome-preload.cjs');
 const WELCOME_PAGE = path.join(HERE, 'pages', 'welcome.html');
 const SERVER_HOST = path.join(HERE, 'server-host.cjs');
+/** In memory: the first run's check of an address leaves nothing on disk. Same proxy and certificate checks as a window. */
+const INSTANCE_CHECK_PARTITION = 'bulwark-instance-check';
 
 const DEV = __BULWARK_TEST_BUILD__ && !app.isPackaged;
 const MAX_SERVER_RESTARTS = 3;
@@ -219,6 +224,37 @@ function watchForReplacedCertificate(window: BrowserWindow): void {
     if (!pinFailed || !isMainFrame || !url.startsWith(APP_ORIGIN)) return;
     const text = strings();
     void window.loadURL(errorPageUrl(text.errorCertificateTitle, text.errorCertificateBody));
+  });
+}
+
+/**
+ * An organisation's server that doesn't load leaves a window with nothing in it, and no way out
+ * but a menu item nothing points to. So the window says so, with a button to try again and one
+ * to change the connection (load-error.ts).
+ */
+function watchForFailedLoads(window: BrowserWindow, origin: string, startUrl: string): void {
+  const contents = window.webContents;
+  let page: string | null = null;
+  let changeUrl: string | null = null;
+  contents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
+    if (!showsLoadError(code, isMainFrame) || window.isDestroyed()) return;
+    if (page && url === page) return;
+    changeUrl = bootedDecision?.canSwitch ? changeConnectionUrl(origin, randomBytes(16).toString('base64url')) : null;
+    page = loadErrorPage(uiLanguageNow(), new URL(origin).host, retryTarget(url, origin, startUrl), changeUrl);
+    noteLoadErrorPage(contents, page);
+    void window.loadURL(page).catch(() => {});
+  });
+  contents.on('did-navigate', (_event, url) => {
+    if (!page || url === page) return;
+    page = null;
+    changeUrl = null;
+    noteLoadErrorPage(contents, null);
+  });
+  // "Try again" is a plain link to the server. "Change connection…" stops here.
+  contents.on('will-navigate', (event) => {
+    if (!changeUrl || event.url !== changeUrl || !page || contents.getURL() !== page) return;
+    event.preventDefault();
+    switchMode();
   });
 }
 
@@ -480,6 +516,7 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   const ctx: FeatureContext = { mode: 'instance', origin, session, state: stateFile, theme, windows, menu: menu!, zoom, showMain, openLink: openDeepLink, ...createChannels(origin) };
   registerBridge(ctx, { origin });
   setupFeatures(ctx);
+  windows.on('created', ({ window }) => watchForFailedLoads(window, origin, instanceUrl));
   mainWindowAllowed = true;
   windows.open({ type: 'main', url: instanceUrl });
 }
@@ -508,14 +545,19 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
     },
   });
   window.once('ready-to-show', () => window.show());
+  useWelcomeMenu(window, () => menu?.rebuild());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
+  let latestChoice = 0;
+  ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown; email?: unknown }) => {
     if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
+    const thisChoice = ++latestChoice;
     let instanceUrl: string | undefined;
     if (choice?.mode === 'standalone') {
       if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
+      const email = parseWelcomeEmail(choice.email);
+      if (!email.ok) return { ok: false, error: email.error };
     } else if (choice?.mode === 'instance') {
       const allowInsecure = policies.snapshot.AllowInsecureInstance.value;
       // A locked address is the admin's, already full. A typed one may be a bare host.
@@ -523,6 +565,13 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
       if (!parsed.ok) return { ok: false, error: 'error' in parsed ? parsed.error : 'invalid_url' };
       // A forced one needs no listing, and only a forced one is locked here.
       if (!decision.urlLocked && !jmapServerAllowed(policies.snapshot.AllowedJmapServers.value, parsed.value)) return { ok: false, error: 'policy' };
+      // A typed address has to be a Bulwark that answers: a typo would open an empty window.
+      // The admin's locked one isn't the user's to fix, and gets the window's error page instead.
+      if (!decision.urlLocked) {
+        const check = await checkInstance(parsed.value, (url, init) => electronSession.fromPartition(INSTANCE_CHECK_PARTITION).fetch(url, { ...init, cache: 'no-store' }));
+        if (thisChoice !== latestChoice) return { ok: false, error: 'superseded' };
+        if (!check.ok) return { ok: false, error: check.error };
+      }
       instanceUrl = parsed.value;
     } else {
       return { ok: false, error: 'invalid_choice' };
