@@ -91,3 +91,13 @@ test.describe('macOS universal, up to the merge', () => {
     }
   });
 });
+
+test.describe('the Windows installers', () => {
+  test('put Bulwark in the Start menu only, not on the desktop, and install for this user', () => {
+    expect(config.nsis.createDesktopShortcut).toBe(false);
+    expect(config.nsis.createStartMenuShortcut).toBe(true);
+    expect(config.nsis.perMachine).toBe(false);
+    expect(config.msi.createDesktopShortcut).toBe(false);
+    expect(config.msi.createStartMenuShortcut).toBe(true);
+  });
+});

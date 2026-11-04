@@ -230,16 +230,16 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => page.url(), { timeout: 30_000 }).not.toMatch(/sent/i);
   });
 
-  test('Settings opens in a window of its own, and its switch reaches the shell and the other windows', async () => {
+  test('Settings opens as a page of the main window, with no second window, and its switch reaches the shell', async () => {
     await app.evaluate(({ Menu }) => {
-      Menu.getApplicationMenu()!.getMenuItemById('help.settings')!.click();
+      Menu.getApplicationMenu()!.getMenuItemById('file.settings')!.click();
     });
-    const settings = await pageWith(app, '/settings');
+    await expect.poll(() => page.url(), { timeout: 30_000 }).toContain('/settings');
     const list = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<{ type: string }[]> } } }).bulwarkDesktop.windows.list());
-    expect(list.map((w) => w.type).sort()).toEqual(['main', 'settings']);
-    await settings.goto(new URL('/settings/general', settings.url()).toString());
-    await settings.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
-    const flip = () => settings.evaluate(() => {
+    expect(list.map((w) => w.type)).toEqual(['main']);
+    await page.goto(new URL('/settings/general', page.url()).toString());
+    await page.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
+    const flip = () => page.evaluate(() => {
       const label = [...document.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent === 'Reopen windows at start');
       let box: Element | null = label ?? null;
       const control = '[role="switch"], button[aria-checked], input[type="checkbox"]';
@@ -252,10 +252,9 @@ test.describe('windows, signed in', () => {
     await expect.poll(shellHas, { timeout: 10_000 }).toBe(false);
     await flip();
     await expect.poll(shellHas, { timeout: 10_000 }).toBe(true);
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/settings'))!.close();
-    });
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+    await sendCommand(app, '/', 'go.inbox');
+    await expect.poll(() => page.url(), { timeout: 30_000 }).not.toContain('/settings');
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
   test('a link to a folder goes there, without reloading the window', async () => {
@@ -300,38 +299,79 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
-  test('Alt floats the menu over the app, moves nothing, and a name opens that menu natively', async () => {
-    test.skip(process.platform !== 'win32', 'the strip is for Windows; macOS has its bar');
-    await expect(page.locator('[data-window-menu-bar]')).toHaveCount(0);
-    const layout = () => page.evaluate(() => {
-      const box = document.querySelector('[data-window-row-right]')!.getBoundingClientRect();
-      return [box.left, box.top, box.width, box.height];
+  test('Alt shows the menu bar as a row that moves the app down, with the window controls in it, and its lines are the app menu\'s', async () => {
+    test.skip(process.platform !== 'win32', 'the drawn bar is for Windows and Linux; macOS has its bar');
+    const strip = page.locator('[data-window-menu-bar]');
+    await expect(strip).toHaveCount(0);
+    // The row the window's controls sit over now: after Alt it starts under the bar.
+    const rowTop = () => page.evaluate(() => {
+      const row = document.querySelector('[data-test-top-row]') ?? document.querySelector('[data-window-row-right]');
+      row?.setAttribute('data-test-top-row', '');
+      return Math.round(row!.getBoundingClientRect().top);
     });
-    const before0 = await layout();
+    const controlsHeight = () => page.evaluate(() => (navigator as unknown as { windowControlsOverlay: { getTitlebarAreaRect: () => DOMRect } }).windowControlsOverlay.getTitlebarAreaRect().height);
+    expect(await rowTop()).toBe(0);
+    const tall = await controlsHeight();
     const alt = (type: 'keyDown' | 'keyUp') => app.evaluate(({ BrowserWindow }, t) => {
       BrowserWindow.getAllWindows()[0].webContents.sendInputEvent({ type: t, keyCode: 'Alt' } as never);
     }, type);
     await alt('keyDown');
     await alt('keyUp');
-    const strip = page.locator('[data-window-menu-bar]');
     await expect(strip).toBeVisible({ timeout: 5000 });
-    await expect(strip.getByRole('menuitem')).toHaveText(['File', 'Edit', 'View', 'Message', 'Go', 'Window', 'Help']);
-    expect(await strip.evaluate((el) => getComputedStyle(el).position)).toBe('fixed');
-    expect(await layout()).toEqual(before0);
-    const before = await menuCount(app);
-    await strip.getByRole('menuitem', { name: 'File' }).click();
-    await expect.poll(() => menuCount(app)).toBeGreaterThan(before);
-    expect(labels(await lastMenu(app))).toEqual(expect.arrayContaining(['New message', 'Print…', 'Close']));
-    // It goes when its menu does.
-    await expect(strip).toBeHidden({ timeout: 5000 });
-    // And Escape, without a menu.
-    await alt('keyDown');
-    await alt('keyUp');
-    await expect(strip).toBeVisible({ timeout: 5000 });
-    // The keys go to the first name, which takes the focus just after it shows.
-    await expect(strip.getByRole('menuitem').first()).toBeFocused();
+    const names = strip.locator('[data-menu-name]');
+    await expect(names).toHaveText(['File', 'Edit', 'View', 'Message', 'Go', 'Window', 'Help']);
+    await expect(names.first()).toBeFocused();
+    if (process.env.BULWARK_SCREENSHOTS) await page.screenshot({ path: path.join(process.env.BULWARK_SCREENSHOTS, 'menus-altbar-after.png') });
+    const barHeight = Math.round((await strip.boundingBox())!.height);
+    // Pushed down, not covered, and the controls are as tall as the bar.
+    await expect.poll(rowTop).toBe(barHeight);
+    await expect.poll(controlsHeight).toBe(barHeight);
+    // The controls' room is kept on the bar's own row.
+    expect(await strip.evaluate((el) => el.hasAttribute('data-window-row-right'))).toBe(true);
+
+    // The arrows open a menu drawn from the app menu, with the keys apart from the names.
+    await page.keyboard.press('ArrowDown');
+    const file = strip.getByRole('menu', { name: 'File' });
+    await expect(file).toBeVisible();
+    await expect(file.locator('[data-menu-label]')).toContainText(['New message', 'New window', 'Print…', 'Settings…', 'Close', 'Exit']);
+    await expect(file.getByRole('menuitem', { name: /New message/ }).locator('[data-menu-keys]')).toHaveText('Ctrl+N');
+    if (process.env.BULWARK_SCREENSHOTS) await page.screenshot({ path: path.join(process.env.BULWARK_SCREENSHOTS, 'menus-altbar-file.png') });
+    // Right goes on to Edit, as in any Windows menu bar.
+    await page.keyboard.press('ArrowRight');
+    await expect(strip.getByRole('menu', { name: 'Edit' })).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(strip).toBeHidden({ timeout: 5000 });
+    await expect(strip.getByRole('menu')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(strip).toHaveCount(0);
+    await expect.poll(rowTop).toBe(0);
+    await expect.poll(controlsHeight).toBe(tall);
+
+    // Alt and V opens View, and its line keeps the bar: the shell's own item runs.
+    await app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      contents.sendInputEvent({ type: 'keyDown', keyCode: 'Alt' } as never);
+      contents.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['alt'] } as never);
+      contents.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['alt'] } as never);
+      contents.sendInputEvent({ type: 'keyUp', keyCode: 'Alt' } as never);
+    });
+    const view = strip.getByRole('menu', { name: 'View' });
+    await expect(view).toBeVisible({ timeout: 5000 });
+    await view.getByRole('menuitemcheckbox', { name: /Always show the menu bar/ }).click();
+    await expect.poll(async () => (await menuItem(app, 'view.menuBar'))?.checked).toBe(true);
+    await expect(strip).toBeVisible();
+    await expect.poll(rowTop).toBe(barHeight);
+    if (process.env.BULWARK_SCREENSHOTS) await page.screenshot({ path: path.join(process.env.BULWARK_SCREENSHOTS, 'menus-altbar-always.png') });
+    // Kept across a reload, from the first frame.
+    await page.reload();
+    await expect(strip).toBeVisible({ timeout: 60_000 });
+    expect(await page.evaluate(() => document.documentElement.hasAttribute('data-menu-bar'))).toBe(true);
+    // And off again, from the native menu this time.
+    await app.evaluate(({ Menu, BrowserWindow }) => {
+      const item = Menu.getApplicationMenu()!.getMenuItemById('view.menuBar')!;
+      (item.click as (...args: unknown[]) => void)(undefined, BrowserWindow.getAllWindows()[0], BrowserWindow.getAllWindows()[0].webContents);
+    });
+    await expect(strip).toHaveCount(0, { timeout: 5000 });
+    await expect.poll(controlsHeight).toBe(tall);
   });
 });
 

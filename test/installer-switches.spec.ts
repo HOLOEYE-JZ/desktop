@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
+import { windowsOpenWithRegistration } from '../src/main/features/os-rules';
 
 /**
  * The NSIS switches, from the real include, compiled by the NSIS electron-builder
@@ -13,6 +14,8 @@ import { expect, test } from '@playwright/test';
 const INCLUDE = path.resolve(import.meta.dirname, '..', 'build', 'installer.nsh');
 const CACHE = path.join(process.env.LOCALAPPDATA ?? '', 'electron-builder', 'Cache');
 const KEY = `Software\\BulwarkTest\\Policies\\nsis${process.pid}`;
+/** Where the harness's "Open with" keys go in place of Software\Classes. */
+const CLASSES = `Software\\BulwarkTest\\OpenWith\\nsis${process.pid}\\Classes`;
 
 function makensis(): string | null {
   if (!existsSync(CACHE)) return null;
@@ -48,6 +51,22 @@ test.describe('the installer writes the same policies as the MSI', () => {
       script,
       [
         'Unicode true',
+        // Never the user's own Classes or Send to folder, whatever the test is about.
+        `!define BULWARK_CLASSES_KEY "${CLASSES}"`,
+        `!define BULWARK_SENDTO_DIR "${sendTo()}"`,
+        '!define APP_EXECUTABLE_FILENAME "Bulwark.exe"',
+        `InstallDir "${path.join(dir, 'app')}"`,
+        // electron-builder's own is in its templates: an update passes --updated.
+        '!include "FileFunc.nsh"',
+        '!macro _isUpdated _a _b _t _f',
+        '  Push $R9',
+        '  ${GetParameters} $R9',
+        '  ClearErrors',
+        '  ${GetOptions} $R9 "--updated" $R9',
+        '  Pop $R9',
+        '  IfErrors `${_f}` `${_t}`',
+        '!macroend',
+        '!define isUpdated `"" isUpdated ""`',
         defines,
         `Name "${name}"`,
         `OutFile "${exe}"`,
@@ -65,6 +84,7 @@ test.describe('the installer writes the same policies as the MSI', () => {
   }
 
   let harness = '';
+  const sendTo = () => path.join(dir, 'SendTo');
 
   test.beforeAll(() => {
     dir = mkdtempSync(path.join(tmpdir(), 'bw-nsis-'));
@@ -72,12 +92,21 @@ test.describe('the installer writes the same policies as the MSI', () => {
   });
 
   test.afterAll(() => {
-    reg('delete', 'HKCU\\Software\\BulwarkTest', '/f');
+    // Only this run's keys, then their parents if nothing else is in them: other runs use the tree too.
+    reg('delete', `HKCU\\${KEY}`, '/f');
+    reg('delete', `HKCU\\${CLASSES.replace(/\\Classes$/, '')}`, '/f');
+    for (const parent of ['Software\\BulwarkTest\\Policies', 'Software\\BulwarkTest\\OpenWith', 'Software\\BulwarkTest']) {
+      const answer = reg('query', `HKCU\\${parent}`);
+      const lines = (answer.stdout ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (answer.status === 0 && lines.length <= 1) reg('delete', `HKCU\\${parent}`, '/f');
+    }
     rmSync(dir, { recursive: true, force: true });
   });
 
   test.afterEach(() => {
     reg('delete', `HKCU\\${KEY}`, '/f');
+    reg('delete', `HKCU\\${CLASSES}`, '/f');
+    rmSync(sendTo(), { recursive: true, force: true });
   });
 
   test('with /FORCE_INSTANCE=1 the values are forced', () => {
@@ -141,6 +170,41 @@ test.describe('the installer writes the same policies as the MSI', () => {
   test('quotes inside a value are stripped', () => {
     spawnSync(harness, ['/INSTANCE_URL=https://a.ex"am"ple', '/UPDATE_CHANNEL="be"ta'], { windowsVerbatimArguments: true });
     expect(value('\\Recommended', 'InstanceUrl')).toBe('https://a.example');
+  });
+
+  test('it offers the app in Open with, Choose another app and Send to, as the app does at its start', () => {
+    mkdirSync(sendTo(), { recursive: true });
+    expect(spawnSync(harness, []).status).toBe(0);
+    const app = path.join(dir, 'app', 'Bulwark.exe');
+    const command = (sub: string) => {
+      const answer = reg('query', `HKCU\\${CLASSES}\\${sub}\\shell\\open\\command`, '/ve');
+      return /REG_SZ\s+(.*)/.exec(answer.stdout ?? '')?.[1]?.trim() ?? null;
+    };
+    const wanted = windowsOpenWithRegistration(app);
+    expect(command('Bulwark.File.attach')).toBe(`"${app}" -- "%1"`);
+    expect(command('Applications\\Bulwark.exe')).toBe(`"${app}" -- "%1"`);
+    // The same values the app writes, one by one.
+    for (const entry of wanted) {
+      const key = `HKCU\\${entry.key.replace(/^Software\\Classes/, CLASSES)}`;
+      const answer = entry.name === undefined ? reg('query', key, '/ve') : reg('query', key, '/v', entry.name);
+      expect(answer.status, `${key} ${entry.name ?? '(default)'}`).toBe(0);
+    }
+    expect(existsSync(path.join(sendTo(), 'Bulwark (as attachment).lnk'))).toBe(true);
+  });
+
+  test('a forced OpenWithEnabled other than 1 leaves all of it out', () => {
+    mkdirSync(sendTo(), { recursive: true });
+    reg('add', `HKCU\\${KEY}`, '/v', 'OpenWithEnabled', '/t', 'REG_DWORD', '/d', '0', '/f');
+    expect(spawnSync(harness, []).status).toBe(0);
+    expect(reg('query', `HKCU\\${CLASSES}`).status).toBe(1);
+    expect(existsSync(path.join(sendTo(), 'Bulwark (as attachment).lnk'))).toBe(false);
+  });
+
+  test('an update keeps a Send to entry the user deleted deleted', () => {
+    mkdirSync(sendTo(), { recursive: true });
+    expect(spawnSync(harness, ['--updated']).status).toBe(0);
+    expect(reg('query', `HKCU\\${CLASSES}\\Bulwark.File.attach`).status).toBe(0);
+    expect(existsSync(path.join(sendTo(), 'Bulwark (as attachment).lnk'))).toBe(false);
   });
 
   test('without the rights to write it says so with an exit code, and the real target is HKLM', () => {

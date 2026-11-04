@@ -5,7 +5,7 @@
  * it through lib/launch-handoff and the protocol handlers.
  */
 
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
@@ -13,7 +13,19 @@ import type { OsHub } from './os-hub';
 import { deepLinkFromArgv, parseDeepLink } from '../deep-link';
 import { launchFolder } from '../system-exe';
 import { deliverSignInLink } from './browser-sign-in';
-import { fileReason, launchSkipPaths, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, requestFromUrl, type LaunchRequest } from './os-rules';
+import {
+  fileReason,
+  launchFileCommand,
+  LaunchFileBatch,
+  launchSkipPaths,
+  MAX_LAUNCH_FILE_BYTES,
+  MAX_LAUNCH_FILES,
+  MAX_LAUNCH_TOTAL_BYTES,
+  parseArgv,
+  parseToastUrl,
+  requestFromUrl,
+  type LaunchRequest,
+} from './os-rules';
 
 const early: { urls: string[]; files: string[]; launches: { argv: string[]; cwd: string }[] } = { urls: [], files: [], launches: [] };
 let liveHandler: ((request: LaunchRequest) => void) | null = null;
@@ -36,7 +48,7 @@ export function holdEarlyLaunches(): void {
   });
   app.on('open-file', (event, file) => {
     event.preventDefault();
-    if (liveHandler) liveHandler({ commands: [], links: [], files: [file], fromLogin: false, toastUrls: [] });
+    if (liveHandler) liveHandler({ commands: [], links: [], files: [file], fromLogin: false, toastUrls: [], sendTo: false });
     else early.files.push(file);
   });
   app.on('open-url', (event, url) => {
@@ -48,26 +60,40 @@ export function holdEarlyLaunches(): void {
     }
     const asked = requestFromUrl(url);
     if (asked.commands.length + asked.links.length === 0) return;
-    if (liveHandler) liveHandler({ ...asked, files: [], fromLogin: false, toastUrls: [] });
+    if (liveHandler) liveHandler({ ...asked, files: [], fromLogin: false, toastUrls: [], sendTo: false });
     else early.urls.push(url);
   });
 }
 
-async function readFiles(files: readonly string[]): Promise<OsCommand[]> {
+/**
+ * The file's own name. When the paths don't fit on one command line, Explorer hands over
+ * 8.3 short names (REPORT~1.PDF): the file system's real path gives the name back.
+ */
+async function realName(file: string): Promise<string> {
+  return path.basename(await realpath(file).catch(() => file));
+}
+
+type FilesCommand = Extract<OsCommand, { type: 'files' }>;
+
+async function readFiles(files: readonly string[], sendTo: boolean): Promise<FilesCommand[]> {
   const byReason: Record<'open' | 'attach', { files: OsFile[]; failed: string[] }> = {
     open: { files: [], failed: [] },
     attach: { files: [], failed: [] },
   };
+  let count = 0;
+  let total = 0;
   for (const file of files) {
-    const reason = fileReason(file);
-    const name = path.basename(file);
+    const reason = launchFileCommand(fileReason(file), sendTo).reason;
+    const name = await realName(file);
     try {
       const info = await stat(file);
       if (!info.isFile()) continue;
-      if (info.size > MAX_LAUNCH_FILE_BYTES) {
+      if (info.size > MAX_LAUNCH_FILE_BYTES || count >= MAX_LAUNCH_FILES || total + info.size > MAX_LAUNCH_TOTAL_BYTES) {
         byReason[reason].failed.push(name);
         continue;
       }
+      count += 1;
+      total += info.size;
       byReason[reason].files.push({ name, data: new Uint8Array(await readFile(file)) });
     } catch {
       // Named on a command line and not there: only worth saying if it looks meant.
@@ -76,7 +102,7 @@ async function readFiles(files: readonly string[]): Promise<OsCommand[]> {
   }
   return (['open', 'attach'] as const)
     .filter((reason) => byReason[reason].files.length + byReason[reason].failed.length > 0)
-    .map((reason) => ({ type: 'files' as const, reason, ...byReason[reason] }));
+    .map((reason) => ({ type: 'files' as const, ...launchFileCommand(reason, sendTo), ...byReason[reason] }));
 }
 
 export interface LaunchHandle {
@@ -89,9 +115,17 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   /** What the toast URLs ask for. One that isn't ours is dropped. */
   const toastActions = (request: LaunchRequest) => request.toastUrls.flatMap((url) => parseToastUrl(url, hub.toastSecret()) ?? []);
 
+  // Files for a message arrive one launch each from "Open with" on several files, and one
+  // open-file each on macOS: picked together, they go on one message, behind one question.
+  const asking = new LaunchFileBatch<FilesCommand>((command) => hub.dispatch(command));
+  const sending = new LaunchFileBatch<FilesCommand>((command) => hub.dispatch(command));
+
   const run = async (request: LaunchRequest): Promise<number> => {
-    const commands = [...request.commands, ...(await readFiles(request.files))];
-    for (const command of commands) hub.dispatch(command);
+    const commands = [...request.commands, ...(await readFiles(request.files, request.sendTo))];
+    for (const command of commands) {
+      if (command.type === 'files' && command.reason === 'attach') (command.ask ? asking : sending).add(command);
+      else hub.dispatch(command);
+    }
     for (const link of request.links) hub.ctx.openLink(link);
     const actions = toastActions(request);
     for (const { action, context } of actions) hub.toastAction(action, context);
@@ -102,9 +136,9 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   const staysHidden = (request: LaunchRequest) =>
     request.commands.length === 0 && request.links.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
-  /** A link, or a new message, brings up its own window. */
+  /** A link, a new message or a mail link brings up its own window. */
   const opensOwnWindow = (request: LaunchRequest) =>
-    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message'));
+    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message' || command.type === 'mailto'));
 
   liveHandler = (request) => void run(request);
 

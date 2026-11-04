@@ -203,7 +203,7 @@ test.describe('through the real preload and IPC', () => {
         const found = Menu.getApplicationMenu()?.getMenuItemById('file.lockNow');
         return found ? { enabled: found.enabled } : null;
       });
-      expect(await item()).toEqual({ enabled: false });
+      expect(await item()).toBeNull();
       await call(page, 'enroll', 1);
       await expect.poll(item).toEqual({ enabled: true });
       await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('file.lockNow')?.click());

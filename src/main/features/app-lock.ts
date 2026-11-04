@@ -49,18 +49,21 @@ addWipeStep(async () => {
   appLockGate.forget();
 });
 
+// Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
+declare const __BULWARK_TEST_BUILD__: boolean;
+
 type Verifier = (window: BrowserWindow | null, reason: string) => Promise<'yes' | 'no' | 'unavailable'>;
 
 function osKindNow(): Promise<OsUnlockKind | null> | OsUnlockKind | null {
   // Tests name what the check does, so no real prompt comes up on anyone's desktop.
-  if (!app.isPackaged && process.env.BULWARK_TEST_OS_VERIFY) return 'hello';
+  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY) return 'hello';
   if (process.platform === 'win32') return native().hello.available().then((available) => (available ? 'hello' : null));
   if (process.platform === 'darwin') return systemPreferences.canPromptTouchID() ? 'touchid' : null;
   return null;
 }
 
 const verifyWithOs: Verifier = async (window, reason) => {
-  if (!app.isPackaged && process.env.BULWARK_TEST_OS_VERIFY) {
+  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY) {
     return process.env.BULWARK_TEST_OS_VERIFY === 'yes' ? 'yes' : 'no';
   }
   if (process.platform === 'win32') {
@@ -114,12 +117,13 @@ function setup(ctx: FeatureContext): void {
     });
   });
 
-  ctx.menu.extend('file', () => [{
+  // Only with a lock, as in the tray: a greyed line with no way to make it work says nothing.
+  ctx.menu.extend('file', () => (appLockGate.enrolled ? [{
     id: 'file.lockNow',
     label: strings().menuLockNow,
-    enabled: appLockGate.enrolled && !appLockGate.locked,
+    enabled: !appLockGate.locked,
     click: () => appLockGate.requestLock(),
-  }]);
+  }] : []));
 
   appLockGate.on('locked', (locked) => {
     if (locked) blankTitles();
@@ -298,7 +302,7 @@ function setup(ctx: FeatureContext): void {
   }));
 
   // The checks in test/ read and fire these. An installed app has none of it.
-  if (!app.isPackaged) {
+  if (__BULWARK_TEST_BUILD__) {
     (globalThis as unknown as { __bulwarkAppLock: unknown }).__bulwarkAppLock = {
       gate: appLockGate,
       lockScreen: () => powerMonitor.emit('lock-screen'),

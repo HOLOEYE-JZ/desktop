@@ -27,6 +27,7 @@ import { electronRegistersScheme } from './features/os-rules';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
+import { devToolsForcedOff } from './features/dev-tools';
 import { privacy } from './features/privacy';
 import { clientAuth } from './features/client-certificates';
 import { createChannels, registerBridge } from './ipc';
@@ -40,7 +41,8 @@ import { attachWindowGuards, type GuardOptions } from './navigation';
 import { applyPermissionPolicy } from './permissions';
 import { sandboxRefused } from './sandbox-check';
 import { connectionMustChange, decideStart, restartKey, type StartDecision } from './policy-start';
-import { deniedSwitches, withoutDeniedSwitches } from './switch-guard';
+import { policyProblems } from '../shared/policy-schema';
+import { deniedEnvironment, deniedSwitches, withoutDeniedSwitches } from './switch-guard';
 import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
 import { startServerProcess, ServerStartError } from './server-process';
@@ -55,9 +57,10 @@ import { printWindow, saveWindowAsPdf } from './print';
 import { navigateHistory } from './features/window-input';
 import { appPathOfDeepLink, deepLinkWindowKey, LinkRateLimit, DEEP_LINK_SCHEME, type WindowLink } from './deep-link';
 import { closeDictionaryDownloads } from './spellcheck';
+import { isInstalledBuild } from './installed';
 
 // Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
-// anyone can rename it.
+// anyone can rename it. See installed.ts.
 declare const __BULWARK_TEST_BUILD__: boolean;
 declare const __BULWARK_TEST_PROFILE__: string;
 
@@ -67,15 +70,15 @@ if (!__BULWARK_TEST_BUILD__) {
   // An AppImage's AppRun adds --no-sandbox where the sandbox can't work. Restarting without it
   // would die in Chromium before any window. Left alone, the app says why and exits.
   const refusing = sandboxRefused({ platform: process.platform, appImage: process.env.APPIMAGE, noSandboxSwitch: process.argv.includes('--no-sandbox'), disableSandboxEnv: process.env.ELECTRON_DISABLE_SANDBOX });
-  if (denied.length > 0 && !refusing) {
-    console.warn(`Ignoring these switches: ${denied.join(', ')}`);
+  const deniedEnv = deniedEnvironment(process.env);
+  if ((denied.length > 0 || deniedEnv.length > 0) && !refusing) {
+    console.warn(`Ignoring these switches and environment variables: ${[...denied, ...deniedEnv].join(', ')}`);
     for (const name of denied) app.commandLine.removeSwitch(name);
+    for (const name of deniedEnv) delete process.env[name];
     app.relaunch({ args: withoutDeniedSwitches(process.argv).slice(1) });
     app.exit(0);
     await new Promise(() => {});
   }
-  // The same as --ssl-key-log-file, for whoever sets the environment.
-  delete process.env.SSLKEYLOGFILE;
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -102,7 +105,8 @@ if (__BULWARK_TEST_PROFILE__) app.setPath('userData', __BULWARK_TEST_PROFILE__);
 leaveLaunchFolder(app.getPath('userData'));
 
 app.setName('Bulwark');
-app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: 'AGPL-3.0-only', website: 'https://bulwarkmail.org' });
+const ABOUT_COPYRIGHT = 'AGPL-3.0-only';
+app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: ABOUT_COPYRIGHT, website: 'https://bulwarkmail.org' });
 if (process.platform === 'win32') {
   app.setAppUserModelId('org.bulwarkmail.desktop');
   setToastActivator();
@@ -142,7 +146,7 @@ if (gotLock) clientAuth.start(stateFile);
 
 /** A production build has refused the switches that move the profile by now. */
 function runKeyInit(run: string): void {
-  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run, __BULWARK_TEST_BUILD__ ? '--bulwark-user-data=' : undefined), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
+  spawnSync(process.execPath, keyInitArgs(process.argv, isInstalledBuild(), path.join(HERE, 'main.mjs'), run, __BULWARK_TEST_BUILD__ ? '--bulwark-user-data=' : undefined), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
 }
 
 // Holding the lock, so no other run of the app is making a key for this profile.
@@ -174,7 +178,7 @@ let sessionReady = false;
 const linkLimit = new LinkRateLimit();
 
 function serverDirectory(): string {
-  if (app.isPackaged) return path.join(process.resourcesPath, 'server.asar');
+  if (isInstalledBuild()) return path.join(process.resourcesPath, 'server.asar');
   const chosen = __BULWARK_TEST_BUILD__ && DEV ? argValue('bulwark-server-dir') : undefined;
   return chosen ?? path.join(HERE, '..', 'webmail');
 }
@@ -226,9 +230,10 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     origin,
     mode,
     preloadPath: PRELOAD,
-    devTools,
-    spare: !(DEV && process.argv.includes('--bulwark-no-spare')),
-    spareIdleMs: DEV && argValue('bulwark-test-spare-idle') ? Number(argValue('bulwark-test-spare-idle')) : undefined,
+    // Opening them is up to features/dev-tools.ts; only the policy keeps them out of a window altogether.
+    devTools: () => devTools || !devToolsForcedOff(),
+    spare: !(__BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-no-spare')),
+    spareIdleMs: __BULWARK_TEST_BUILD__ && DEV && argValue('bulwark-test-spare-idle') ? Number(argValue('bulwark-test-spare-idle')) : undefined,
     attachGuards: (window) => attachWindowGuards(window, guard),
   });
   zoom.attach(windowManager);
@@ -237,7 +242,7 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
   addWipeStep(async () => windowManager?.forgetSession(), { perAccount: true });
   windowManager.on('sessionReady', onSessionReady);
   // A development switch for the test of the tray's hook, until the tray exists.
-  if (DEV && process.argv.includes('--bulwark-test-close-to-background')) windowManager.setCloseToBackground(() => true);
+  if (__BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-test-close-to-background')) windowManager.setCloseToBackground(() => true);
   appStartUrl = startUrl;
   windowManager.on('stayed', () => {
     switching = false;
@@ -558,7 +563,15 @@ function startDecision(): StartDecision {
 async function showPolicyError(decision: Extract<StartDecision, { kind: 'policy-error' }>): Promise<void> {
   const text = strings();
   const reason = text.policyReasons[decision.reason] ?? text.policyReasons.other;
-  await showErrorPage(text.policyErrorTitle, text.policyErrorBody(decision.policy, reason, decision.raw));
+  const others = policyProblems(policies.snapshot).map((problem) => problem.key).filter((key) => key !== decision.policy);
+  const body = text.policyErrorBody(decision.policy, reason, decision.raw);
+  await showErrorPage(text.policyErrorTitle, others.length ? `${body} ${text.policyProblemsLine(others)}` : body);
+}
+
+/** Where an admin can look when a value doesn't seem to do anything. Also in the log. */
+function showPolicyProblemsInAbout(): void {
+  const keys = policyProblems(policies.snapshot).map((problem) => problem.key);
+  app.setAboutPanelOptions({ copyright: keys.length ? `${ABOUT_COPYRIGHT}\n\n${strings().policyProblemsLine(keys)}` : ABOUT_COPYRIGHT });
 }
 
 let bootedKey = '';
@@ -619,7 +632,7 @@ function watchPolicyForRestart(booted: StartDecision): void {
     }
     askedKey = key;
     ask(key);
-    if (connectionMustChange(booted, decision)) {
+    if (connectionMustChange(booted, decision, policies.snapshot)) {
       cancelTimers = addRestartTimers(() => ask(key), () => {
         if (askedKey === key) restartNow();
       });
@@ -701,10 +714,6 @@ function buildMenu(): MenuController {
       // Unique across runs: one restored from last time may hold a low number.
       windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
     },
-    openSettings: () => {
-      const windows = windowManager;
-      if (windows) windows.open({ type: 'settings', url: `${windows.originUrl()}/settings`, key: 'settings' });
-    },
     zoom: (step) => zoom.step(step),
     print: (window) => printWindow(window, menu?.commandState(window)),
     saveAsPdf: (window) => void saveWindowAsPdf(window, menu?.commandState(window)),
@@ -726,7 +735,7 @@ if (gotLock) {
   // Registered here: macOS sends a launch's file or link before `ready`.
   holdEarlyLaunches();
   // Unpackaged, the shell isn't what the OS should start for these. Windows: os-default-app.ts.
-  if (electronRegistersScheme(process.platform, app.isPackaged)) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  if (electronRegistersScheme(process.platform, isInstalledBuild())) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   app.on('window-all-closed', () => {
     // Closing to the tray hides the main window, so this means there's nothing left.
@@ -786,6 +795,8 @@ if (gotLock) {
     }
     menu = buildMenu();
     menu.rebuild();
+    showPolicyProblemsInAbout();
+    policies.on('changed', showPolicyProblemsInAbout);
     const theme = new ThemeController(stateFile);
     await boot(theme);
     policies.watch();

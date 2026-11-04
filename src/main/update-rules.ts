@@ -7,7 +7,7 @@ import type { UpdateAbility, UpdateChannel } from '../shared/bridge';
 import type { PolicySnapshot } from '../shared/policy-schema';
 
 export interface UpdatePolicy {
-  /** `AutoUpdate`, forced. False: no network requests for updates at all. */
+  /** `AutoUpdate`, forced. False: no network requests for updates at all. There's no user's choice to recommend for. */
   autoUpdate?: boolean;
   /** `UpdateChannel`, forced. The user can't change it. */
   channel?: UpdateChannel;
@@ -23,7 +23,7 @@ export interface UpdatePolicy {
 export function updatePolicyFrom(snapshot: Pick<PolicySnapshot, 'AutoUpdate' | 'UpdateChannel'>): UpdatePolicy {
   const { AutoUpdate: auto, UpdateChannel: channel } = snapshot;
   const policy: UpdatePolicy = {};
-  if (auto.source !== 'default') policy.autoUpdate = auto.value;
+  if (auto.locked) policy.autoUpdate = auto.value;
   if (channel.locked) policy.channel = channel.value;
   else if (channel.source !== 'default') policy.recommendedChannel = channel.value;
   return policy;

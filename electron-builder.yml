@@ -102,7 +102,7 @@ nsis:
   artifactName: Bulwark-Setup-${version}-${arch}.${ext}
   shortcutName: Bulwark
   uninstallDisplayName: Bulwark
-  createDesktopShortcut: true
+  createDesktopShortcut: false
   createStartMenuShortcut: true
   runAfterFinish: true
   deleteAppDataOnUninstall: false
@@ -116,7 +116,7 @@ msi:
   upgradeCode: 7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47
   artifactName: Bulwark-${version}-${arch}.${ext}
   shortcutName: Bulwark
-  createDesktopShortcut: true
+  createDesktopShortcut: false
   createStartMenuShortcut: true
 
 mac:
@@ -161,6 +161,12 @@ mac:
     - ext: vcf
       name: Contact card
       role: Viewer
+    # "Open With" for documents and pictures, to attach them to a new message. Alternate: listed,
+    # never the default (os-rules.ts OPEN_WITH_EXTENSIONS has the same list for Windows).
+    - ext: [pdf, doc, docx, xls, xlsx, ppt, pptx, odt, ods, odp, rtf, txt, csv, jpg, jpeg, png, gif, webp, heic, bmp, tif, tiff, svg, zip]
+      name: Document
+      role: Viewer
+      rank: Alternate
 dmg:
   sign: false
 
@@ -174,7 +180,11 @@ linux:
   # The binary and the .desktop file named alike: the window's app_id follows desktopName
   # in package.json. os-integration needs the same two for Unity's count.
   syncDesktopName: true
-  # electron-builder adds %U to Exec and fills MimeType from these.
+  # electron-builder adds %U to Exec and fills MimeType from these. %U, not %F: the same entry
+  # takes mailto: and webcal: links, and a file manager hands several files over as file: URLs
+  # in one start, which os-rules.ts parseArgv reads as files.
+  # The documents and pictures after the line only put Bulwark in "Open With", to attach them:
+  # nothing here sets a default (os-rules.ts OPEN_WITH_EXTENSIONS has the same list for Windows).
   mimeTypes:
     - x-scheme-handler/mailto
     - x-scheme-handler/webcal
@@ -184,6 +194,28 @@ linux:
     - text/calendar
     - text/vcard
     - text/x-vcard
+    - application/pdf
+    - application/msword
+    - application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    - application/vnd.ms-excel
+    - application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    - application/vnd.ms-powerpoint
+    - application/vnd.openxmlformats-officedocument.presentationml.presentation
+    - application/vnd.oasis.opendocument.text
+    - application/vnd.oasis.opendocument.spreadsheet
+    - application/vnd.oasis.opendocument.presentation
+    - application/rtf
+    - text/plain
+    - text/csv
+    - image/jpeg
+    - image/png
+    - image/gif
+    - image/webp
+    - image/heic
+    - image/bmp
+    - image/tiff
+    - image/svg+xml
+    - application/zip
   fileAssociations:
     - ext: eml
       mimeType: message/rfc822

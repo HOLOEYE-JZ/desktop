@@ -57,7 +57,7 @@ test.afterEach(async () => {
 });
 
 test.afterAll(() => {
-  spawnSync('reg.exe', ['delete', BASE, '/f'], { windowsHide: true });
+  spawnSync('reg.exe', ['delete', ROOT, '/f'], { windowsHide: true });
 });
 
 test.describe('standalone', () => {

@@ -62,10 +62,23 @@ const DENIED: readonly RegExp[] = [
   /^user-agent$/,
 ];
 
+/**
+ * Chromium trims each argument before it looks for a switch: all Unicode white space on
+ * Windows, ASCII elsewhere, so ` --no-sandbox` is `--no-sandbox` to it. This takes more
+ * than that, quotes and control characters too. A file name with those around it and a
+ * refused switch inside is not something anyone needs, and treating it as a file is the
+ * mistake that lets a switch through.
+ */
+const AT_THE_EDGES = /^[\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2060\ufeff"']+|[\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2060\ufeff"']+$/g;
+
+function bare(arg: string): string {
+  return arg.replace(AT_THE_EDGES, '');
+}
+
 /** `--name=value` as Chromium reads it. On Windows it also takes `-name` and `/name`, in any case. */
 function switchName(arg: string, platform: NodeJS.Platform): string | null {
-  const match = (platform === 'win32' ? /^(?:--|-|\/)([^=]+)/ : /^(?:--|-)([^=]+)/).exec(arg);
-  return match ? match[1].toLowerCase() : null;
+  const match = (platform === 'win32' ? /^(?:--|-|\/)([^=]+)/ : /^(?:--|-)([^=]+)/).exec(bare(arg));
+  return match ? bare(match[1]).replace(/^-+/, '').toLowerCase() : null;
 }
 
 function isDenied(arg: string, platform: NodeJS.Platform): boolean {
@@ -75,7 +88,7 @@ function isDenied(arg: string, platform: NodeJS.Platform): boolean {
 
 /** Everything after a bare `--` is an argument to the app, as for Chromium. */
 function untilEnd(argv: readonly string[]): number {
-  const end = argv.indexOf('--');
+  const end = argv.findIndex((arg) => bare(arg) === '--');
   return end === -1 ? argv.length : end;
 }
 
@@ -90,4 +103,16 @@ export function deniedSwitches(argv: readonly string[], platform: NodeJS.Platfor
 export function withoutDeniedSwitches(argv: readonly string[], platform: NodeJS.Platform = process.platform): string[] {
   const end = untilEnd(argv);
   return argv.filter((arg, index) => index === 0 || index >= end || !isDenied(arg, platform));
+}
+
+/**
+ * The same for the environment. Electron turns the sandbox off for ELECTRON_DISABLE_SANDBOX,
+ * on every OS, and Node and Chromium read the others before any of our code runs. These
+ * few only change how a window looks or where deleted files go.
+ */
+const HARMLESS_ENV = /^ELECTRON_(?:OZONE_PLATFORM_HINT|TRASH|FORCE_WINDOW_MENU_BAR)$/i;
+const DENIED_ENV = /^(?:ELECTRON_|NODE_(?!ENV$)|SSLKEYLOGFILE$|CHROME_LOG_FILE$)/i;
+
+export function deniedEnvironment(env: Record<string, string | undefined>): string[] {
+  return Object.keys(env).filter((name) => env[name] !== undefined && DENIED_ENV.test(name) && !HARMLESS_ENV.test(name));
 }

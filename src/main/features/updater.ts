@@ -39,6 +39,7 @@ import {
 import { fill, strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 import { policies } from './policies';
+import { isInstalledBuild } from '../installed';
 
 declare const __BULWARK_UPDATER_TEST__: boolean;
 
@@ -72,7 +73,7 @@ function detectKind(): InstallKind {
   }
   return installKind({
     platform: process.platform,
-    isPackaged: app.isPackaged,
+    isPackaged: isInstalledBuild(),
     hasNsisUninstaller: existsSync(path.join(path.dirname(process.execPath), `Uninstall ${app.getName()}.exe`)),
     appImage: process.env.APPIMAGE,
     packageType: readText(path.join(resources, 'package-type')),
@@ -127,7 +128,7 @@ class Updater {
 
   private get ability(): UpdateState['ability'] {
     if (this.testFeed) return updateAbility(this.kind);
-    if (!app.isPackaged || !existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return 'none';
+    if (!isInstalledBuild() || !existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return 'none';
     return updateAbility(this.kind);
   }
 
@@ -485,7 +486,8 @@ class Updater {
 
   setup(): void {
     const { ctx } = this;
-    ctx.menu.extend('file', () => this.menuItems());
+    // Where Windows and Linux apps keep it, by About; macOS has it in the app menu.
+    ctx.menu.extend(process.platform === 'darwin' ? 'app' : 'help', () => this.menuItems());
     ctx.handle(CHANNEL.updatesState, () => this.state());
     ctx.handle(CHANNEL.updatesCheck, () => this.check());
     ctx.handle(CHANNEL.updatesSetChannel, (_event, _window, channel) => this.setChannel(channel));

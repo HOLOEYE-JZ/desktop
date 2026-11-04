@@ -179,6 +179,11 @@ test.describe('what the policy reader passes on', () => {
     expect(updatePolicyFrom({ AutoUpdate: entry(false, 'forced-machine', true), UpdateChannel: entry('beta', 'forced-user', true) })).toEqual({ autoUpdate: false, channel: 'beta' });
   });
 
+  test('a recommended AutoUpdate is no decision: there is no user\'s choice to set it for', () => {
+    expect(updatePolicyFrom({ ...defaults, AutoUpdate: entry(false, 'recommended-machine', false) })).toEqual({});
+    expect(updatePolicyFrom({ ...defaults, AutoUpdate: entry(false, 'recommended-user', false) })).toEqual({});
+  });
+
   test('a recommended channel is only a default for the user', () => {
     expect(updatePolicyFrom({ ...defaults, UpdateChannel: entry('beta', 'recommended-machine', false) })).toEqual({ recommendedChannel: 'beta' });
   });

@@ -145,6 +145,8 @@ export interface NativeMenuItem {
   type?: 'normal' | 'separator' | 'checkbox' | 'radio';
   enabled?: boolean;
   checked?: boolean;
+  /** The key the page answers for this item ("D", "Shift+I", "Ctrl+X"). Only shown, never registered. */
+  accelerator?: string;
   submenu?: NativeMenuItem[];
 }
 
@@ -157,9 +159,37 @@ export interface MenuBarEntry {
 }
 
 export interface MenuBarEvent {
+  /** The bar has the keys: Alt was pressed. With `pinned` it shows either way. */
   visible: boolean;
   /** Open this menu right away: Alt plus its letter. */
   open?: string;
+  /** "Always show the menu bar". */
+  pinned?: boolean;
+}
+
+/** One line of a menu the page draws as the menu bar's. */
+export interface MenuBarItem {
+  /** Its place in the app menu: handed back with its text when it's picked. */
+  key: string;
+  label: string;
+  type: 'normal' | 'checkbox' | 'radio' | 'separator' | 'submenu';
+  enabled: boolean;
+  checked?: boolean;
+  /** As Electron writes it: `CmdOrCtrl+N`. */
+  accelerator?: string;
+  /** Where in `label` the letter for it is. */
+  mnemonic?: number;
+  items?: MenuBarItem[];
+}
+
+export interface MenuBarMenu extends MenuBarEntry {
+  items: MenuBarItem[];
+}
+
+/** What the page's bar takes now: its height in CSS pixels (0 when gone), and whether it has the keys. */
+export interface MenuBarReport {
+  height: number;
+  active: boolean;
 }
 
 /** What a page says when asked to save before a window goes. */
@@ -373,7 +403,8 @@ export type OsCommand =
   | { type: 'open-mailbox'; mailboxId: string }
   | { type: 'mailto'; url: string }
   | { type: 'webcal'; url: string }
-  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[] }
+  /** `ask`: opened with the app, so the user picks between a new message and Files. Without it, attach. */
+  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[]; ask?: boolean }
   | { type: 'notification'; action: string; context: string; reply?: string };
 
 export interface OsNotification {
@@ -414,6 +445,8 @@ export interface OsSummary {
   /** Newest conversations, whether read or not, for the jump list. */
   recent: OsTrayMessage[];
   nextEvent: { title: string; when: string } | null;
+  /** The account `unread` is from, when more than one is signed in. */
+  account?: string;
 }
 
 export type OsPowerEvent = 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
@@ -439,6 +472,13 @@ export interface CrashFileInfo {
 export type CrashSendResult =
   | { ok: true }
   | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
+
+/** `forcedOff`: the DeveloperToolsAvailability policy says no. `locked`: the app lock is on, so nothing changes. */
+export interface DevToolsState {
+  on: boolean;
+  forcedOff: boolean;
+  locked: boolean;
+}
 
 /** An attachment copied to a private folder and open in its default program. */
 export interface EditSession {
@@ -519,6 +559,10 @@ export const CHANNEL = {
   menuBarEntries: 'bulwark:menu.barEntries',
   menuBarOpen: 'bulwark:menu.barOpen',
   menuBarEvent: 'bulwark:menu.barEvent',
+  menuBarMenus: 'bulwark:menu.barMenus',
+  menuBarRun: 'bulwark:menu.barRun',
+  menuBarReport: 'bulwark:menu.barReport',
+  menuBarSetPinned: 'bulwark:menu.barSetPinned',
   shellOpenExternal: 'bulwark:shell.openExternal',
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',
@@ -628,6 +672,9 @@ export const CHANNEL = {
   localImportResume: 'bulwark:localImport.resume',
   localImportRelease: 'bulwark:localImport.release',
   localImportReleaseAll: 'bulwark:localImport.releaseAll',
+  devToolsGet: 'bulwark:devTools.get',
+  devToolsSet: 'bulwark:devTools.set',
+  devToolsChanged: 'bulwark:devTools.changed',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */
