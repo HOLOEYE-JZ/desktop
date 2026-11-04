@@ -17,7 +17,7 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { parseWelcomeAddress } from '../shared/welcome-address';
+import { parseWelcomeAddress, parseWelcomeEmail } from '../shared/welcome-address';
 import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
@@ -550,12 +550,14 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
   let latestChoice = 0;
-  ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown }) => {
+  ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown; email?: unknown }) => {
     if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) throw new Error('Not allowed');
     const thisChoice = ++latestChoice;
     let instanceUrl: string | undefined;
     if (choice?.mode === 'standalone') {
       if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
+      const email = parseWelcomeEmail(choice.email);
+      if (!email.ok) return { ok: false, error: email.error };
     } else if (choice?.mode === 'instance') {
       const allowInsecure = policies.snapshot.AllowInsecureInstance.value;
       // A locked address is the admin's, already full. A typed one may be a bare host.

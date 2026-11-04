@@ -50,3 +50,17 @@ export function parseWelcomeAddress(raw: unknown, allowInsecure: boolean): { ok:
   if (parsed.ok) return { ok: true, value: parsed.value };
   return { ok: false, error: parsed.reason === 'insecure' ? 'insecure' : 'invalid_url' };
 }
+
+export type WelcomeEmailError = 'email_invalid' | 'no_jmap';
+
+/**
+ * The first screen's email address. It isn't kept: the sign-in page asks for it again, as
+ * nothing carries it there. What it does here is catch Gmail, Outlook.com and iCloud, and
+ * something that isn't an email address, before the app is set up for them.
+ */
+export function parseWelcomeEmail(raw: unknown): { ok: true } | { ok: false; error: WelcomeEmailError } {
+  if (typeof raw !== 'string') return { ok: false, error: 'email_invalid' };
+  const email = /^[^\s@/]+@([^\s@/]+\.[^\s@/.]+)$/.exec(raw.trim());
+  if (!email) return { ok: false, error: 'email_invalid' };
+  return isNoJmapDomain(email[1]) ? { ok: false, error: 'no_jmap' } : { ok: true };
+}

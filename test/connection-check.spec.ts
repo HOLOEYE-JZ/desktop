@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { LOAD_ERROR_TEXT } from '../src/main/load-error';
@@ -17,21 +17,47 @@ test('the first run checks an organisation address before it takes it', async ()
   const app = await launch(profile);
   try {
     const page = await shownPage(app);
+    await page.locator('#email').waitFor();
+
+    // Its menu has only what works with no mail window: no Settings…, no New message.
+    const menu = await app.evaluate(({ Menu }) => {
+      const out: string[] = [];
+      const walk = (items: Electron.MenuItem[]) => {
+        for (const item of items) {
+          if (item.role) out.push(`role:${item.role.toLowerCase()}`);
+          else if (item.id && item.type !== 'submenu') out.push(`id:${item.id}`);
+          if (item.submenu) walk(item.submenu.items);
+        }
+      };
+      walk(Menu.getApplicationMenu()?.items ?? []);
+      return out;
+    });
+    expect(menu.filter((entry) => entry.startsWith('id:'))).toEqual([]);
+    expect(menu).toEqual(expect.arrayContaining(['role:about', 'role:quit', 'role:undo', 'role:redo', 'role:cut', 'role:copy', 'role:paste', 'role:selectall']));
+    expect(menu.length).toBeLessThanOrEqual(process.platform === 'darwin' ? 9 : 8);
+
     await page.click('#instance');
+    await expect(page.locator('#org-back')).toBeVisible();
 
     await page.fill('#url', NOWHERE);
     await page.click('#connect');
     await expect(page.locator('#error')).toHaveText(text.unreachable, { timeout: 15_000 });
     await expect(page.locator('#url')).toHaveAttribute('aria-invalid', 'true');
     await expect(page.locator('#privacy')).toBeHidden();
-    await expect(page.locator('#connection')).toBeVisible();
-    await expect(page.locator('#standalone')).toBeVisible();
+    // It stays on the address step, with Back.
+    await expect(page.locator('#org')).toBeVisible();
+    await expect(page.locator('#org-back')).toBeVisible();
     await page.screenshot({ path: path.join(SCREENSHOTS, 'after-desk-05-address-unreachable-en.png') });
 
     await page.fill('#url', NOT_BULWARK);
     await page.click('#connect');
     await expect(page.locator('#error')).toHaveText(text.notBulwark, { timeout: 15_000 });
     await expect(page.locator('#privacy')).toBeHidden();
+
+    // Back goes to the email address, and the link leads here again.
+    await page.click('#org-back');
+    await expect(page.locator('#email')).toBeVisible();
+    await page.click('#instance');
 
     await page.fill('#url', BULWARK);
     await page.click('#connect');
@@ -43,9 +69,11 @@ test('the first run checks an organisation address before it takes it', async ()
   }
 });
 
-test('a server that does not load shows a page with Try again and Change connection', async () => {
+test('a server that does not load shows a page with Try again and Change connection, after a restart too', async () => {
   const profile = tempProfile('load-error');
-  const app = await launch(profile, `--instance=https://${NOWHERE}/`);
+  // What an earlier run saved for an address that has stopped answering: this start is a restart.
+  writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'instance', instanceUrl: `https://${NOWHERE}/` }));
+  const app = await launch(profile);
   try {
     const page = await shownPage(app);
     const words = LOAD_ERROR_TEXT.en;

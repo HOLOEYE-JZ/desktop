@@ -24,33 +24,49 @@ document.documentElement.lang = language;
 document.documentElement.dir = RTL.includes(language) ? 'rtl' : 'ltr';
 
 const byId = (id) => document.getElementById(id);
-const fill = { 'privacy-title': 'privacyTitle', 'privacy-intro': 'privacyIntro', 'telemetry-label': 'telemetryLabel', 'telemetry-text': 'telemetryText', 'crash-label': 'crashLabel', 'crash-text': 'crashText', continue: 'continueLabel', back: 'back', title: 'title', intro: 'intro', 'standalone-title': 'standaloneTitle', 'standalone-text': 'standaloneText', 'instance-title': 'instanceTitle', 'instance-text': 'instanceText', 'url-label': 'urlLabel', connect: 'connect' };
+const fill = { 'privacy-title': 'privacyTitle', 'privacy-intro': 'privacyIntro', 'telemetry-label': 'telemetryLabel', 'telemetry-text': 'telemetryText', 'crash-label': 'crashLabel', 'crash-text': 'crashText', continue: 'continueLabel', back: 'back', title: 'title', intro: 'intro', 'email-label': 'emailLabel', standalone: 'continueLabel', instance: 'orgLink', 'instance-title': 'instanceTitle', 'instance-text': 'instanceText', 'url-label': 'urlLabel', 'org-back': 'back', connect: 'connect' };
 for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
 document.title = text.title;
 
 const { allowStandalone, instanceUrl, urlLocked, askTelemetry, askCrashReports } = window.bulwarkWelcome.options;
-const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark' };
+const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark', email_invalid: 'emailInvalid' };
 /** The latest choice sent to main: an earlier answer arriving late is ignored. */
 let request = 0;
 
 if (!askTelemetry) byId('telemetry-row').remove();
 if (!askCrashReports) byId('crash-row').remove();
 
+/**
+ * Two screens before the privacy step: the email address, and the organisation's Bulwark
+ * address behind a link. Without the first (a policy), the second has no Back.
+ */
+let screen = 'connection';
+function setHidden(id, hidden) {
+  const element = byId(id);
+  if (element) element.hidden = hidden;
+}
+function show(name) {
+  screen = name;
+  setHidden('connection', name !== 'connection');
+  setHidden('org', name !== 'org');
+  document.title = name === 'org' ? text.instanceTitle : text.title;
+  byId(name === 'org' ? 'url' : 'email').focus();
+}
+
 /** The mode is chosen: the second question, if there is one. Main says. */
 function next(result) {
   if (result.next !== 'privacy') return;
-  byId('connection').hidden = true;
+  setHidden('connection', true);
+  setHidden('org', true);
   document.title = text.privacyTitle;
   byId('privacy').classList.add('open');
   byId('continue').focus();
 }
 
-// Back to the first question. Choosing again there asks main again, which replaces the earlier choice.
+// Back to where the choice was made. Choosing again there asks main again, which replaces the earlier choice.
 byId('back').addEventListener('click', () => {
   byId('privacy').classList.remove('open');
-  byId('connection').hidden = false;
-  document.title = text.title;
-  byId('instance').focus();
+  show(screen);
 });
 
 byId('privacy').addEventListener('submit', (event) => {
@@ -61,28 +77,46 @@ byId('privacy').addEventListener('submit', (event) => {
   });
 });
 
+/** An answer from main: the text under the field, or on to the next step. */
+function answer(result, field, error) {
+  if (!result.ok) {
+    byId(error).textContent = text[ERRORS[result.error] ?? 'invalid'];
+    byId(field).setAttribute('aria-invalid', 'true');
+    byId(field).focus();
+  } else next(result);
+}
+
+for (const [field, error] of [['email', 'email-error'], ['url', 'error']]) {
+  byId(field).addEventListener('input', () => {
+    byId(error).textContent = '';
+    byId(field).removeAttribute('aria-invalid');
+  });
+}
+
 if (instanceUrl) byId('url').value = instanceUrl;
 if (urlLocked) byId('url').readOnly = true;
-if (!allowStandalone || instanceUrl) byId('form').classList.add('open');
 
-// Not `hidden`: the page's own `button { display: block }` would win.
 if (allowStandalone) {
-  byId('standalone').addEventListener('click', () => {
+  byId('email-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    byId('email-error').textContent = '';
+    const mine = ++request;
+    const result = await window.bulwarkWelcome.choose({ mode: 'standalone', email: byId('email').value });
+    if (mine === request) answer(result, 'email', 'email-error');
+  });
+  byId('instance').addEventListener('click', () => show('org'));
+  byId('org-back').addEventListener('click', () => {
     request += 1;
     byId('status').textContent = '';
-    void window.bulwarkWelcome.choose({ mode: 'standalone' }).then(next);
+    show('connection');
   });
+  show(instanceUrl ? 'org' : 'connection');
 } else {
-  byId('standalone').remove();
+  byId('connection').remove();
+  byId('org-back').remove();
+  show('org');
 }
-byId('instance').addEventListener('click', () => {
-  byId('form').classList.add('open');
-  byId('url').focus();
-});
-byId('url').addEventListener('input', () => {
-  byId('error').textContent = '';
-  byId('url').removeAttribute('aria-invalid');
-});
+
 byId('form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (byId('connect').disabled) return;
@@ -95,11 +129,7 @@ byId('form').addEventListener('submit', async (event) => {
     byId('connect').disabled = false;
     if (mine === request) byId('status').textContent = '';
   });
-  // The standalone choice came in meanwhile, and is the one that counts.
+  // The user went back meanwhile, or chose the other way.
   if (mine !== request || result.error === 'superseded') return;
-  if (!result.ok) {
-    byId('error').textContent = text[ERRORS[result.error] ?? 'invalid'];
-    byId('url').setAttribute('aria-invalid', 'true');
-    byId('url').focus();
-  } else next(result);
+  answer(result, 'url', 'error');
 });

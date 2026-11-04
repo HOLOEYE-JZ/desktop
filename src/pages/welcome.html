@@ -11,10 +11,8 @@
       p { margin: 0 0 20px; opacity: .75; }
       button { display: block; width: 100%; text-align: start; font: inherit; padding: 14px 16px; margin-bottom: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; cursor: default; }
       button:hover { background: color-mix(in srgb, currentColor 7%, transparent); }
-      button strong { display: block; font-weight: 600; }
-      button span { opacity: .75; }
-      form { margin-top: 4px; display: none; }
-      form.open { display: block; }
+      [hidden] { display: none !important; }
+      #form, #email-form { margin-top: 4px; }
       label { display: block; margin-bottom: 4px; }
       input { width: 100%; box-sizing: border-box; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: transparent; color: inherit; user-select: text; }
       .connect { display: inline-block; width: auto; margin-top: 10px; padding: 8px 18px; }
@@ -22,7 +20,9 @@
       .error:empty, .status:empty { display: none; }
       .status { margin-top: 6px; opacity: .75; }
       .connect:disabled { opacity: .6; }
-      html[dir="rtl"] #url { text-align: right; }
+      .link { display: inline; width: auto; margin: 22px 0 0; padding: 0; border: 0; border-radius: 0; text-decoration: underline; text-underline-offset: 3px; opacity: .85; }
+      .link:hover { background: transparent; opacity: 1; }
+      html[dir="rtl"] #url, html[dir="rtl"] #email { text-align: right; }
       .actions { display: flex; gap: 10px; }
       .actions .connect { margin-bottom: 0; }
       #privacy { display: none; margin: 0; }
@@ -35,17 +35,26 @@
   </head>
   <body>
     <div id="connection">
-    <h1 id="title"></h1>
-    <p id="intro"></p>
-    <button id="standalone" type="button"><strong id="standalone-title"></strong><span id="standalone-text"></span></button>
-    <button id="instance" type="button"><strong id="instance-title"></strong><span id="instance-text"></span></button>
-    <form id="form">
-      <label for="url" id="url-label"></label>
-      <input id="url" type="text" inputmode="url" placeholder="mail.example.com" autocomplete="url" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="error" />
-      <div id="error" class="error" role="alert"></div>
-      <div id="status" class="status" role="status"></div>
-      <button id="connect" class="connect" type="submit"></button>
-    </form>
+      <h1 id="title"></h1>
+      <p id="intro"></p>
+      <form id="email-form">
+        <label for="email" id="email-label"></label>
+        <input id="email" type="text" inputmode="email" placeholder="name@example.com" autocomplete="email" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="email-error" />
+        <div id="email-error" class="error" role="alert"></div>
+        <button id="standalone" class="connect" type="submit"></button>
+      </form>
+      <button id="instance" class="link" type="button"></button>
+    </div>
+    <div id="org" hidden>
+      <h1 id="instance-title"></h1>
+      <p id="instance-text"></p>
+      <form id="form">
+        <label for="url" id="url-label"></label>
+        <input id="url" type="text" inputmode="url" placeholder="mail.example.com" autocomplete="url" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="error" />
+        <div id="error" class="error" role="alert"></div>
+        <div id="status" class="status" role="status"></div>
+        <div class="actions"><button id="org-back" class="connect" type="button"></button><button id="connect" class="connect" type="submit"></button></div>
+      </form>
     </div>
     <form id="privacy">
       <h1 id="privacy-title"></h1>
