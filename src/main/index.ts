@@ -13,7 +13,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, session as electronSession, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, screen, session as electronSession, shell } from 'electron';
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
@@ -526,6 +526,9 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   windows.open({ type: 'main', url: instanceUrl });
 }
 
+/** The first-run window's width; its height follows the page's card. */
+const WELCOME_WIDTH = 520;
+
 /** The address typed on the first screen, for the sign-in page. Kept in memory only. */
 let welcomeEmail: string | null = null;
 
@@ -534,9 +537,10 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
   const colours = theme.colours();
   const questions = privacy.firstRunQuestions();
   const window = new BrowserWindow({
-    width: 620,
-    // Room for both choices, the address field and its message, in the longer languages.
-    height: 600,
+    width: WELCOME_WIDTH,
+    // Until the page says how tall its card is (welcomeFit).
+    height: 560,
+    useContentSize: true,
     resizable: false,
     show: false,
     autoHideMenuBar: true,
@@ -549,10 +553,34 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
       nodeIntegration: false,
       devTools,
       // Encoded: quotes don't survive Chromium's command line on Windows.
-      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked, askTelemetry: questions.telemetry, askCrashReports: questions.crashReports }))}`],
+      // dark: as the app was last; null follows the system (nothing from the app yet).
+      additionalArguments: [`--bulwark-welcome=${encodeURIComponent(JSON.stringify({ allowStandalone: decision.allowStandalone, instanceUrl: decision.instanceUrl, urlLocked: decision.urlLocked, askTelemetry: questions.telemetry, askCrashReports: questions.crashReports, dark: stateFile.data.theme ? colours.dark : null }))}`],
     },
   });
-  window.once('ready-to-show', () => window.show());
+  // Shown once it has its height, so it doesn't jump. A page that never says shows anyway.
+  let shown = false;
+  const showOnce = () => {
+    if (shown || window.isDestroyed()) return;
+    shown = true;
+    window.show();
+  };
+  window.once('ready-to-show', () => setTimeout(showOnce, 1000));
+  // "Bulwark" on every step: the page's headings name the steps.
+  window.on('page-title-updated', (event) => event.preventDefault());
+  ipcMain.removeAllListeners(CHANNEL.welcomeFit);
+  ipcMain.on(CHANNEL.welcomeFit, (event, height: unknown) => {
+    if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) return;
+    if (typeof height !== 'number' || !Number.isFinite(height)) return;
+    const area = screen.getDisplayMatching(window.getBounds()).workArea;
+    const fitted = Math.round(Math.min(Math.max(height, 320), area.height - 60));
+    const [, current] = window.getContentSize();
+    if (fitted !== current) window.setContentSize(WELCOME_WIDTH, fitted);
+    if (!shown) {
+      window.center();
+      showOnce();
+    }
+  });
+  window.once('closed', () => ipcMain.removeAllListeners(CHANNEL.welcomeFit));
   useWelcomeMenu(window, () => menu?.rebuild());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));

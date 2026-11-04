@@ -81,6 +81,56 @@ test.describe('the first-run page', () => {
     await expect(page.locator('#email')).not.toHaveAttribute('aria-invalid', 'true');
   });
 
+  test('looks like the sign-in page: logo, a primary Continue and Connect, an outline Back, and "Bulwark" as the title throughout', async ({ page }) => {
+    await open(page);
+    await expect(page.locator('.card svg.logo')).toHaveAttribute('aria-label', 'Bulwark');
+    await expect(page).toHaveTitle('Bulwark');
+    await expect(page.locator('#standalone')).toHaveClass(/\bprimary\b/);
+    const primary = await page.locator('#standalone').evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(primary).toBe('rgb(24, 90, 234)');
+    await page.click('#instance');
+    await expect(page).toHaveTitle('Bulwark');
+    await expect(page.locator('#connect')).toHaveClass(/\bprimary\b/);
+    await expect(page.locator('#org-back')).toHaveClass(/\bsecondary\b/);
+    await page.click('#org-back');
+    await page.fill('#email', 'sam@example.org');
+    await page.click('#standalone');
+    await page.locator('#privacy.open').waitFor();
+    await expect(page).toHaveTitle('Bulwark');
+    await expect(page.locator('#continue')).toHaveClass(/\bprimary\b/);
+    await expect(page.locator('#back')).toHaveClass(/\bsecondary\b/);
+  });
+
+  test('asks main for the height of its card, so the window has no empty half', async ({ page }) => {
+    await open(page);
+    await expect.poll(async () => (await calls(page)).filter((call) => (call as unknown[])[0] === 'fit').length).toBeGreaterThan(0);
+    const card = await page.locator('#card').evaluate((el) => el.getBoundingClientRect().height);
+    const fits = (await calls(page)).filter((call) => (call as unknown[])[0] === 'fit').map((call) => (call as [string, number])[1]);
+    expect(fits.at(-1)).toBe(Math.ceil(card) + 48);
+  });
+
+  test('dark as the app was last, whatever the system says', async ({ page }) => {
+    await open(page, { dark: true });
+    await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+    await page.emulateMedia({ colorScheme: 'light' });
+    await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+    expect(await page.locator('#standalone').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(250, 250, 250)');
+  });
+
+  test('light as the app was last, whatever the system says', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await open(page, { dark: false });
+    await expect(page.locator('html')).not.toHaveClass(/dark/);
+  });
+
+  test('follows the system while open when the app has no theme yet', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
+    await open(page, { dark: null });
+    await expect(page.locator('html')).not.toHaveClass(/\bdark\b/);
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+  });
+
   test('going to the organisation step and back clears the old line under Email', async ({ page }) => {
     await open(page, { emailAnswer: { ok: false, error: 'email_invalid' } });
     await page.fill('#email', 'sam');

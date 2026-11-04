@@ -984,6 +984,7 @@ export const CHANNEL = {
   privacyChanged: 'bulwark:privacy.changed',
   welcomePrivacy: 'bulwark:welcome.privacy',
   welcomeOpenLink: 'bulwark:welcome.openLink',
+  welcomeFit: 'bulwark:welcome.fit',
   keystoreList: 'bulwark:keystore.list',
   keystoreSign: 'bulwark:keystore.sign',
   keystoreDecrypt: 'bulwark:keystore.decrypt',

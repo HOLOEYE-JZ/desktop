@@ -26,9 +26,20 @@ document.documentElement.dir = RTL.includes(language) ? 'rtl' : 'ltr';
 const byId = (id) => document.getElementById(id);
 const fill = { 'privacy-title': 'privacyTitle', 'privacy-intro': 'privacyIntro', 'telemetry-label': 'telemetryLabel', 'telemetry-text': 'telemetryText', 'crash-label': 'crashLabel', 'crash-text': 'crashText', continue: 'continueLabel', back: 'back', title: 'title', intro: 'intro', 'email-label': 'emailLabel', standalone: 'continueLabel', instance: 'orgLink', 'instance-title': 'instanceTitle', 'instance-text': 'instanceText', 'url-label': 'urlLabel', 'org-back': 'back', connect: 'connect' };
 for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
-document.title = text.title;
+// The window's title stays "Bulwark" on every step: the headings name the steps.
 
-const { allowStandalone, instanceUrl, urlLocked, askTelemetry, askCrashReports } = window.bulwarkWelcome.options;
+const { allowStandalone, instanceUrl, urlLocked, askTelemetry, askCrashReports, dark } = window.bulwarkWelcome.options;
+
+// Light or dark as the app was last, else as the system is, following it while open.
+const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+function applyTheme() {
+  document.documentElement.classList.toggle('dark', dark === true || (dark !== false && systemDark.matches));
+}
+applyTheme();
+if (typeof dark !== 'boolean') systemDark.addEventListener('change', applyTheme);
+
+// The window takes the card's height (and the page's margin), so no half of it stays empty.
+new ResizeObserver(() => window.bulwarkWelcome.fit?.(Math.ceil(byId('card').getBoundingClientRect().height) + 48)).observe(byId('card'));
 const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark', email_invalid: 'emailInvalid', web_address: 'webAddress' };
 /** The latest choice sent to main: an earlier answer arriving late is ignored. */
 let request = 0;
@@ -54,7 +65,6 @@ function show(name) {
   screen = name;
   setHidden('connection', name !== 'connection');
   setHidden('org', name !== 'org');
-  document.title = name === 'org' ? text.instanceTitle : text.title;
   byId(name === 'org' ? 'url' : 'email').focus();
 }
 
@@ -63,7 +73,6 @@ function next(result) {
   if (result.next !== 'privacy') return;
   setHidden('connection', true);
   setHidden('org', true);
-  document.title = text.privacyTitle;
   byId('privacy').classList.add('open');
   byId('continue').focus();
 }
