@@ -189,6 +189,53 @@ test.describe('the app\'s buttons and the window\'s', () => {
     }
   });
 
+  // The steps above load the page after each size, which hides a room worked out against the
+  // window's old width. Here the page stays, as it does for a person: one message open, and the
+  // window maximised, restored, snapped and resized under it.
+  test('one page through maximise, restore, snap and resize: the room for the controls follows', async () => {
+    let step = '';
+    const main = () => app.evaluate(({ BrowserWindow, screen }, step) => {
+      const window = BrowserWindow.getAllWindows().find((candidate) => !candidate.webContents.getURL().includes('/popout/'))!;
+      const area = screen.getDisplayMatching(window.getBounds()).workArea;
+      if (step === 'maximise') window.maximize();
+      else if (step === 'restore') window.unmaximize();
+      else if (step === 'snap') window.setBounds({ x: area.x, y: area.y, width: Math.floor(area.width / 2), height: area.height });
+      else {
+        const [w, h] = step.split('x').map(Number);
+        window.setMinimumSize(320, 300);
+        window.setContentSize(w, h);
+      }
+    }, step);
+    const inset = () => page.evaluate(() => {
+      const overlay = (navigator as unknown as { windowControlsOverlay: { getTitlebarAreaRect(): { x: number; width: number } } }).windowControlsOverlay;
+      const area = overlay.getTitlebarAreaRect();
+      const set = parseFloat(document.documentElement.style.getPropertyValue('--titlebar-right-inset'));
+      return { set, real: innerWidth - area.x - area.width };
+    });
+    await setSize(1366, 768);
+    await openMessage();
+    const steps = ['maximise', 'restore', 'snap', '640x560', '1920x1000', '800x600'];
+    for (step of steps) {
+      await main();
+      await expect.poll(async () => { const { set, real } = await inset(); return Math.abs(set - real); }, { message: `${step}: the room left for the controls` }).toBeLessThan(1);
+      await expectClear(page, `resized-${step}`);
+    }
+    // Offline at 800 px after all that: the bar is one row, not a column of letters.
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    const bar = page.getByTestId('offline-banner');
+    try {
+      await expect(bar).toBeVisible({ timeout: 30_000 });
+      for (step of ['1366x768', '640x560']) {
+        await main();
+        await expect.poll(async () => (await bar.boundingBox())?.height ?? 999, { message: `${step}: the offline bar's height` }).toBeLessThan(120);
+        await expectClear(page, `resized-offline-${step}`);
+      }
+    } finally {
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      await setSize(1366, 768);
+    }
+  });
+
   test('reading pane below and off: the list\'s header', async () => {
     await setSize(1366, 768);
     for (const layout of ['horizontal', 'focus'] as const) {
