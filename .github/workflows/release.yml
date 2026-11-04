@@ -82,7 +82,7 @@ jobs:
             fi
             kind=tag
             ref="$(node -p "require('./package.json').config.webmailTag")"
-            publish=true
+            if [ "$EVENT_NAME" = "push" ]; then publish=true; fi
           else
             kind=ref
             ref="${INPUT_WEBMAIL_REF:-main}"
