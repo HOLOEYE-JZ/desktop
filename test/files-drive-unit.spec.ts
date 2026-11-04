@@ -437,7 +437,7 @@ test.describe('the tray line of the drive (files-p3-5)', () => {
       summaryChanged: () => changes++,
     });
     try {
-      expect(drive.traySummary()).toEqual({ lines: [], folder: null });
+      expect(drive.traySummary()).toEqual({ lines: [], folder: null, paused: false });
       const on = await drive.enable('acct-1', 'alice@example.org', () => true);
       expect(on.ok).toBe(true);
       expect(changes).toBeGreaterThan(0);
@@ -448,7 +448,11 @@ test.describe('the tray line of the drive (files-p3-5)', () => {
       // The same line again is no change.
       drive.setStatus('acct-1', { ...status, detail: 'other' });
       expect(changes).toBe(before + 1);
-      expect(drive.traySummary()).toEqual({ lines: ['Bulwark Files: Offline. Waiting: 3'], folder: path.join(realpathSync.native(base), 'alice@example.org') });
+      expect(drive.traySummary()).toEqual({ lines: ['Bulwark Files: Offline. Waiting: 3'], folder: path.join(realpathSync.native(base), 'alice@example.org'), paused: false });
+      // Paused: the tray offers to resume (files-p3-14).
+      drive.setStatus('acct-1', { ...status, state: 'paused', tray: 'Bulwark Files: Paused' });
+      expect(drive.traySummary().paused).toBe(true);
+      expect(changes).toBe(before + 2);
       // A line that isn't one line of text is left out.
       drive.setStatus('acct-1', { ...status, tray: 'two\nlines' });
       expect(drive.traySummary().lines).toEqual([]);
@@ -458,10 +462,11 @@ test.describe('the tray line of the drive (files-p3-5)', () => {
       expect(drive.traySummary()).toEqual({
         lines: ['alice@example.org: Bulwark Files: Offline. Waiting: 3', 'bob@example.org: Bulwark Files: Up to date'],
         folder: realpathSync.native(base),
+        paused: false,
       });
       await drive.disable('acct-1', 'wipe');
       await drive.disable('acct-2', 'wipe');
-      expect(drive.traySummary()).toEqual({ lines: [], folder: null });
+      expect(drive.traySummary()).toEqual({ lines: [], folder: null, paused: false });
     } finally {
       rmSync(base, { recursive: true, force: true });
     }

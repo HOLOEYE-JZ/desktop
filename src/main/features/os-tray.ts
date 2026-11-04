@@ -137,6 +137,10 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
       { type: 'separator' },
       ...summary.lines.map((text): MenuItemConstructorOptions => ({ label: line(text), enabled: false })),
       { label: strings().trayOpenFiles, click: () => void shell.openPath(folder) },
+      // Every drive and synced folder, as OneDrive's "Pause syncing" (files-p3-14). The page does it.
+      summary.paused
+        ? { label: strings().trayResumeFiles, click: () => hub.dispatch({ type: 'files-sync', action: 'resume-all' }) }
+        : { label: strings().trayPauseFiles, click: () => hub.dispatch({ type: 'files-sync', action: 'pause-all' }) },
     ];
   };
 

@@ -268,15 +268,17 @@ export class DriveController {
    * sent one), and the folder "Open Bulwark Files" opens: the account's, or with several the
    * folder that holds them.
    */
-  traySummary(): { lines: string[]; folder: string | null } {
+  traySummary(): { lines: string[]; folder: string | null; paused: boolean } {
     const live = [...this.live.values()];
+    // Every drive the page says is paused: the tray offers to resume.
+    const paused = live.length > 0 && live.every((entry) => this.statuses.get(entry.account)?.state === 'paused');
     const lines = live.flatMap((entry) => {
       const line = trayLineOf(this.statuses.get(entry.account));
       if (!line) return [];
       return [live.length > 1 ? `${entry.root.remoteLabel}: ${line}` : line];
     });
     const folder = live.length === 1 ? live[0].dir : live.length > 1 ? this.base() : null;
-    return { lines, folder };
+    return { lines, folder, paused };
   }
 
   /** One change at a time: two enables of one account mustn't both register. */
@@ -757,9 +759,9 @@ export class DriveController {
     if (!validText(account, MAX_ACCOUNT)) return;
     const shown = nativeStatusOf(status);
     if (!shown) return;
-    const before = trayLineOf(this.statuses.get(account));
+    const old = this.statuses.get(account);
     this.statuses.set(account, status as FilesDriveStatus);
-    if (trayLineOf(status) !== before) this.deps.summaryChanged?.();
+    if (trayLineOf(status) !== trayLineOf(old) || old?.state !== (status as FilesDriveStatus).state) this.deps.summaryChanged?.();
     // At most as many as there are accounts: a page can't grow this by inventing them.
     if (this.statuses.size > 64) this.statuses.delete(this.statuses.keys().next().value!);
     const live = this.live.get(account);

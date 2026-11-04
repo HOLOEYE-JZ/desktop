@@ -15,7 +15,7 @@ export interface DriveHooks {
   /** A drive is connected now: the app should stay in the tray when its window closes. */
   running?: () => boolean;
   /** The tray's lines for the drives and the folder "Open Bulwark Files" opens (null: no drive on). */
-  traySummary?: () => { lines: string[]; folder: string | null };
+  traySummary?: () => { lines: string[]; folder: string | null; paused: boolean };
 }
 
 const summaryListeners = new Set<() => void>();
