@@ -57,7 +57,7 @@ export interface NativeModule {
   policyIsForced(key: string): boolean;
 }
 
-export const KEYSTORE_ERRORS = ['keystore:cancelled', 'keystore:not-found', 'keystore:unsupported', 'keystore:locked', 'keystore:invalid', 'keystore:failed'] as const;
+export const KEYSTORE_ERRORS = ['keystore:cancelled', 'keystore:ask-first', 'keystore:not-found', 'keystore:unsupported', 'keystore:locked', 'keystore:invalid', 'keystore:failed'] as const;
 export type KeystoreErrorCode = (typeof KEYSTORE_ERRORS)[number];
 
 /** A stuck card driver mustn't hold mail forever. Longer than anyone types a PIN. */

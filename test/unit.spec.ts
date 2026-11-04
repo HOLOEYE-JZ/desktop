@@ -637,6 +637,8 @@ test.describe('the install prompt', () => {
     pluginPermissions: 'It asks to:',
     pluginNoPermissions: 'No permissions',
     pluginPrivileged: 'FULL ACCESS WARNING',
+    pluginKeystore: 'Use certificates on this computer',
+    pluginNewPermissions: 'New in this version:',
     install: 'Install',
     cancel: 'Cancel',
   };
@@ -667,6 +669,39 @@ test.describe('the install prompt', () => {
     expect(box.detail).toContain('FULL ACCESS WARNING');
     expect(box.type).toBe('warning');
     expect(box.buttons![box.defaultId!]).toBe('Cancel');
+  });
+
+  test('a permission the directory leaves out still shows: optional ones count too', () => {
+    const bundled = { tier: 'privileged', permissions: ['crypto:full', 'email:read'], optionalPermissions: ['keystore'] };
+    const facts = pluginFacts({
+      extension: { name: 'S/MIME', permissionDetails: [{ id: 'crypto:full', title: 'Full crypto' }, { id: 'email:read', title: 'Read your mail' }] },
+      preview: { version: '1.5.0' },
+      bundle: { manifest: bundled },
+    }, 'smime');
+    expect(facts.permissionIds).toEqual(['crypto:full', 'email:read', 'keystore']);
+    expect(pluginPrompt(facts, text).detail).toContain('Use certificates on this computer');
+  });
+
+  test('the server\'s own text for keystore wins, and it never shows without the privileged tier', () => {
+    const titled = pluginFacts({
+      extension: { permissionDetails: [{ id: 'keystore', title: 'Certificates, from the server' }] },
+      preview: { version: '1.0.0' },
+      bundle: { manifest: { tier: 'privileged', optionalPermissions: ['keystore'] } },
+    }, 'x');
+    expect(titled.permissions).toEqual(['Certificates, from the server']);
+    const untrusted = pluginFacts({ preview: { version: '1.0.0' }, bundle: { manifest: { optionalPermissions: ['keystore'] } } }, 'x');
+    expect(untrusted.permissionIds).toEqual([]);
+  });
+
+  test('an update says what it adds', () => {
+    const facts = pluginFacts({
+      extension: { permissionDetails: [{ id: 'email:read', title: 'Read your mail' }] },
+      preview: { version: '2.0.0' },
+      bundle: { manifest: { tier: 'privileged', permissions: ['email:read'], optionalPermissions: ['keystore'] }, addedPermissions: ['keystore'] },
+    }, 'x');
+    const lines = String(pluginPrompt(facts, text).detail).split('\n');
+    expect(lines.slice(lines.indexOf('New in this version:'))).toEqual(['New in this version:', '• Use certificates on this computer', '', 'FULL ACCESS WARNING']);
+    expect(pluginPrompt(pluginFacts(detail(), 'x'), text).detail).not.toContain('New in this version');
   });
 
   test('a yanked version has nothing to install, and missing facts stay honest', () => {

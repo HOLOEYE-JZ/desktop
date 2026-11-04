@@ -366,7 +366,8 @@ test.describe('the keystore on real certificates', () => {
     expect(() => native.keystoreAgree(id, compressed)).toThrow(/keystore:invalid/);
     const offCurve = Buffer.from(good);
     offCurve[offCurve.length - 1] ^= 1;
-    await expect(native.keystoreAgree(id, offCurve)).rejects.toThrow(/keystore:(invalid|failed)/);
+    // Refused here, before any provider sees it, and not left to whichever provider it is.
+    expect(() => native.keystoreAgree(id, offCurve)).toThrow(/keystore:invalid/);
   });
 
   test('wrong input is refused before the OS sees it', async () => {
