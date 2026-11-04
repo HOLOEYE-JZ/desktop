@@ -160,7 +160,7 @@ IT_ENT_PASSWORD=<the test account's password> npm test
 
 `test/` drives the real app with Playwright's Electron support, on a real webmail build.
 
-`BULWARK_TEST_WEBMAIL=<dir>` runs the tests on another webmail build, made with `fetch-webmail.mjs --out <dir>`. `test/native-windows.spec.ts` needs one from the same branch. `test/native-timing.spec.ts` is for the bench rig only, and `test/native-screenshots.spec.ts` takes pictures from a real, unlocked desktop.
+`BULWARK_TEST_WEBMAIL=<dir>` runs the tests on another webmail build, made with `fetch-webmail.mjs --out <dir>`. `test/native-windows.spec.ts` and `test/menu-sections.spec.ts` need one from the same branch. `test/native-timing.spec.ts` is for the bench rig only, and `test/native-screenshots.spec.ts` takes pictures from a real, unlocked desktop.
 
 ## Licence
 

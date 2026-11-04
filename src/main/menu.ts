@@ -46,7 +46,7 @@ function runsInMain(id: string): boolean {
 }
 
 /** New items of the other apps, importing and settings: what the main window shows. */
-const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import']);
+const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import', 'file.importCalendar', 'file.importContacts']);
 
 /** The hidden line that takes Ctrl+F off a Mac. */
 const FIND_KEY_ID = 'edit.forwardOrSearch';
@@ -350,7 +350,16 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
-        this.command('file.import', text.menuImport),
+        // Each app's own import: mail, calendar and contacts.
+        {
+          id: 'file.importMenu',
+          label: text.menuImportMenu,
+          submenu: [
+            this.command('file.import', text.menuImportMail),
+            this.command('file.importCalendar', text.menuImportCalendar),
+            this.command('file.importContacts', text.menuImportContacts),
+          ],
+        },
         // Settings where Windows and Linux mail apps keep them, next to how the app connects.
         // A page of the main window, as the rail's gear opens it (the page's go.settings).
         ...(mac ? [] : [this.command('file.settings', text.menuSettings, { accelerator: 'Ctrl+,', click: () => this.dispatch('go.settings') })]),
@@ -365,6 +374,13 @@ export class MenuController {
       ],
     };
 
+    const searchLabels: Record<AppSection, string> = {
+      mail: text.menuSearch,
+      settings: text.menuSearch,
+      calendar: text.menuSearchEvents,
+      contacts: text.menuSearchContacts,
+      files: text.menuSearchFiles,
+    };
     const editMenu: MenuItemConstructorOptions = {
       id: 'edit',
       label: text.menuEdit,
@@ -378,7 +394,8 @@ export class MenuController {
         ...(mac ? [{ role: 'pasteAndMatchStyle' } as MenuItemConstructorOptions] : []),
         { role: 'selectAll', label: text.menuSelectAll },
         { type: 'separator' },
-        this.command('edit.search', section === 'calendar' ? text.menuSearchEvents : text.menuSearch, mac ? {} : { accelerator: 'Ctrl+E' }),
+        // What the screen searches. Settings has no search of its own and goes to mail's.
+        this.command('edit.search', searchLabels[section], mac ? {} : { accelerator: 'Ctrl+E' }),
         // Ctrl+F: Forward or search, whichever the window can do (ctrlFTarget). Hidden: Forward shows the key.
         ...(mac ? [] : [{
           id: FIND_KEY_ID,
@@ -441,8 +458,6 @@ export class MenuController {
     const messageMenu: MenuItemConstructorOptions = {
       id: 'message',
       label: text.menuMessage,
-      // Calendar, Contacts and Files have menus of their own on the page.
-      visible: mail || composing,
       submenu: [
         ...(composing ? [
           this.command('compose.send', text.menuSend, this.pageKey('CmdOrCtrl+Enter', false)),
@@ -561,7 +576,9 @@ export class MenuController {
       ],
     };
 
-    const bar = [fileMenu, editMenu, viewMenu, messageMenu, goMenu, windowMenu, helpMenu];
+    // Only Mail, or a composer, has a Message menu. Left out rather than hidden: a native
+    // bar may still draw a hidden top-level menu, and it would keep its Alt letter.
+    const bar = [fileMenu, editMenu, viewMenu, ...(mail || composing ? [messageMenu] : []), goMenu, windowMenu, helpMenu];
     // A hidden line (Reading pane outside Mail) leaves its lines around it: one is enough.
     for (const menu of [appMenu, ...bar]) menu.submenu = tidySeparators(menu.submenu as MenuItemConstructorOptions[]);
     if (this.locked) for (const menu of [appMenu, ...bar]) greyWhileLocked(menu.submenu as MenuItemConstructorOptions[]);
