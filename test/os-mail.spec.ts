@@ -288,18 +288,28 @@ for (const { label, url } of STALWARTS) {
 
     test('a file dropped or pasted on the window attaches', async () => {
       const { page } = running;
-      const fire = (kind: 'drop' | 'paste', name: string) => page.evaluate(([k, n]) => {
+      // A drop from outside goes through the overlay: its "new message" zone opens the composer.
+      await page.evaluate((n) => {
         const data = new DataTransfer();
         data.items.add(new File(['hello'], n, { type: 'text/plain' }));
-        if (k === 'drop') document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
-        else document.body.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
-      }, [kind, name] as const);
-
-      await fire('drop', `dropped-${RUN}.txt`);
+        (window as unknown as { __drag: DataTransfer }).__drag = data;
+        document.body.dispatchEvent(new DragEvent('dragenter', { bubbles: true, cancelable: true, dataTransfer: data }));
+      }, `dropped-${RUN}.txt`);
+      const zone = page.locator('[data-testid="file-drop-overlay"] [data-drop-zone="new-message"]');
+      await zone.waitFor({ state: 'visible', timeout: 30_000 });
+      await zone.evaluate((element) => {
+        const data = (window as unknown as { __drag: DataTransfer }).__drag;
+        element.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+      });
       await composer(page).waitFor({ state: 'visible', timeout: 30_000 });
       await expect(composer(page).getByText(`dropped-${RUN}.txt`)).toBeVisible({ timeout: 30_000 });
-      // With a composer open it goes to that composer, not a queue.
-      await fire('paste', `pasted-${RUN}.txt`);
+      // Pasted into the open composer, it goes on that message, not a queue. Pasted outside
+      // any text field the overlay's choice asks (decision: one drop target for files).
+      await composer(page).locator('[contenteditable="true"]').last().evaluate((element, n) => {
+        const data = new DataTransfer();
+        data.items.add(new File(['hello'], n, { type: 'text/plain' }));
+        element.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: data }));
+      }, `pasted-${RUN}.txt`);
       await expect(composer(page).getByText(`pasted-${RUN}.txt`)).toBeVisible({ timeout: 30_000 });
       await closeComposer(page);
     });
