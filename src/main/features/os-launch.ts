@@ -90,14 +90,17 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   const staysHidden = (request: LaunchRequest) =>
     request.commands.length === 0 && request.links.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
+  /** A link, or a new message, brings up its own window. */
+  const opensOwnWindow = (request: LaunchRequest) =>
+    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message'));
+
   liveHandler = (request) => void run(request);
 
   const handle = (argv: string[], cwd: string) => run(parseArgv(argv, { cwd, skip }));
 
   liveSecondLaunch = (argv, cwd) => {
     const request = parseArgv(argv, { cwd, skip });
-    // A link brings up its own window.
-    if (!staysHidden(request) && request.links.length === 0) hub.ctx.showMain();
+    if (!staysHidden(request) && !opensOwnWindow(request)) hub.ctx.showMain();
     void run(request);
   };
   for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);

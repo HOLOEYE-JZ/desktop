@@ -113,6 +113,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       setRestore: (urls: string[]) => ipcRenderer.send(CHANNEL.windowsSetRestore, urls),
       setRestoreEnabled: (enabled: boolean) => ipcRenderer.send(CHANNEL.windowsSetRestoreEnabled, enabled),
       sessionReady: () => ipcRenderer.send(CHANNEL.windowsSessionReady),
+      sessionEnded: () => ipcRenderer.send(CHANNEL.windowsSessionEnded),
       spare: {
         ready: () => ipcRenderer.send(CHANNEL.windowsSpareReady),
         taken: () => ipcRenderer.send(CHANNEL.windowsSpareTaken),

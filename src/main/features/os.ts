@@ -18,6 +18,7 @@ import { setupLaunch } from './os-launch';
 import { addWipeStep } from './local-wipe';
 import { applyLoginItem, readLoginItem, setupLogin } from './os-login';
 import { setupPower } from './os-power';
+import { setupQuickCompose } from './os-quick-compose';
 import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
@@ -55,6 +56,8 @@ function cleanSummary(value: unknown): OsSummary {
 function setup(ctx: FeatureContext): void {
   const hub = new OsHub(ctx);
   const { windows } = ctx;
+  // Before anything that can ask for a new message, which a launch does below.
+  const quickCompose = setupQuickCompose(hub);
 
   // The main window keeps working while hidden: sync, push, reminders, policy, wipes.
   windows.on('created', ({ type, window }) => {
@@ -146,6 +149,7 @@ function setup(ctx: FeatureContext): void {
       defaultApp,
       files,
       power,
+      quickCompose,
       applyLoginItem,
       readLoginItem,
     };

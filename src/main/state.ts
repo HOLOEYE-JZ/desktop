@@ -57,7 +57,8 @@ export interface ShellState {
   approvedServers: ApprovedServer[];
   /** Every server origin an account uses, for the CORS headers. */
   corsOrigins: string[];
-  windowBounds: Partial<Record<WindowType, StoredBounds>>;
+  /** Per window type. A quick composer keeps its own: it's small, and other composers aren't. */
+  windowBounds: Partial<Record<WindowType | 'quickComposer', StoredBounds>>;
   theme?: ThemeColours;
   /** Whether a page draws its own title bar row, per origin (windows.ts). */
   overlayByOrigin: Record<string, boolean>;
