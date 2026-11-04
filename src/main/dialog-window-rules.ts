@@ -21,6 +21,8 @@ export const DIALOG_LIMITS = {
 };
 
 export interface DialogSpec {
+  /** The asking page's zoom: the card is drawn at it (CSS zoom), so it matches the page. */
+  zoom: number;
   title: string;
   message: { text: string; bold: boolean }[];
   source?: string;
@@ -166,6 +168,7 @@ export function readDialogRequest(value: unknown): (DialogSpec & { id: string })
     : buttons.length - 1;
   return {
     id: request.id,
+    zoom: 1,
     title,
     message,
     ...(source ? { source } : {}),
@@ -189,22 +192,26 @@ export function readDialogAnswer(value: unknown, spec: DialogSpec): DialogWindow
   return undefined;
 }
 
-/** The window around the card: room for its shadow on each side, in CSS px (the page's zoom scales it). */
+/** The window around the card: room for its shadow on each side, in CSS px before the zoom. */
 export const DIALOG_SHADOW_MARGIN = 24;
 export const DIALOG_CARD_WIDTH = 448;
 
+/** Zoom the card follows, kept to what a page can be zoomed to. */
+export function dialogZoom(pageZoom: number): number {
+  return Number.isFinite(pageZoom) ? Math.min(5, Math.max(0.25, pageZoom)) : 1;
+}
+
 /**
- * The window's bounds for a card of this size, centred on the parent and kept on the
- * parent's screen. `zoom`: the page's zoom, which the dialog follows.
+ * The window's bounds for content of this size (the card and its shadow margin, as the
+ * page measured them), centred on the parent and kept on the parent's screen.
  */
 export function dialogBounds(
-  card: { width: number; height: number },
+  content: { width: number; height: number },
   parent: { x: number; y: number; width: number; height: number },
   workArea: { x: number; y: number; width: number; height: number },
-  zoom: number,
 ): { x: number; y: number; width: number; height: number } {
-  const width = Math.min(Math.ceil((card.width + 2 * DIALOG_SHADOW_MARGIN) * zoom), workArea.width);
-  const height = Math.min(Math.ceil((card.height + 2 * DIALOG_SHADOW_MARGIN) * zoom), workArea.height);
+  const width = Math.min(Math.ceil(content.width), workArea.width);
+  const height = Math.min(Math.ceil(content.height), workArea.height);
   const x = Math.round(parent.x + (parent.width - width) / 2);
   const y = Math.round(parent.y + (parent.height - height) / 2);
   return {

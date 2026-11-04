@@ -48,6 +48,8 @@ function applyLook(spec) {
   root.style.setProperty('--radius', `${spec.theme.radius}px`);
   root.style.setProperty('--radius-sm', `${spec.theme.radiusSmall}px`);
   root.style.fontSize = `${spec.theme.fontSize}px`;
+  // The page's zoom, on everything in the window: the card, its margin and its shadow.
+  document.body.style.zoom = String(spec.zoom);
 }
 
 function buildMenu(spec, head) {
@@ -195,15 +197,24 @@ async function main() {
   });
 
   await document.fonts?.ready;
-  if (body && scrollable()) body.tabIndex = 0;
   fallback.focus();
+  // The scale the card is drawn at, as measured: the zoom asked for, and whatever the
+  // window adds to it. The card is 448 CSS pixels wide.
   const box = card.getBoundingClientRect();
-  // A pixel more: the window's size is rounded to the screen's pixels, and a pixel less would make the text scroll.
-  window.bulwarkDialog.ready({ width: Math.ceil(box.width), height: Math.ceil(box.height) + 1 });
-  // Clamped to the screen: the body scrolls now, so it takes Tab.
-  window.addEventListener('resize', () => {
+  const scale = box.width / 448 || 1;
+  // No taller than the window: a long text scrolls between the title and the buttons.
+  // Lengths inside the zoomed body are multiplied by the scale, the window's height isn't.
+  const clamp = () => {
+    card.style.maxHeight = `${Math.max(120, window.innerHeight / scale - 48)}px`;
     if (body) body.tabIndex = scrollable() ? 0 : -1;
-  });
+  };
+  // The card's own size with its margin, so main can size the window to it. A pixel
+  // more: the window's size is rounded to the screen's pixels, and a pixel less makes
+  // the text scroll.
+  const margin = 24 * scale;
+  window.bulwarkDialog.ready({ width: Math.ceil(box.width + 2 * margin), height: Math.ceil(box.height + 2 * margin) + 1 });
+  window.addEventListener('resize', clamp);
+  clamp();
 }
 
 void main();

@@ -117,6 +117,27 @@ test('Escape closes it without an answer; Enter takes the default button', async
   expect(await answer('enter')).toEqual({ button: 1 });
 });
 
+test('the window follows the page\'s zoom, and the whole text fits without scrolling', async () => {
+  const setZoom = (zoom: number) => app.evaluate(({ BrowserWindow }, z) => BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && Boolean(w.webContents?.getURL().startsWith('https://app.bulwark.localhost')))!.webContents.setZoomFactor(z), zoom);
+  for (const zoom of [1.25, 0.9]) {
+    await setZoom(zoom);
+    await ask({ ...QUESTION, id: `zoom-${zoom}`, message: [{ text: 'You\'re about to visit github.com.\n\nhttps://github.com/bulwarkmail/webmail/releases\n\nThis domain isn\'t on your trusted list. Only continue if you recognise it.' }] });
+    const dialog = await dialogPage();
+    const fits = await dialog.evaluate(() => {
+      const body = document.getElementById('body')!;
+      const card = document.getElementById('card')!.getBoundingClientRect();
+      return { scrolls: body.scrollHeight - body.clientHeight > 2, inside: card.right <= innerWidth && card.bottom <= innerHeight };
+    });
+    expect(fits).toEqual({ scrolls: false, inside: true });
+    const [shown] = await dialogWindows();
+    // The card's width and its margin at the page's zoom (Chromium may round the zoom a little).
+    expect(Math.abs(shown.bounds.width / (496 * zoom) - 1)).toBeLessThan(0.03);
+    await pressAnswering(dialog, 'Escape');
+    expect(await answer(`zoom-${zoom}`)).toBeNull();
+  }
+  await setZoom(1);
+});
+
 test('closing the window (Alt+F4) is no answer', async () => {
   await ask({ ...QUESTION, id: 'altf4' });
   await dialogPage();

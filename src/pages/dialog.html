@@ -9,7 +9,7 @@
       :root { --background: #fff; --foreground: #0f172a; --muted: #f1f5f9; --muted-foreground: #59687c; --border: #e2e8f0; --input: #e2e8f0; --primary: #185aea; --primary-foreground: #fff; --destructive: #dc2626; --destructive-foreground: #fff; --accent: #dbeafe; --accent-foreground: #1e40af; --ring: #2563eb; --radius: 8px; --radius-sm: 6px; --font: system-ui, sans-serif; }
       html, body { margin: 0; background: transparent; }
       body { padding: 24px; font-family: var(--font); color: var(--foreground); overflow: hidden; user-select: none; cursor: default; -webkit-font-smoothing: antialiased; font-feature-settings: "rlig" 1, "calt" 1; }
-      .card { position: relative; box-sizing: border-box; width: 448px; max-height: calc(100vh - 48px); display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 20px 25px -5px rgb(0 0 0 / .18), 0 8px 10px -6px rgb(0 0 0 / .14); }
+      .card { position: relative; box-sizing: border-box; width: 448px; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 20px 25px -5px rgb(0 0 0 / .18), 0 8px 10px -6px rgb(0 0 0 / .14); }
       .dark .card { box-shadow: 0 20px 25px -5px rgb(0 0 0 / .5), 0 8px 10px -6px rgb(0 0 0 / .45); }
       /* The header is where the window is moved from; what can be clicked in it isn't. */
       .head { display: flex; align-items: flex-start; gap: 16px; padding: 24px 24px 0; -webkit-app-region: drag; flex-shrink: 0; }

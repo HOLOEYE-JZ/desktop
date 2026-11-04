@@ -18,7 +18,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserWindow, ipcMain, screen, session as electronSession, type IpcMainEvent, type IpcMainInvokeEvent, type WebContents } from 'electron';
 import { CHANNEL, type DialogWindowAnswer } from '../shared/bridge';
-import { DIALOG_CARD_WIDTH, DIALOG_SHADOW_MARGIN, dialogBounds, readDialogAnswer, readDialogRequest, type DialogSpec } from './dialog-window-rules';
+import { DIALOG_CARD_WIDTH, DIALOG_SHADOW_MARGIN, dialogBounds, dialogZoom, readDialogAnswer, readDialogRequest, type DialogSpec } from './dialog-window-rules';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DIALOG_PRELOAD = path.join(HERE, 'dialog-preload.cjs');
@@ -134,7 +134,10 @@ export class DialogWindows {
       return;
     }
     this.session ??= dialogSession();
-    const zoom = entry.sender.getZoomFactor();
+    // The page's zoom goes to the card as CSS zoom, so it is there before the card is
+    // measured; Chromium's own zoom would come later. The window itself stays at 100%.
+    const zoom = dialogZoom(entry.sender.getZoomFactor());
+    entry.spec = { ...entry.spec, zoom };
     const workArea = screen.getDisplayMatching(parent.getBounds()).workArea;
     const mac = process.platform === 'darwin';
     const window = new BrowserWindow({
@@ -162,7 +165,7 @@ export class DialogWindows {
         webSecurity: true,
         spellcheck: false,
         devTools: false,
-        zoomFactor: zoom,
+        zoomFactor: 1,
       },
     });
     window.setMenu(null);
@@ -185,13 +188,14 @@ export class DialogWindows {
   private ready(event: IpcMainEvent, size: unknown): void {
     const entry = this.fromDialog(event);
     const window = entry?.window;
-    if (!entry || !window || window.isDestroyed() || window.isVisible()) return;
-    const card = (size && typeof size === 'object' ? size : {}) as { width?: unknown; height?: unknown };
-    const width = typeof card.width === 'number' && card.width > 0 ? Math.min(card.width, 1200) : DIALOG_CARD_WIDTH;
-    const height = typeof card.height === 'number' && card.height > 0 ? Math.min(card.height, 2000) : 200;
+    if (!entry || !window || window.isDestroyed()) return;
+    // The card and its margin as drawn, zoom included: at 100% its CSS pixels are the window's.
+    const content = (size && typeof size === 'object' ? size : {}) as { width?: unknown; height?: unknown };
+    const width = typeof content.width === 'number' && content.width > 0 ? Math.min(content.width, 6000) : DIALOG_CARD_WIDTH + 2 * DIALOG_SHADOW_MARGIN;
+    const height = typeof content.height === 'number' && content.height > 0 ? Math.min(content.height, 6000) : 300;
     const parentBounds = entry.parent.getBounds();
-    const workArea = screen.getDisplayMatching(parentBounds).workArea;
-    window.setBounds(dialogBounds({ width, height }, parentBounds, workArea, entry.sender.getZoomFactor()));
+    window.setBounds(dialogBounds({ width, height }, parentBounds, screen.getDisplayMatching(parentBounds).workArea));
+    if (window.isVisible()) return;
     window.show();
     window.focus();
   }

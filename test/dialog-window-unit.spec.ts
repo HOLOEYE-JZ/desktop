@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test';
-import { DIALOG_LIMITS, dialogBounds, readDialogAnswer, readDialogRequest, readLook } from '../src/main/dialog-window-rules';
+import { DIALOG_LIMITS, dialogBounds, dialogZoom, readDialogAnswer, readDialogRequest, readLook } from '../src/main/dialog-window-rules';
 
 const base = { id: 'q1', title: 'Empty trash?', buttons: [{ label: 'Cancel', variant: 'secondary' }, { label: 'Empty trash', variant: 'destructive' }] };
 
@@ -78,13 +78,20 @@ test('an answer is one this dialog has', () => {
   expect(readDialogAnswer(null, spec)).toBeNull();
 });
 
-test('the window is centred on its parent, on its screen, and follows the page\'s zoom', () => {
+test('the window is centred on its parent and kept on its screen', () => {
   const parent = { x: 100, y: 100, width: 1200, height: 800 };
   const screen = { x: 0, y: 0, width: 1920, height: 1040 };
-  expect(dialogBounds({ width: 448, height: 200 }, parent, screen, 1)).toEqual({ x: 452, y: 376, width: 496, height: 248 });
-  expect(dialogBounds({ width: 448, height: 200 }, parent, screen, 1.25)).toMatchObject({ width: 620, height: 310 });
+  expect(dialogBounds({ width: 496, height: 248 }, parent, screen)).toEqual({ x: 452, y: 376, width: 496, height: 248 });
+  expect(dialogBounds({ width: 619.5, height: 309.2 }, parent, screen)).toMatchObject({ width: 620, height: 310 });
   // A parent half off the screen: the dialog stays on it.
-  expect(dialogBounds({ width: 448, height: 200 }, { x: -900, y: 900, width: 1000, height: 600 }, screen, 1)).toMatchObject({ x: 0, y: 792 });
+  expect(dialogBounds({ width: 496, height: 248 }, { x: -900, y: 900, width: 1000, height: 600 }, screen)).toMatchObject({ x: 0, y: 792 });
   // Taller than the screen: as tall as the screen, the text scrolls.
-  expect(dialogBounds({ width: 448, height: 3000 }, parent, screen, 1).height).toBe(1040);
+  expect(dialogBounds({ width: 496, height: 3000 }, parent, screen).height).toBe(1040);
+});
+
+test('the card follows the page\'s zoom, within what a page can be zoomed to', () => {
+  expect(dialogZoom(1.25)).toBe(1.25);
+  expect(dialogZoom(0.1)).toBe(0.25);
+  expect(dialogZoom(9)).toBe(5);
+  expect(dialogZoom(Number.NaN)).toBe(1);
 });
