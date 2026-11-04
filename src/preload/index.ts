@@ -27,6 +27,7 @@ import {
   type KeystoreCertificate,
   type KeystoreResult,
   type KeystoreSignScheme,
+  type KeystoreUseOptions,
   type LocalImportGrantResult,
   type LocalImportResumeResult,
   type LocalImportScanResult,
@@ -278,13 +279,13 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   const keystore = argument(PRELOAD_ARG.keystore) === '1'
     ? {
         keystore: {
-          list: () => keystoreAnswer<KeystoreCertificate[]>(ipcRenderer.invoke(CHANNEL.keystoreList)),
-          sign: (id: string, digest: Uint8Array, scheme: KeystoreSignScheme) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreSign, id, digest, scheme)),
-          decrypt: (id: string, data: Uint8Array, scheme: KeystoreDecryptScheme) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme)),
-          agree: (id: string, peerPublicKey: Uint8Array) =>
-            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey)),
+          list: (options?: KeystoreUseOptions) => keystoreAnswer<KeystoreCertificate[]>(ipcRenderer.invoke(CHANNEL.keystoreList, options)),
+          sign: (id: string, signedAttributes: Uint8Array, scheme: KeystoreSignScheme) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreSign, id, signedAttributes, scheme)),
+          decrypt: (id: string, data: Uint8Array, scheme: KeystoreDecryptScheme, options?: KeystoreUseOptions) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreDecrypt, id, data, scheme, options)),
+          agree: (id: string, peerPublicKey: Uint8Array, options?: KeystoreUseOptions) =>
+            keystoreAnswer<Uint8Array>(ipcRenderer.invoke(CHANNEL.keystoreAgree, id, peerPublicKey, options)),
           accessState: (): Promise<KeystoreAccessState> => ipcRenderer.invoke(CHANNEL.keystoreAccess),
           revokeAccess: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreRevoke),
           clearGrants: (): Promise<void> => ipcRenderer.invoke(CHANNEL.keystoreClearGrants),

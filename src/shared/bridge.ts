@@ -196,6 +196,11 @@ export type KeystoreDecryptScheme =
   /** MGF1 on the same hash. */
   | { scheme: 'rsa-oaep'; hash: KeystoreHash; label?: Uint8Array };
 
+/** `quiet`: answer from what's already allowed, with keystore:ask-first in place of a dialog. */
+export interface KeystoreUseOptions {
+  quiet?: boolean;
+}
+
 /** How main answers a keystore call. The preload turns a failure into `new Error(code)`. */
 export type KeystoreResult<T> = { ok: true; value: T } | { ok: false; code: string };
 

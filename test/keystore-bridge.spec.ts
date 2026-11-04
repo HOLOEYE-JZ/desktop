@@ -11,6 +11,19 @@ import { TestCerts, type TestCert } from './test-certs';
 const ROOT = path.resolve(import.meta.dirname, '..');
 const MAIL = "-TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.4')";
 
+/** The DER of a mail's CMS signed attributes, signed now. Main refuses anything else. */
+function signedAttributes(): number[] {
+  const tlv = (tag: number, value: Buffer) => Buffer.concat([Buffer.from([tag, value.length]), value]);
+  const attribute = (oid: string, value: Buffer) => tlv(0x30, Buffer.concat([tlv(0x06, Buffer.from(oid, 'hex')), tlv(0x31, value)]));
+  const time = new Date().toISOString().replace(/[-:T]|\.\d+/g, '').slice(2);
+  const parts = [
+    attribute('2a864886f70d010903', tlv(0x06, Buffer.from('2a864886f70d010701', 'hex'))),
+    attribute('2a864886f70d010904', tlv(0x04, createHash('sha256').update('bulwark').digest())),
+    attribute('2a864886f70d010905', tlv(0x17, Buffer.from(time))),
+  ].sort(Buffer.compare);
+  return [...tlv(0x31, Buffer.concat(parts))];
+}
+
 type WireCertificate = { id: string; subject: string; certificate: number[]; constructorName: string; keyType: string };
 
 test.describe('window.bulwarkDesktop.keystore', () => {
@@ -79,21 +92,21 @@ test.describe('window.bulwarkDesktop.keystore', () => {
     const list = await listed();
     const entry = list.find((item) => item.subject === rsa.subject)!;
     expect(entry.constructorName).toBe('Uint8Array');
-    const digest = [...createHash('sha256').update('bulwark').digest()];
-    const answer = await call('sign', entry.id, digest, { scheme: 'rsa-pkcs1', hash: 'SHA-256' });
+    const signed = signedAttributes();
+    const answer = await call('sign', entry.id, signed, { scheme: 'rsa-pkcs1', hash: 'SHA-256' });
     if (!answer.ok) throw new Error(answer.message);
     expect(answer.type).toBe('Uint8Array');
     const key = new X509Certificate(Buffer.from(entry.certificate)).publicKey;
-    expect(verify('sha256', Buffer.from('bulwark'), { key, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(answer.bytes))).toBe(true);
+    expect(verify('sha256', Buffer.from(signed), { key, padding: constants.RSA_PKCS1_PADDING }, Buffer.from(answer.bytes))).toBe(true);
   });
 
   test('ECDSA comes through as DER', async () => {
     const entry = (await listed()).find((item) => item.subject === ec.subject)!;
-    const digest = [...createHash('sha256').update('bulwark').digest()];
-    const answer = await call('sign', entry.id, digest, { scheme: 'ecdsa', hash: 'SHA-256' });
+    const signed = signedAttributes();
+    const answer = await call('sign', entry.id, signed, { scheme: 'ecdsa', hash: 'SHA-256' });
     if (!answer.ok) throw new Error(answer.message);
     const key = new X509Certificate(Buffer.from(entry.certificate)).publicKey;
-    expect(verify('sha256', Buffer.from('bulwark'), { key, dsaEncoding: 'der' }, Buffer.from(answer.bytes))).toBe(true);
+    expect(verify('sha256', Buffer.from(signed), { key, dsaEncoding: 'der' }, Buffer.from(answer.bytes))).toBe(true);
   });
 
   test('it decrypts through the bridge, with the OAEP hash the caller names', async () => {
@@ -120,7 +133,8 @@ test.describe('window.bulwarkDesktop.keystore', () => {
   test('errors reach the page as the bare code', async () => {
     const entry = (await listed()).find((item) => item.subject === rsa.subject)!;
     const scheme = { scheme: 'rsa-pkcs1', hash: 'SHA-256' };
-    const digest = [...Buffer.alloc(32)];
+    const digest = signedAttributes();
+    expect(await call('sign', entry.id, [...Buffer.alloc(32)], scheme), 'a bare digest').toEqual({ ok: false, message: 'keystore:invalid' });
     expect(await call('sign', '0'.repeat(64), digest, scheme)).toEqual({ ok: false, message: 'keystore:not-found' });
     expect(await call('sign', 'nope', digest, scheme)).toEqual({ ok: false, message: 'keystore:invalid' });
     expect(await call('sign', entry.id, [1, 2, 3], scheme)).toEqual({ ok: false, message: 'keystore:invalid' });
@@ -282,7 +296,8 @@ test.describe('consent, in main, whoever calls', () => {
     expect(await viaParent('list')).toEqual({ ok: false, message: 'keystore:cancelled' });
     const asked = await prompts(launched.app);
     expect(asked).toHaveLength(1);
-    expect(`${asked[0].message} ${asked[0].detail}`).toContain(new URL(APP_ORIGIN).host);
+    expect(`${asked[0].message} ${asked[0].detail}`, 'an internal name means nothing to anyone').not.toContain(new URL(APP_ORIGIN).host);
+    expect(asked[0].message).toContain('this app');
     const shown = asked[0] as unknown as { buttons: string[]; defaultId: number; cancelId: number };
     expect(shown.buttons).toHaveLength(3);
     expect(shown.defaultId, 'Deny is the default').toBe(DENY);
@@ -309,14 +324,24 @@ test.describe('consent, in main, whoever calls', () => {
     await fakeOsIntegration(launched.app, DENY);
     const list = await viaParent('list');
     const entry = (list.ok ? (list.out as Array<{ id: string; subject: string }>) : []).find((item) => item.subject === cert.subject)!;
-    const digest = [...createHash('sha256').update('bulwark').digest()];
     const scheme = { scheme: 'rsa-pkcs1', hash: 'SHA-256' };
-    expect(await viaParent('sign', entry.id, digest, scheme)).toEqual({ ok: false, message: 'keystore:cancelled' });
+    expect(await viaParent('sign', entry.id, signedAttributes(), scheme)).toEqual({ ok: false, message: 'keystore:cancelled' });
     const asked = await prompts(launched.app);
     expect(asked).toHaveLength(1);
     expect(`${asked[0].message} ${asked[0].detail}`, 'it names the certificate').toContain('consent-rsa');
-    expect(await viaParent('sign', entry.id, digest, scheme)).toEqual({ ok: false, message: 'keystore:cancelled' });
-    expect(await askedCount(), 'sign stays denied without asking').toBe(1);
+    expect(await askedCount()).toBe(1);
+  });
+
+  test('signing asks at every send, with no button to stop it asking', async () => {
+    await fakeOsIntegration(launched.app, 0);
+    const list = await viaParent('list');
+    const entry = (list.ok ? (list.out as Array<{ id: string; subject: string }>) : []).find((item) => item.subject === cert.subject)!;
+    const scheme = { scheme: 'rsa-pkcs1', hash: 'SHA-256' };
+    expect((await viaParent('sign', entry.id, signedAttributes(), scheme)).ok).toBe(true);
+    expect((await viaParent('sign', entry.id, signedAttributes(), scheme)).ok).toBe(true);
+    const asked = await prompts(launched.app) as unknown as { buttons: string[] }[];
+    expect(asked).toHaveLength(2);
+    expect(asked[0].buttons).toEqual(['Allow once', 'Deny']);
   });
 
   test('sign and unwrap are separate grants, and Allow once is once', async () => {
@@ -355,6 +380,48 @@ test.describe('consent, in main, whoever calls', () => {
     expect(await askedCount(), 'the lock took the grant').toBe(2);
     expect((await viaParent('list')).ok).toBe(true);
     expect(await askedCount(), 'the list grant too').toBe(3);
+  });
+});
+
+test.describe('the in-app lock', () => {
+  test.skip(process.platform !== 'win32', 'creates certificates in CurrentUser\\My');
+  test.setTimeout(240_000);
+
+  test('takes the grants and refuses every call, with no dialog', async () => {
+    const certs = new TestCerts();
+    const cert = certs.create({ name: 'lock-rsa', args: `-Type Custom -KeyExportPolicy NonExportable -KeyAlgorithm RSA -KeyLength 2048 -KeyUsage DigitalSignature,KeyEncipherment ${MAIL}` });
+    const profile = tempProfile('keystore-lock');
+    const launched = await launchStandalone(profile);
+    try {
+      // A page with no app in it: the webmail takes the call that locks in its first render.
+      await launched.page.goto(new URL('/api/health', launched.page.url()).href);
+      await fakeOsIntegration(launched.app, 0);
+      const run = (method: string, ...args: unknown[]) => launched.page.evaluate(async ({ method, args }) => {
+        const keystore = (window as never as { bulwarkDesktop: { keystore: Record<string, (...a: unknown[]) => Promise<unknown>> } }).bulwarkDesktop.keystore;
+        try {
+          const out = await keystore[method](...args.map((value) => (Array.isArray(value) ? new Uint8Array(value) : value)));
+          return { ok: true as const, out: out instanceof Uint8Array ? [...out] : (out as { id: string; subject: string }[]).map(({ id, subject }) => ({ id, subject })) };
+        } catch (error) {
+          return { ok: false as const, message: (error as Error).message };
+        }
+      }, { method, args });
+
+      const list = await run('list');
+      const entry = (list.ok ? (list.out as { id: string; subject: string }[]) : []).find((item) => item.subject === cert.subject)!;
+      const asked = (await prompts(launched.app)).length;
+      expect((await run('list')).ok, 'the grant holds').toBe(true);
+
+      await launched.page.evaluate(() => (window as never as { bulwarkDesktop: { appLock: { claim(): { lock(): void } } } }).bulwarkDesktop.appLock.claim().lock());
+      await expect.poll(() => launched.app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { gate: { locked: boolean } } }).__bulwarkAppLock.gate.locked)).toBe(true);
+      expect(await run('list')).toEqual({ ok: false, message: 'keystore:locked' });
+      expect(await run('decrypt', entry.id, [...Buffer.alloc(256, 1)], { scheme: 'rsa-pkcs1' })).toEqual({ ok: false, message: 'keystore:locked' });
+      expect(await run('sign', entry.id, signedAttributes(), { scheme: 'rsa-pkcs1', hash: 'SHA-256' })).toEqual({ ok: false, message: 'keystore:locked' });
+      expect((await prompts(launched.app)).length, 'no dialog').toBe(asked);
+    } finally {
+      await launched.app.close().catch(() => undefined);
+      removeProfile(profile);
+      certs.finish();
+    }
   });
 });
 
