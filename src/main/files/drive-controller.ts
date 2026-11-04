@@ -219,6 +219,11 @@ export class DriveController {
     return this.deps.supported && this.deps.native !== null;
   }
 
+  /** Some account's drive is connected now. */
+  get running(): boolean {
+    return this.live.size > 0;
+  }
+
   // ─── State ───────────────────────────────────────────────────
 
   state(): FilesDriveState {

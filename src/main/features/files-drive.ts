@@ -212,7 +212,7 @@ export const filesDriveFeature: Feature = {
       ctx.state.save();
     }
     const drive = driveController(ctx)!;
-    setDriveHooks({ removeRoot: driveRemoveRoot, parentFolders: driveParentFolders });
+    setDriveHooks({ removeRoot: driveRemoveRoot, parentFolders: driveParentFolders, running: () => drive.running });
 
     const isMain = (window: BrowserWindow | null): boolean => !!window && window === ctx.windows.mainWindow();
     const fromMain = (window: BrowserWindow | null): void => {

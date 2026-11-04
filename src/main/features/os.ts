@@ -24,10 +24,10 @@ import { setupRecentFiles } from './os-recent';
 import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
-import { pageSetPause, settingsAllowedWithoutClick } from './os-rules';
+import { closesToBackground, pageSetPause, settingsAllowedWithoutClick } from './os-rules';
 import { taskIconsDir } from './os-tasks';
 import { setupTray } from './os-tray';
-import { setDriveNotice } from '../files/drive-hooks';
+import { driveHooks, setDriveNotice } from '../files/drive-hooks';
 
 // Bundled into dist/main.mjs, so this is dist/.
 // Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
@@ -102,7 +102,13 @@ function setup(ctx: FeatureContext): void {
   setupResilience(hub, toasts.showNotice);
   setDriveNotice(toasts.showNotice);
   // With no tray to come back from, closing to it would be hiding into nothing. The Dock stays.
-  windows.setCloseToBackground(() => hub.settings().closeToTray && (!!tray || process.platform === 'darwin'));
+  // A Files drive keeps the app in the tray even with closing to it off: it needs the app.
+  windows.setCloseToBackground(() => closesToBackground({
+    closeToTray: hub.settings().closeToTray,
+    hasTray: !!tray,
+    platform: process.platform,
+    driveOn: driveHooks().running?.() ?? false,
+  }));
   const launch = setupLaunch(hub);
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));

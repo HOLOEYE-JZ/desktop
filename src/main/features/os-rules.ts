@@ -152,6 +152,16 @@ export function settingsAllowedWithoutClick(patch: unknown, clicked: boolean): u
   return rest;
 }
 
+/**
+ * Whether closing the last window leaves the app in the tray. The Files drive needs the app
+ * running, as OneDrive does (opening a file that isn't on the disk asks it), so while a drive is
+ * on the app stays even with "close to the tray" off. With no tray to come back from it would be
+ * hiding into nothing; the Dock stays on a Mac.
+ */
+export function closesToBackground(options: { closeToTray: boolean; hasTray: boolean; platform: string; driveOn: boolean }): boolean {
+  return (options.closeToTray || options.driveOn) && (options.hasTray || options.platform === 'darwin');
+}
+
 /** Longest a page may pause notifications. The tray's own choices don't go through here. */
 export const MAX_PAGE_PAUSE_MS = 24 * 60 * 60 * 1000;
 
