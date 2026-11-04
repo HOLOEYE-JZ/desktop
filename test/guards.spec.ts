@@ -128,7 +128,7 @@ test.describe('window prefs', () => {
     expect(shape.version).toBe(1);
     expect(shape.platform).toBe(process.platform);
     // `keystore` is only there where the native helper loaded: keystore-bridge.spec.ts.
-    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['auth', 'clipboard', 'dialogs', 'lifecycle', 'localImport', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
+    expect(shape.keys.filter((key: string) => key !== 'keystore')).toEqual(['appLock', 'auth', 'clipboard', 'dialogs', 'lifecycle', 'localImport', 'menu', 'mode', 'os', 'platform', 'plugins', 'policy', 'privacy', 'servers', 'shell', 'spellcheck', 'theme', 'updates', 'version', 'windows']);
   });
 
   test('a frame gets no bridge of its own: a same-origin one can reach the parent\'s, an opaque one cannot', async () => {

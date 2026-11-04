@@ -13,6 +13,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import {
   BRIDGE_VERSION,
+  type AppLockStatus,
+  type OsUnlockAnswer,
   CHANNEL,
   PRELOAD_ARG,
   type BrowserSignInControls,
@@ -51,6 +53,8 @@ import {
   type WindowInfo,
 } from '../shared/bridge';
 import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-schema';
+
+let appLockClaimed = false;
 
 function argument(prefix: string): string | null {
   const found = process.argv.find((arg) => arg.startsWith(prefix));
@@ -154,6 +158,29 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         open: (id: string, at: { x: number; y: number }) => ipcRenderer.send(CHANNEL.menuBarOpen, id, at),
         onEvent: (listener: (event: MenuBarEvent) => void) => subscribe(CHANNEL.menuBarEvent, listener),
       },
+    },
+    appLock: {
+      status: (): Promise<AppLockStatus> => ipcRenderer.invoke(CHANNEL.appLockStatus),
+      // A same-origin frame reaches this object through `parent`, and main can't tell its calls
+      // from the page's (ipc.ts). So these two go to whoever asks first, and the page asks in
+      // its first render, before any frame exists. This is per document: the preload runs again.
+      claim: () => {
+        if (appLockClaimed) return null;
+        appLockClaimed = true;
+        return {
+          lock: () => ipcRenderer.send(CHANNEL.appLockLock),
+          osUnlock: (): Promise<OsUnlockAnswer> => ipcRenderer.invoke(CHANNEL.appLockOsUnlock),
+        };
+      },
+      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof),
+      prove: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockProve, proof),
+      disable: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockDisable, proof),
+      forget: (proof?: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockForget, proof),
+      wrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockWrap, data),
+      unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
+      osEnroll: (proof: Uint8Array, lockKey: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockOsEnroll, proof, lockKey),
+      osRemove: (): Promise<void> => ipcRenderer.invoke(CHANNEL.appLockOsRemove),
+      onLockRequest: (listener: () => void) => subscribe(CHANNEL.appLockRequest, listener),
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),

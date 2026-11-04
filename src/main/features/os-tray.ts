@@ -9,6 +9,7 @@
 import path from 'node:path';
 import { app, Menu, nativeImage, nativeTheme, Tray, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import type { OsSummary } from '../../shared/bridge';
+import { appLockGate } from '../app-lock-gate';
 import { strings } from '../strings';
 import { withUnreadDot } from './os-icons';
 import type { OsHub } from './os-hub';
@@ -116,6 +117,7 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
       : [];
     return [
       { label: text.trayNewMessage, click: () => hub.dispatch({ type: 'new-message' }) },
+      ...(appLockGate.enrolled && !appLockGate.locked ? [{ label: text.trayLockNow, click: () => appLockGate.requestLock() }] : []),
       ...(unread.length ? [{ type: 'separator' } as const, { label: text.trayUnread, enabled: false }, ...unread] : []),
       ...(event.length ? [{ type: 'separator' } as const, ...event] : []),
       { type: 'separator' },
@@ -146,6 +148,8 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
   hub.on('summary', refreshMenu);
   hub.on('status', refreshMenu);
   hub.on('locked', refreshMenu);
+  appLockGate.on('enrolled', refreshMenu);
+  appLockGate.on('locked', refreshMenu);
   hub.on('badge', refreshIcon);
   nativeTheme.on('updated', refreshIcon);
   windows.on('created', (managed) => {
