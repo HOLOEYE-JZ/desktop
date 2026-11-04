@@ -97,6 +97,11 @@ export interface ShellState {
   keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
+  /**
+   * The client certificate remembered for a `host:port`, by fingerprint, and a hash of the account
+   * it was chosen in. Gone at that account's sign-out, and all of them at the last one.
+   */
+  certificateChoices?: Record<string, { fingerprint: string; account?: string }>;
   /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
   importJobs?: StoredImportJob[];
 }

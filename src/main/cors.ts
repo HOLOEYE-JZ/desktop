@@ -9,6 +9,7 @@
  */
 
 import type { Session } from 'electron';
+import { responseGate } from './request-gate';
 
 const ALLOW_HEADERS = [
   'Authorization', 'Content-Type', 'Accept', 'Accept-Language', 'X-Requested-With', 'If-None-Match', 'If-Modified-Since',
@@ -28,7 +29,7 @@ export class CorsInjector {
     private readonly appOrigin: string,
   ) {}
 
-  /** Replaces the set. A session has one listener per event, so this is the only place that adds it. */
+  /** Replaces the set. */
   set(origins: Iterable<string>): void {
     this.origins.clear();
     for (const origin of origins) this.origins.add(origin);
@@ -47,26 +48,21 @@ export class CorsInjector {
 
   /** One pattern Electron refuses must not take the others down, or the app with it. */
   private validPatterns(): string[] {
+    const gate = responseGate(this.session);
     const valid: string[] = [];
     for (const origin of [...this.origins]) {
       const pattern = urlPattern(origin);
-      try {
-        this.session.webRequest.onHeadersReceived({ urls: [pattern] }, null as never);
-        valid.push(pattern);
-      } catch {
-        this.origins.delete(origin);
-      }
+      if (gate.accepts(pattern)) valid.push(pattern);
+      else this.origins.delete(origin);
     }
     return valid;
   }
 
   private install(): void {
     const urls = this.validPatterns();
-    if (urls.length === 0) {
-      this.session.webRequest.onHeadersReceived(null);
-      return;
-    }
-    this.session.webRequest.onHeadersReceived({ urls }, (details, callback) => {
+    responseGate(this.session).set('cors', urls, (details) => {
+      // The filter is shared: this may be there for another part.
+      if (!this.origins.has(new URL(details.url).origin)) return null;
       const headers: Record<string, string[]> = {};
       for (const [name, value] of Object.entries(details.responseHeaders ?? {})) {
         if (!name.toLowerCase().startsWith('access-control-')) headers[name] = value;
@@ -77,11 +73,8 @@ export class CorsInjector {
       headers['Access-Control-Expose-Headers'] = ['*'];
       headers['Access-Control-Max-Age'] = ['600'];
       // A server that answers OPTIONS with 401 or 405 would fail the preflight.
-      if (details.method === 'OPTIONS') {
-        callback({ responseHeaders: headers, statusLine: 'HTTP/1.1 204 No Content' });
-        return;
-      }
-      callback({ responseHeaders: headers });
+      if (details.method === 'OPTIONS') return { responseHeaders: headers, statusLine: 'HTTP/1.1 204 No Content' };
+      return { responseHeaders: headers };
     });
   }
 }

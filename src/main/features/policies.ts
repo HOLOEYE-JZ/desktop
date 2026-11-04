@@ -29,6 +29,7 @@ import {
   type PolicySnapshot,
   type ServerPolicy,
 } from '../../shared/policy-schema';
+import { NO_INTEGRATED_SIGN_IN } from '../client-auth';
 import { senderAllowed } from '../ipc';
 import type { PluginPolicyCheck } from '../plugins';
 import {
@@ -245,10 +246,12 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
     for (const stop of this.stops.splice(0)) stop();
   }
 
-  /** Chromium reads these once, when its network service starts: before `ready`. */
+  /**
+   * Chromium reads these when its network service starts: before `ready`. With no list at
+   * all, Windows' security zones would decide who gets the user's sign-in.
+   */
   applySwitches(commandLine: CommandLine): void {
-    const servers = this.snapshot.AuthServerAllowlist.value;
-    if (servers) commandLine.appendSwitch('auth-server-whitelist', servers);
+    commandLine.appendSwitch('auth-server-whitelist', this.snapshot.AuthServerAllowlist.value ?? NO_INTEGRATED_SIGN_IN);
     const delegates = this.snapshot.AuthNegotiateDelegateAllowlist.value;
     if (delegates) commandLine.appendSwitch('auth-negotiate-delegate-whitelist', delegates);
   }
