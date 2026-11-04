@@ -627,7 +627,14 @@ test.describe('the app menu and windows', () => {
       await clickMenuItem(app, 'file.addAccount');
       await clickMenuItem(app, 'file.switchMode');
       await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __sent: unknown[][] }).__sent.map((args) => args[1]))).toEqual(expect.arrayContaining(['file.addAccount', 'file.switchMode']));
-      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+      // Nothing quit: still the one app window. A page that asks (this branch's webmail)
+      // adds its question window, a data: page; an older one asks nothing here.
+      const urls = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()));
+      await page.waitForTimeout(1000);
+      expect((await urls()).filter((url) => !url.startsWith('data:'))).toHaveLength(1);
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().startsWith('data:')) w.destroy();
+      });
     } finally {
       await app.evaluate(({ BrowserWindow }) => {
         const g = globalThis as unknown as { __send?: (channel: string, ...args: unknown[]) => void };

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { _electron as electron, expect, test } from '@playwright/test';
+import { _electron as electron, expect, test, type Page } from '@playwright/test';
 import { fakeOsIntegration, launch, launchStandalone, opened, prompts, removeProfile, SCREENSHOTS, shownPage, tempProfile, waitForLogin } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
@@ -313,6 +313,8 @@ test.describe('closing and quitting', () => {
     await fakeOsIntegration(app, 1); // Stay
     await page.click('body', { position: { x: 5, y: 5 } });
     await page.evaluate(() => window.addEventListener('beforeunload', (event) => event.preventDefault()));
+    // The shell's own path, for a page that can't ask (an older webmail, an error page).
+    await pageCannotAsk(page);
     const switchMode = () =>
       app.evaluate(({ Menu, app: electronApp }) => {
         electronApp.relaunch = () => {};
@@ -350,6 +352,7 @@ test.describe('closing and quitting', () => {
     const page = await shownPage(app);
     await waitForLogin(page);
     await fakeOsIntegration(app, 0);
+    await pageCannotAsk(page);
     const closed = app.waitForEvent('close', { timeout: 120_000 });
     await app.evaluate(({ Menu, app: electronApp }) => {
       electronApp.relaunch = () => {};
@@ -369,7 +372,40 @@ test.describe('closing and quitting', () => {
   });
 });
 
+/** The page's report says it takes no File > Change connection… (as an older webmail's doesn't). */
+async function pageCannotAsk(page: Page): Promise<void> {
+  await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { setState: (state: object) => void } } }).bulwarkDesktop.menu.setState({ 'file.switchMode': false }));
+  await page.waitForTimeout(300);
+}
+
 test.describe('changing the connection from the page', () => {
+  test('File > Change connection… asks in the app\'s question window, and Change restarts on the first screen', async () => {
+    const profile = tempProfile('switch4');
+    mkdirSync(profile, { recursive: true });
+    const stateFile = path.join(profile, 'shell-state.json');
+    writeFileSync(stateFile, JSON.stringify({ mode: 'standalone' }));
+    const app = await launch(profile);
+    const page = await shownPage(app);
+    await waitForLogin(page);
+    await fakeOsIntegration(app, 0);
+    await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = () => {}; });
+    // A webmail that asks itself says so in its menu report.
+    await expect.poll(async () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('file.switchMode')?.enabled ?? false)).toBe(true);
+    const closed = app.waitForEvent('close', { timeout: 120_000 });
+    await app.evaluate(({ Menu }) => (Menu.getApplicationMenu()!.getMenuItemById('file.switchMode')!.click as unknown as () => void)());
+    await expect.poll(() => Boolean(app.windows().find((w) => !w.isClosed() && w.url().startsWith('data:'))), { timeout: 15_000 }).toBe(true);
+    const question = app.windows().find((w) => !w.isClosed() && w.url().startsWith('data:'))!;
+    await expect(question.locator('h2')).toHaveText('Change how Bulwark connects?');
+    await expect(question.locator('#message')).toContainText('stay signed in');
+    // Nothing closed while it asks, and the OS asked nothing.
+    expect(JSON.parse(readFileSync(stateFile, 'utf8')).mode).toBe('standalone');
+    expect(await prompts(app)).toEqual([]);
+    await question.getByRole('button', { name: 'Change' }).click();
+    await closed;
+    expect(JSON.parse(readFileSync(stateFile, 'utf8')).mode).toBeUndefined();
+    removeProfile(profile);
+  });
+
   test('after the page asked, the bridge restarts on the first screen without a second question', async () => {
     const profile = tempProfile('switch3');
     mkdirSync(profile, { recursive: true });

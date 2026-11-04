@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { fakeOsIntegration, launch, opened, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
+import { fakeOsIntegration, launch, opened, removeProfile, SCREENSHOTS, shownPage, tempProfile, waitForLogin } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STRINGS = JSON.parse(readFileSync(path.join(ROOT, 'src/pages/welcome-strings.json'), 'utf8')) as Record<string, Record<string, string>>;
@@ -123,5 +123,30 @@ test.describe('the first run, as people see it', () => {
         removeProfile(profile);
       }
     });
+  }
+});
+
+// settings-p3-1, desktop-p3-7: the address is typed once. The sign-in page that opens after
+// the first screen has it, and the caret waits in the password field. Needs a webmail build
+// that reads login_hint (BULWARK_TEST_WEBMAIL, or ./webmail once it has one).
+test('the address typed on the first screen is on the sign-in page, with the caret in the password field', async () => {
+  const profile = tempProfile('welcome-hint');
+  const app = await launch(profile);
+  try {
+    const first = await shownPage(app);
+    await first.locator('#email').waitFor();
+    await first.fill('#email', 'dso-ux-settings@example.org');
+    await first.click('#standalone');
+    await first.locator('#privacy.open').waitFor();
+    await first.click('#continue');
+    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()).find((url) => url.includes('/login')) ?? ''), { timeout: 90_000 })
+      .toContain('login_hint=dso-ux-settings%40example.org');
+    const page = app.windows().find((w) => w.url().includes('/login')) ?? (await shownPage(app));
+    await waitForLogin(page);
+    await expect(page.locator('#username')).toHaveValue('dso-ux-settings@example.org');
+    await expect(page.locator('#password')).toBeFocused();
+  } finally {
+    await app.close();
+    removeProfile(profile);
   }
 });
