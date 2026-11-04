@@ -17,7 +17,7 @@ function options(): { allowStandalone: boolean; instanceUrl: string | null; urlL
 
 contextBridge.exposeInMainWorld('bulwarkWelcome', {
   options: options(),
-  choose: (choice: { mode: 'standalone' } | { mode: 'instance'; url: string }): Promise<{ ok: boolean; error?: string; next?: 'privacy' }> =>
+  choose: (choice: { mode: 'standalone'; email: string } | { mode: 'instance'; url: string }): Promise<{ ok: boolean; error?: string; next?: 'privacy' }> =>
     ipcRenderer.invoke(CHANNEL.welcomeChoose, choice),
   answerPrivacy: (answers: { telemetry: boolean; crashReports: boolean }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke(CHANNEL.welcomePrivacy, answers),
