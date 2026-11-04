@@ -148,6 +148,8 @@ for (const server of STALWARTS) {
       expect(box.x + box.width).toBeGreaterThan(width - 40);
       await page.screenshot({ path: path.join(SCREENSHOTS, `pim-p3-fix-6-save-offer-${server.label}.png`) });
       await offer.getByRole('button', { name: 'Save to Files' }).click();
+      // The user goes back to the program: the pointer leaves the corner, where it would hold the toasts still.
+      await page.mouse.move(5, 5);
       const toasts = page.getByRole('region', { name: 'Notifications' });
       await expect(toasts.getByText(`${name} saved to Files. Later saves from its program go there on their own.`)).toBeVisible({ timeout: 30_000 });
       // By size: Stalwart 1.0 stores an upload under a blob id of its own.
