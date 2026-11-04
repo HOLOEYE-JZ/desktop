@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { _electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { windowsRegistration } from '../src/main/features/os-rules';
 import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, waitForLogin, type Launched } from './helpers';
 
 /**
@@ -100,6 +101,29 @@ const clickTray = (app: ElectronApplication, label: string, sub?: string) =>
     const target = wantedSub ? item?.submenu?.find((i) => i.label === wantedSub) : item;
     target?.click?.();
   }, [label, sub] as const);
+
+/** A key of the test's own under HKCU, standing in for HKCU itself. */
+let roots = 0;
+const testRoot = () => `HKCU\\Software\\BulwarkTest\\os-${process.pid}-${(roots += 1)}`;
+
+/** A value's data, or null; the default value without a name. */
+function regValue(root: string, key: string, name?: string): string | null {
+  const answer = reg('query', `${root}\\${key}`, ...(name === undefined ? ['/ve'] : ['/v', name]));
+  if (!answer.ok) return null;
+  const line = answer.out.split(/\r?\n/).find((l) => /\sREG_(?:EXPAND_)?SZ\b/.test(l));
+  return line ? line.replace(/^.*?\sREG_(?:EXPAND_)?SZ {4}/, '').replace(/\s+$/, '') : null;
+}
+
+/** Every named value of a key. */
+function regValues(root: string, key: string): Record<string, string> {
+  const answer = reg('query', `${root}\\${key}`);
+  const found: Record<string, string> = {};
+  for (const line of answer.ok ? answer.out.split(/\r?\n/) : []) {
+    const match = /^ {4}(\S.*?) {4}REG_(?:EXPAND_)?SZ(?: {4}(.*))?$/.exec(line);
+    if (match) found[match[1]] = (match[2] ?? '').trim();
+  }
+  return found;
+}
 
 const mainVisible = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
 
@@ -530,16 +554,17 @@ test.describe('OS integration', () => {
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined && name.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath' && name !== 'ELECTRON_RUN_AS_NODE') env[name] = value;
     }
-    const app = await _electron.launch({ args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'], cwd: planted, env });
+    const root = testRoot();
+    const app = await _electron.launch({ args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone', `--bulwark-test-registry-root=${root}`], cwd: planted, env });
     running = { app, page: await shownPage(app) };
     const { page } = running;
     await record(app);
     expect(path.resolve(await app.evaluate(() => process.cwd())).toLowerCase()).toBe(path.resolve(profile).toLowerCase());
     try {
       await os(page, 'openDefaultAppSettings()');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities', '/v', 'ApplicationName').out).toContain('Bulwark');
+      expect(reg('query', `${root}\\Software\\Bulwark\\Capabilities`, '/v', 'ApplicationName').out).toContain('Bulwark');
     } finally {
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      reg('delete', root, '/f');
     }
     // The launch folder still counts for a relative file on the command line.
     const launched = await app.evaluate(() => (globalThis as unknown as { __launchFolder?: string }).__launchFolder ?? null);
@@ -845,29 +870,54 @@ test.describe('OS integration', () => {
     expect(await mainVisible(again)).toBe(true);
   });
 
-  test('default mail app: keys under HKCU read back, the button opens Settings, and they go again', async () => {
+  test('default mail app: every key read back under a test root, the button opens Settings, and they go again', async () => {
     test.skip(!win);
-    running = await launchStandalone(profile);
-    const { app, page } = running;
-    await record(app);
-    const before = reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').ok;
-    expect(before).toBe(false);
+    // A key of the test's own: on a machine with Bulwark installed the real ones are the user's.
+    const root = testRoot();
     try {
+      running = await launchStandalone(profile, `--bulwark-test-registry-root=${root}`);
+      const { app, page } = running;
+      await record(app);
+      const exe = await app.evaluate(() => process.execPath);
+      const wanted = windowsRegistration(exe);
+      // A start under a test root registers at once, as an installed app does.
+      await expect.poll(() => wanted.filter((value) => regValue(root, value.key, value.name) !== value.data).length, { timeout: 30_000 }).toBe(0);
+
+      // What Settings reads: RegisteredApplications names the Capabilities key, which has a name,
+      // a description, an icon, and associations whose classes exist and open this exe.
+      const caps = regValue(root, 'Software\\RegisteredApplications', 'Bulwark');
+      expect(caps).toBe('Software\\Bulwark\\Capabilities');
+      expect(regValue(root, caps!, 'ApplicationName')).toBe('Bulwark');
+      expect(regValue(root, caps!, 'ApplicationDescription')).toBeTruthy();
+      expect(regValue(root, caps!, 'ApplicationIcon')).toBe(`${exe},0`);
+      const associations = { ...regValues(root, `${caps}\\UrlAssociations`), ...regValues(root, `${caps}\\FileAssociations`) };
+      expect(Object.keys(associations).sort()).toEqual(['.eml', '.ics', '.vcf', 'mailto', 'webcal', 'webcals']);
+      for (const progId of new Set(Object.values(associations))) {
+        expect(regValue(root, `Software\\Classes\\${progId}\\shell\\open\\command`), progId).toBe(`"${exe}" -- "%1"`);
+        expect(regValue(root, `Software\\Classes\\${progId}\\DefaultIcon`), progId).toBe(`${exe},0`);
+      }
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValues(root, `Software\\Classes\\${ext}\\OpenWithProgids`)).toHaveProperty([associations[ext]]);
+      // Never the default: no type's own default and no UserChoice.
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValue(root, `Software\\Classes\\${ext}`) ?? '').not.toContain('Bulwark');
+      expect(reg('query', `${root}\\Software\\Microsoft`).ok).toBe(false);
+
+      // Taking it away (the app's unregister; the installer removes the same keys) leaves nothing.
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      expect(reg('query', `${root}\\Software\\RegisteredApplications`, '/v', 'Bulwark').ok).toBe(false);
+      expect(reg('query', `${root}\\Software\\Bulwark`).ok).toBe(false);
+      for (const progId of new Set(Object.values(associations))) expect(reg('query', `${root}\\Software\\Classes\\${progId}`).ok, progId).toBe(false);
+      expect(reg('query', `${root}\\Software\\Classes\\bulwark`).ok).toBe(false);
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValues(root, `Software\\Classes\\${ext}\\OpenWithProgids`)).not.toHaveProperty([associations[ext]]);
+      expect((await os(page, 'defaultAppStatus()') as { registered: boolean }).registered).toBe(false);
+
+      // The button in settings writes them again and opens Windows' page for the app.
       const status = await os(page, 'openDefaultAppSettings()') as { registered: boolean };
       expect((await recorded(app)).opened).toEqual(['ms-settings:defaultapps?registeredAppUser=Bulwark']);
       expect(status.registered).toBe(true);
-      expect(reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').out).toContain('Software\\Bulwark\\Capabilities');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities\\UrlAssociations', '/v', 'mailto').out).toContain('Bulwark.Url.mailto');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities\\FileAssociations', '/v', '.ics').out).toContain('Bulwark.File.ics');
-      const command = reg('query', 'HKCU\\Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command', '/ve').out;
-      expect(command).toContain('-- "%1"');
+      expect(wanted.filter((value) => regValue(root, value.key, value.name) !== value.data)).toEqual([]);
     } finally {
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      reg('delete', root, '/f');
     }
-    expect(reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').ok).toBe(false);
-    expect(reg('query', 'HKCU\\Software\\Bulwark').ok).toBe(false);
-    expect(reg('query', 'HKCU\\Software\\Classes\\Bulwark.Url.mailto').ok).toBe(false);
-    expect((await os(page, 'defaultAppStatus()') as { registered: boolean }).registered).toBe(false);
   });
 
   test('drag-out: a real file in the private folder, safely named and marked, before the drag starts', async () => {
