@@ -438,7 +438,7 @@ test.describe('OS integration', () => {
     expect(existsSync(files[0])).toBe(false);
   });
 
-  test('a wipe clears what the OS shows, and it stays clear when the page comes back', async () => {
+  test('a wipe clears what the OS shows, and it stays clear after the restart', async () => {
     test.skip(!win, 'the test root is a registry key');
     const root = `HKCU\\Software\\BulwarkTest\\Policies\\os${process.pid}`;
     try {
@@ -450,11 +450,18 @@ test.describe('OS integration', () => {
       await expect.poll(async () => JSON.stringify(await trayItems(app))).toContain('Lunch');
       const files = await app.evaluate(async () => (await (globalThis as unknown as { __bulwarkOs: { files: { prepare: (r: unknown) => Promise<{ paths: string[] }> } } }).__bulwarkOs.files.prepare([{ name: 'a.txt', data: new Uint8Array([1]) }])).paths);
       expect(existsSync(files[0])).toBe(true);
+      // The relaunch is the one thing not done for real: nothing here could reach the new process.
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
       expect(reg('add', `${root}\\Machine`, '/v', 'WipeOfflineData', '/t', 'REG_SZ', '/d', `wipe-${Date.now()}`, '/f').ok).toBe(true);
-      await expect.poll(() => existsSync(files[0])).toBe(false);
-      // The wiped page goes to a blank one, which alone hides the summary. Past that:
-      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
-      expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
+      await gone;
+      expect(existsSync(files[0])).toBe(false);
+
+      running = await launchStandalone(profile, `--bulwark-test-policy-root=${root}`, '--bulwark-test-policy-poll=250');
+      const again = running.app;
+      await takeOverFromPage(again);
+      await expect.poll(() => again.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+      expect(JSON.stringify(await trayItems(again))).not.toContain('Lunch');
     } finally {
       reg('delete', root, '/f');
     }

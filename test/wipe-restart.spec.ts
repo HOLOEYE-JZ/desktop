@@ -82,9 +82,14 @@ test.describe('a window with nobody left in it', () => {
     await page.evaluate(() => {
       (window as unknown as { bulwarkDesktop: { lifecycle: { onFlushRequest: (h: () => Promise<unknown>) => void } } }).bulwarkDesktop.lifecycle.onFlushRequest(() => new Promise(() => {}));
     });
-    await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer(); });
-    await page.waitForTimeout(500).catch(() => undefined);
-    expect(await closesWithin(app)).toBe(true);
+    // Asked and not answering, and then there's nobody to answer.
+    const gone = exits(app);
+    await app.evaluate(({ app: electronApp, BrowserWindow }) => {
+      electronApp.quit();
+      setTimeout(() => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer(), 300);
+    });
+    await Promise.race([gone, new Promise((resolve) => setTimeout(resolve, CLOSE_LIMIT_MS))]);
+    expect(running.exitCode, 'the quit went through').not.toBeNull();
   });
 
   test('a page asking "leave this site?" stops neither a wipe nor its restart', async () => {
