@@ -412,13 +412,15 @@ export class MenuController {
       ],
     };
 
+    const refreshLabel = mail ? text.menuRefresh : text.menuRefreshView;
     const viewMenu: MenuItemConstructorOptions = {
       id: 'view',
       label: text.menuView,
       submenu: [
-        this.command('view.refresh', text.menuRefresh, { accelerator: mac ? 'F5' : 'F9' }),
+        // Mail checks for new mail; Calendar, Contacts and Files read what they show again.
+        this.command('view.refresh', refreshLabel, { accelerator: mac ? 'F5' : 'F9' }),
         // The page takes F5 itself. Shown where it's the only one.
-        ...(mac ? [] : [this.command('view.refresh', text.menuRefresh, { id: 'view.refreshAlt', accelerator: 'F5', visible: false, acceleratorWorksWhenHidden: true })]),
+        ...(mac ? [] : [this.command('view.refresh', refreshLabel, { id: 'view.refreshAlt', accelerator: 'F5', visible: false, acceleratorWorksWhenHidden: true })]),
         { type: 'separator' },
         ...(section === 'calendar' ? [
           this.command('view.calendar.day', text.menuDay, { type: 'radio', ...this.pageKey('D') }),
@@ -491,13 +493,21 @@ export class MenuController {
       id: 'go',
       label: text.menuGo,
       submenu: [
-        this.command('go.inbox', text.menuGoInbox),
-        this.command('go.sent', text.menuGoSent),
-        this.command('go.drafts', text.menuGoDrafts),
-        { type: 'separator' },
-        this.command('go.nextMessage', text.menuGoNext, this.pageKey('J')),
-        this.command('go.previousMessage', text.menuGoPrevious, this.pageKey('K')),
-        this.command('go.nextUnread', text.menuGoNextUnread, this.pageKey('N')),
+        // Mail's folders and messages only in Mail, as the Message menu; Calendar moves through time.
+        ...(mail ? [
+          this.command('go.inbox', text.menuGoInbox),
+          this.command('go.sent', text.menuGoSent),
+          this.command('go.drafts', text.menuGoDrafts),
+          { type: 'separator' } as MenuItemConstructorOptions,
+          this.command('go.nextMessage', text.menuGoNext, this.pageKey('J')),
+          this.command('go.previousMessage', text.menuGoPrevious, this.pageKey('K')),
+          this.command('go.nextUnread', text.menuGoNextUnread, this.pageKey('N')),
+        ] : []),
+        ...(section === 'calendar' ? [
+          this.command('go.today', text.menuGoToday, this.pageKey('T')),
+          this.command('go.nextPeriod', text.menuGoNextPeriod, this.pageKey('Right', false)),
+          this.command('go.previousPeriod', text.menuGoPreviousPeriod, this.pageKey('Left', false)),
+        ] : []),
         { type: 'separator' },
         this.command('go.mail', text.menuGoMail, mac ? {} : { accelerator: 'Ctrl+1' }),
         this.command('go.calendar', text.menuGoCalendar, mac ? {} : { accelerator: 'Ctrl+2' }),

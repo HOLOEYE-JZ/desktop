@@ -3,7 +3,9 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { _electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { APP_USER_MODEL_ID, TEST_APP_USER_MODEL_ID, windowsRegistration } from '../src/main/features/os-rules';
 import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, waitForLogin, type Launched } from './helpers';
+import { jumpListText } from './jump-list';
 
 /**
  * The real app, on its login page: the bridge and the OS calls don't need a sign-in or
@@ -74,6 +76,11 @@ const os = (page: Page, call: string) => page.evaluate(`window.bulwarkDesktop.os
  */
 async function takeOverFromPage(app: ElectronApplication): Promise<void> {
   await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+  await dropEmptySummaries(app);
+}
+
+/** The second half of the above, for a test that says it's open itself, whatever the page does. */
+async function dropEmptySummaries(app: ElectronApplication): Promise<void> {
   await app.evaluate(() => {
     const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setSummary: (s: { unread: unknown[]; recent: unknown[]; nextEvent: unknown }) => void } } }).__bulwarkOs.hub;
     const real = hub.setSummary.bind(hub);
@@ -100,6 +107,37 @@ const clickTray = (app: ElectronApplication, label: string, sub?: string) =>
     const target = wantedSub ? item?.submenu?.find((i) => i.label === wantedSub) : item;
     target?.click?.();
   }, [label, sub] as const);
+
+/** A key of the test's own under HKCU, standing in for HKCU itself. */
+let roots = 0;
+const testRoot = () => `HKCU\\Software\\BulwarkTest\\os-${process.pid}-${(roots += 1)}`;
+
+/** A value's data, or null; the default value without a name. */
+function regValue(root: string, key: string, name?: string): string | null {
+  const answer = reg('query', `${root}\\${key}`, ...(name === undefined ? ['/ve'] : ['/v', name]));
+  if (!answer.ok) return null;
+  const line = answer.out.split(/\r?\n/).find((l) => /\sREG_(?:EXPAND_)?SZ\b/.test(l));
+  return line ? line.replace(/^.*?\sREG_(?:EXPAND_)?SZ {4}/, '').replace(/\s+$/, '') : null;
+}
+
+/** Every named value of a key. */
+function regValues(root: string, key: string): Record<string, string> {
+  const answer = reg('query', `${root}\\${key}`);
+  const found: Record<string, string> = {};
+  for (const line of answer.ok ? answer.out.split(/\r?\n/) : []) {
+    const match = /^ {4}(\S.*?) {4}REG_(?:EXPAND_)?SZ(?: {4}(.*))?$/.exec(line);
+    if (match) found[match[1]] = (match[2] ?? '').trim();
+  }
+  return found;
+}
+
+/** Stands in for the Windows mode (taskbar) and the app mode, then says they changed. */
+const setTheme = (app: ElectronApplication, theme: { taskbarDark: boolean; appsDark: boolean }) =>
+  app.evaluate(({ nativeTheme }, { taskbarDark, appsDark }) => {
+    Object.defineProperty(nativeTheme, 'shouldUseDarkColorsForSystemIntegratedUI', { configurable: true, get: () => taskbarDark });
+    Object.defineProperty(nativeTheme, 'shouldUseDarkColors', { configurable: true, get: () => appsDark });
+    nativeTheme.emit('updated');
+  }, theme);
 
 const mainVisible = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
 
@@ -530,16 +568,17 @@ test.describe('OS integration', () => {
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined && name.toLowerCase() !== 'nodefaultcurrentdirectoryinexepath' && name !== 'ELECTRON_RUN_AS_NODE') env[name] = value;
     }
-    const app = await _electron.launch({ args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'], cwd: planted, env });
+    const root = testRoot();
+    const app = await _electron.launch({ args: [MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone', `--bulwark-test-registry-root=${root}`], cwd: planted, env });
     running = { app, page: await shownPage(app) };
     const { page } = running;
     await record(app);
     expect(path.resolve(await app.evaluate(() => process.cwd())).toLowerCase()).toBe(path.resolve(profile).toLowerCase());
     try {
       await os(page, 'openDefaultAppSettings()');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities', '/v', 'ApplicationName').out).toContain('Bulwark');
+      expect(reg('query', `${root}\\Software\\Bulwark\\Capabilities`, '/v', 'ApplicationName').out).toContain('Bulwark');
     } finally {
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      reg('delete', root, '/f');
     }
     // The launch folder still counts for a relative file on the command line.
     const launched = await app.evaluate(() => (globalThis as unknown as { __launchFolder?: string }).__launchFolder ?? null);
@@ -645,7 +684,7 @@ test.describe('OS integration', () => {
     expect(result).toMatchObject({ shown: true });
 
     const script = path.join(ROOT, 'test', 'support', 'toast-readback.ps1');
-    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', tag], { encoding: 'utf8', windowsHide: true });
+    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', tag], { encoding: 'utf8', windowsHide: true });
     let xml = '';
     await expect.poll(() => {
       xml = readback();
@@ -685,11 +724,11 @@ test.describe('OS integration', () => {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
     const activate = path.join(ROOT, 'test', 'support', 'toast-activate.ps1');
     const args = `bulwark:reply:${encodeURIComponent(context)}`;
-    expect(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', 'org.bulwarkmail.desktop', '-Arguments', args, '-Reply', 'On my way'], { encoding: 'utf8', windowsHide: true })).toContain('activated');
+    expect(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', TEST_APP_USER_MODEL_ID, '-Arguments', args, '-Reply', 'On my way'], { encoding: 'utf8', windowsHide: true })).toContain('activated');
     await expect.poll(async () => (await commands(page)).at(-1)).toEqual({ type: 'notification', action: 'reply', context, reply: 'On my way' });
     await expect.poll(() => mainVisible(app)).toBe(true);
 
-    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'os-spec-real-toast', '-Clear'], { encoding: 'utf8', windowsHide: true });
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', 'os-spec-real-toast', '-Clear'], { encoding: 'utf8', windowsHide: true });
   });
 
   test('badge, progress and thumbnail toolbar on the real window, jump list read back', async () => {
@@ -739,6 +778,101 @@ test.describe('OS integration', () => {
     await page.waitForTimeout(2500);
     expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
 
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("a test run's jump list goes under its own ID, never the installed app's", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    const marker = `Jump list run ${Date.now()}`;
+    await os(page, `setSummary({ unread: [], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: '${marker}' }], nextEvent: null })`);
+    await page.waitForTimeout(2500);
+    expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
+    expect(jumpListText(APP_USER_MODEL_ID)).not.toContain(marker);
+    await expect.poll(() => jumpListText(TEST_APP_USER_MODEL_ID)).toContain(marker);
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("the jump list: each task its own icon, as a file Windows can read, in the taskbar's light or dark and the app's language", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    const icons = path.join(ROOT, 'dist', 'os-icons');
+    const list = () => jumpListText(TEST_APP_USER_MODEL_ID);
+
+    // A dark taskbar: white glyphs.
+    await setTheme(app, { taskbarDark: true, appsDark: false });
+    await os(page, `setSummary({ unread: [], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Icons, dark' }], nextEvent: null })`);
+    await expect.poll(list, { timeout: 15_000 }).toContain('Icons, dark');
+    for (const name of ['compose', 'inbox', 'calendar', 'contacts', 'message']) {
+      expect(list()).toContain(`task-${name}-light.ico`);
+      expect(existsSync(path.join(icons, `task-${name}-light.ico`))).toBe(true);
+    }
+    expect(list()).not.toContain('-dark.ico');
+    expect(list()).toContain('New message');
+
+    // Switched to a light one: set again, near-black glyphs.
+    await setTheme(app, { taskbarDark: false, appsDark: true });
+    await expect.poll(list).toContain('task-compose-dark.ico');
+    for (const name of ['compose', 'inbox', 'calendar', 'contacts', 'message']) expect(list()).toContain(`task-${name}-dark.ico`);
+    expect(list()).not.toContain('-light.ico');
+
+    // The page says it shows German.
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { shell: { setLanguages: (l: object) => void } } }).bulwarkDesktop.shell.setLanguages({ ui: 'de' }));
+    await expect.poll(list).toContain('Neue Nachricht');
+    for (const title of ['Posteingang', 'Kalender', 'Kontakte']) expect(list()).toContain(title);
+    expect(list()).toContain('task-compose-dark.ico');
+
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("the thumbnail toolbar and the tray menu: the webmail's glyphs, in the light or dark they sit on", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    await os(page, `setSummary({ unread: [], recent: [], nextEvent: { title: 'Standup', when: '09:30' } })`);
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Next: Standup, 09:30');
+    await app.evaluate(({ BrowserWindow }) => {
+      const g = globalThis as unknown as { __thumbs: string[][] };
+      g.__thumbs = [];
+      const window = BrowserWindow.getAllWindows()[0];
+      const real = window.setThumbarButtons.bind(window);
+      window.setThumbarButtons = (buttons) => {
+        g.__thumbs.push(buttons.map((button) => button.icon.toDataURL()));
+        return real(buttons);
+      };
+    });
+    const icons = path.join(ROOT, 'dist', 'os-icons');
+    const ico = (name: string, variant: string) => app.evaluate(({ nativeImage }, file) => nativeImage.createFromPath(file).toDataURL(), path.join(icons, `task-${name}-${variant}.ico`));
+    const trayIcon = (label: string) => app.evaluate((_e, wanted) => {
+      const items = (globalThis as unknown as { __bulwarkOs: { tray: { template: () => { label?: string; icon?: Electron.NativeImage }[] } } }).__bulwarkOs.tray.template();
+      return items.find((item) => item.label === wanted)?.icon?.toDataURL() ?? null;
+    }, label);
+    const thumbs = () => app.evaluate(() => (globalThis as unknown as { __thumbs: string[][] }).__thumbs);
+    expect(await ico('compose', 'light')).not.toBe(await ico('compose', 'dark'));
+    expect((await ico('compose', 'light')).length).toBeGreaterThan(100);
+
+    // The thumbnails follow the taskbar, the tray's menu the apps' light or dark.
+    await setTheme(app, { taskbarDark: true, appsDark: false });
+    await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]));
+    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'light'), await ico('inbox', 'light')]);
+    expect(await trayIcon('New message')).toBe(await ico('compose', 'dark'));
+    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'dark'));
+
+    // Both switch: set again without being asked.
+    const before = (await thumbs()).length;
+    await setTheme(app, { taskbarDark: false, appsDark: true });
+    await expect.poll(async () => (await thumbs()).length).toBe(before + 1);
+    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'dark'), await ico('inbox', 'dark')]);
+    expect(await trayIcon('New message')).toBe(await ico('compose', 'light'));
+    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'light'));
     await app.evaluate(({ app: a }) => a.setJumpList(null));
   });
 
@@ -845,29 +979,54 @@ test.describe('OS integration', () => {
     expect(await mainVisible(again)).toBe(true);
   });
 
-  test('default mail app: keys under HKCU read back, the button opens Settings, and they go again', async () => {
+  test('default mail app: every key read back under a test root, the button opens Settings, and they go again', async () => {
     test.skip(!win);
-    running = await launchStandalone(profile);
-    const { app, page } = running;
-    await record(app);
-    const before = reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').ok;
-    expect(before).toBe(false);
+    // A key of the test's own: on a machine with Bulwark installed the real ones are the user's.
+    const root = testRoot();
     try {
+      running = await launchStandalone(profile, `--bulwark-test-registry-root=${root}`);
+      const { app, page } = running;
+      await record(app);
+      const exe = await app.evaluate(() => process.execPath);
+      const wanted = windowsRegistration(exe);
+      // A start under a test root registers at once, as an installed app does.
+      await expect.poll(() => wanted.filter((value) => regValue(root, value.key, value.name) !== value.data).length, { timeout: 30_000 }).toBe(0);
+
+      // What Settings reads: RegisteredApplications names the Capabilities key, which has a name,
+      // a description, an icon, and associations whose classes exist and open this exe.
+      const caps = regValue(root, 'Software\\RegisteredApplications', 'Bulwark');
+      expect(caps).toBe('Software\\Bulwark\\Capabilities');
+      expect(regValue(root, caps!, 'ApplicationName')).toBe('Bulwark');
+      expect(regValue(root, caps!, 'ApplicationDescription')).toBeTruthy();
+      expect(regValue(root, caps!, 'ApplicationIcon')).toBe(`${exe},0`);
+      const associations = { ...regValues(root, `${caps}\\UrlAssociations`), ...regValues(root, `${caps}\\FileAssociations`) };
+      expect(Object.keys(associations).sort()).toEqual(['.eml', '.ics', '.vcf', 'mailto', 'webcal', 'webcals']);
+      for (const progId of new Set(Object.values(associations))) {
+        expect(regValue(root, `Software\\Classes\\${progId}\\shell\\open\\command`), progId).toBe(`"${exe}" -- "%1"`);
+        expect(regValue(root, `Software\\Classes\\${progId}\\DefaultIcon`), progId).toBe(`${exe},0`);
+      }
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValues(root, `Software\\Classes\\${ext}\\OpenWithProgids`)).toHaveProperty([associations[ext]]);
+      // Never the default: no type's own default and no UserChoice.
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValue(root, `Software\\Classes\\${ext}`) ?? '').not.toContain('Bulwark');
+      expect(reg('query', `${root}\\Software\\Microsoft`).ok).toBe(false);
+
+      // Taking it away (the app's unregister; the installer removes the same keys) leaves nothing.
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      expect(reg('query', `${root}\\Software\\RegisteredApplications`, '/v', 'Bulwark').ok).toBe(false);
+      expect(reg('query', `${root}\\Software\\Bulwark`).ok).toBe(false);
+      for (const progId of new Set(Object.values(associations))) expect(reg('query', `${root}\\Software\\Classes\\${progId}`).ok, progId).toBe(false);
+      expect(reg('query', `${root}\\Software\\Classes\\bulwark`).ok).toBe(false);
+      for (const ext of ['.eml', '.ics', '.vcf']) expect(regValues(root, `Software\\Classes\\${ext}\\OpenWithProgids`)).not.toHaveProperty([associations[ext]]);
+      expect((await os(page, 'defaultAppStatus()') as { registered: boolean }).registered).toBe(false);
+
+      // The button in settings writes them again and opens Windows' page for the app.
       const status = await os(page, 'openDefaultAppSettings()') as { registered: boolean };
       expect((await recorded(app)).opened).toEqual(['ms-settings:defaultapps?registeredAppUser=Bulwark']);
       expect(status.registered).toBe(true);
-      expect(reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').out).toContain('Software\\Bulwark\\Capabilities');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities\\UrlAssociations', '/v', 'mailto').out).toContain('Bulwark.Url.mailto');
-      expect(reg('query', 'HKCU\\Software\\Bulwark\\Capabilities\\FileAssociations', '/v', '.ics').out).toContain('Bulwark.File.ics');
-      const command = reg('query', 'HKCU\\Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command', '/ve').out;
-      expect(command).toContain('-- "%1"');
+      expect(wanted.filter((value) => regValue(root, value.key, value.name) !== value.data)).toEqual([]);
     } finally {
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { defaultApp: { unregister: () => Promise<void> } } }).__bulwarkOs.defaultApp.unregister());
+      reg('delete', root, '/f');
     }
-    expect(reg('query', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark').ok).toBe(false);
-    expect(reg('query', 'HKCU\\Software\\Bulwark').ok).toBe(false);
-    expect(reg('query', 'HKCU\\Software\\Classes\\Bulwark.Url.mailto').ok).toBe(false);
-    expect((await os(page, 'defaultAppStatus()') as { registered: boolean }).registered).toBe(false);
   });
 
   test('drag-out: a real file in the private folder, safely named and marked, before the drag starts', async () => {

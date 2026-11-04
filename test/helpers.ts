@@ -185,18 +185,36 @@ export function requireAccount(): void {
   if (!ENT_PASSWORD) throw new Error("Set IT_ENT_PASSWORD to the test account's password");
 }
 
-function reg(...args: string[]): void {
-  spawnSync('reg.exe', args, { windowsHide: true });
+function reg(...args: string[]): { ok: boolean; out: string } {
+  const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
+  return { ok: result.status === 0, out: result.stdout ?? '' };
+}
+
+/** A development Electron, never an installed Bulwark.exe. */
+export const DEV_ELECTRON = /\\electron\\dist\\electron\.exe/i;
+
+/**
+ * Whether the mail registration under HKCU is a development run's. On a machine with Bulwark
+ * installed the same keys are the real app's, and a test must leave them alone.
+ */
+export function devRegistrationInHkcu(): boolean {
+  const command = reg('query', 'HKCU\\Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command', '/ve');
+  if (command.ok) return DEV_ELECTRON.test(command.out);
+  const icon = reg('query', 'HKCU\\Software\\Bulwark\\Capabilities', '/v', 'ApplicationIcon');
+  return icon.ok && DEV_ELECTRON.test(icon.out);
 }
 
 /** What a run may leave without this: the keys and the shortcut Electron makes on a toast. */
 export function removeOsTraces(): void {
   if (process.platform !== 'win32') return;
   reg('delete', 'HKCU\\Software\\Classes\\CLSID\\{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}', '/f');
-  for (const key of ['Software\\Bulwark', 'Software\\Classes\\bulwark', 'Software\\Classes\\Bulwark.Url.mailto', 'Software\\Classes\\Bulwark.Url.webcal', 'Software\\Classes\\Bulwark.File.eml', 'Software\\Classes\\Bulwark.File.ics', 'Software\\Classes\\Bulwark.File.vcf']) {
-    reg('delete', `HKCU\\${key}`, '/f');
+  // Only a development run's: an installed Bulwark's registration is the user's.
+  if (devRegistrationInHkcu()) {
+    for (const key of ['Software\\Bulwark', 'Software\\Classes\\bulwark', 'Software\\Classes\\Bulwark.Url.mailto', 'Software\\Classes\\Bulwark.Url.webcal', 'Software\\Classes\\Bulwark.File.eml', 'Software\\Classes\\Bulwark.File.ics', 'Software\\Classes\\Bulwark.File.vcf']) {
+      reg('delete', `HKCU\\${key}`, '/f');
+    }
+    reg('delete', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark', '/f');
   }
-  reg('delete', 'HKCU\\Software\\RegisteredApplications', '/v', 'Bulwark', '/f');
   reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run', '/v', 'Bulwark Dev', '/f');
   reg('delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', '/v', 'Bulwark Dev', '/f');
   for (const name of ['Electron.lnk', 'Bulwark.lnk']) {

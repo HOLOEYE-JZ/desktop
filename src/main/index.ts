@@ -24,7 +24,7 @@ import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { registerImportScheme } from './features/import';
 import { holdEarlyLaunches } from './features/os-launch';
-import { electronRegistersScheme } from './features/os-rules';
+import { appUserModelId, electronRegistersScheme } from './features/os-rules';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
@@ -114,7 +114,9 @@ app.setName('Bulwark');
 const ABOUT_COPYRIGHT = 'AGPL-3.0-only';
 app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: ABOUT_COPYRIGHT, website: 'https://bulwarkmail.org' });
 if (process.platform === 'win32') {
-  app.setAppUserModelId('org.bulwarkmail.desktop');
+  // A test build, or a package with its profile baked in for the tests, keeps off the user's
+  // jump list, taskbar group and notifications.
+  app.setAppUserModelId(appUserModelId(__BULWARK_TEST_BUILD__ || Boolean(__BULWARK_TEST_PROFILE__)));
   setToastActivator();
 }
 

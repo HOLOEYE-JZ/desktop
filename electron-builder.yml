@@ -20,6 +20,8 @@ asarUnpack:
 # What goes in app.asar. electron-builder adds the production dependencies.
 files:
   - dist/**/*
+  # Windows reads these itself: they go in resources/os-icons, below.
+  - '!dist/os-icons/*.ico'
   - package.json
   # The native helper, per architecture. after-pack.cjs fails without it on Windows and macOS.
   - from: native/dist/${platform}-${arch}
@@ -79,6 +81,13 @@ win:
   # relies on the sha512 in latest.yml, over TLS. See "Unsigned builds" in the README.
   icon: build/icon.ico
   executableName: Bulwark
+  # The jump list's icons. Windows reads them itself, after the app set them, so they have to
+  # be real files and not in the asar. The package guard checks each is there with every size.
+  extraResources:
+    - from: assets/os
+      to: os-icons
+      filter:
+        - task-*.ico
   target:
     - target: nsis
       arch: [x64, arm64]
@@ -226,23 +235,28 @@ linux:
   desktop:
     entry:
       Actions: NewMessage;Inbox;Calendar;Contacts;
+    # Icons by their freedesktop names: the desktop's own theme draws them, where it shows any.
     desktopActions:
       NewMessage:
         Name: New message
         Name[de]: Neue Nachricht
         Exec: bulwark bulwark://new
+        Icon: mail-message-new
       Inbox:
         Name: Inbox
         Name[de]: Posteingang
         Exec: bulwark bulwark://inbox
+        Icon: mail-folder-inbox
       Calendar:
         Name: Calendar
         Name[de]: Kalender
         Exec: bulwark bulwark://calendar
+        Icon: x-office-calendar
       Contacts:
         Name: Contacts
         Name[de]: Kontakte
         Exec: bulwark bulwark://contacts
+        Icon: x-office-address-book
   # No architectures here: a target that names them builds them whatever the command line
   # says, and each release job runs on the machine it builds for.
   target:

@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { TEST_APP_USER_MODEL_ID } from '../src/main/features/os-rules';
 import { launchStandalone, removeOsTraces, removeProfile, requireAccount, SCREENSHOTS, signIn, STALWARTS, tempProfile, ENT_PASSWORD, type Launched } from './helpers';
 
 /**
@@ -294,11 +295,11 @@ for (const { label, url } of STALWARTS) {
       }));
       expect(result).toMatchObject({ shown: true });
       const script = path.join(ROOT, 'test', 'support', 'toast-readback.ps1');
-      const read = () => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'reminders-spec-real'], { encoding: 'utf8', windowsHide: true });
+      const read = () => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', 'reminders-spec-real'], { encoding: 'utf8', windowsHide: true });
       await expect.poll(read, { timeout: 15_000 }).toContain('Project review');
       const xml = read();
       for (const name of ['Join', 'Open', '5 min', '10 min', '15 min']) expect(xml).toContain(`content="${name}"`);
-      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'reminders-spec-real', '-Clear'], { encoding: 'utf8', windowsHide: true });
+      execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', 'reminders-spec-real', '-Clear'], { encoding: 'utf8', windowsHide: true });
     });
   });
 }

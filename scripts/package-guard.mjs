@@ -8,6 +8,7 @@
 import { chmodSync, closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { findTaskIconProblems, TASK_ICON_FOLDER } from './task-icons.mjs';
 
 const FORBIDDEN_DIRS = new Set(['data', 'local-data', 'repos']);
 const FORBIDDEN_FILE = /^(\.env.*|plugin-signing\.key)$/i;
@@ -145,7 +146,7 @@ export function asarFiles(file) {
  */
 export function findResourceProblems(resources, platform = process.platform) {
   const problems = [];
-  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|LICENSE\.electron\.txt|LICENSES\.chromium\.html)$/;
+  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|os-icons|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|LICENSE\.electron\.txt|LICENSES\.chromium\.html)$/;
   for (const name of readdirSync(resources)) {
     if (known.test(name)) continue;
     // What a real macOS package has beside these. Language folders hold at most Electron's own file.
@@ -161,6 +162,13 @@ export function findResourceProblems(resources, platform = process.platform) {
   for (const name of ['app.asar.unpacked', 'server.asar.unpacked', 'policies']) {
     const tree = path.join(resources, name);
     if (existsSync(tree)) problems.push(...findProblems(tree).map((problem) => `${name}/${problem}`));
+  }
+  // The jump list's icons, and nothing else.
+  const icons = path.join(resources, TASK_ICON_FOLDER);
+  if (existsSync(icons)) {
+    for (const { full, entry } of walk(icons)) {
+      if (!entry.isFile() || !/^task-[a-z]+-(light|dark)\.ico$/.test(entry.name) || path.dirname(full) !== icons) problems.push(`${TASK_ICON_FOLDER}/${toPosix(path.relative(icons, full))}`);
+    }
   }
   const unpacked = path.join(resources, 'app.asar.unpacked');
   if (existsSync(unpacked)) {
@@ -239,8 +247,17 @@ export function guardHelper(resources, platform) {
   if (problem) throw new Error(`Do not ship this package:\n  ${problem}`);
 }
 
+/**
+ * Windows reads the jump list's icons itself, from resources/os-icons: each has to be there,
+ * a real .ico, with every size from 100% to 300% scale.
+ */
+export function findPackagedTaskIconProblems(resources, platform) {
+  if (platform !== 'win32') return [];
+  return findTaskIconProblems(path.join(resources, TASK_ICON_FOLDER)).map((problem) => `resources/${TASK_ICON_FOLDER}/${problem}`);
+}
+
 export function guardResources(resources, platform) {
-  const problems = findResourceProblems(resources, platform);
+  const problems = [...findResourceProblems(resources, platform), ...findPackagedTaskIconProblems(resources, platform)];
   if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
 }
 

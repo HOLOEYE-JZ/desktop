@@ -33,7 +33,7 @@ npm start
 
 ## OS integration
 
-`src/main/features/os*.ts`: tray, badge, jump list, thumbnail toolbar, toasts, default mail app, files, start at login, sleep and wake. The page's side is `lib/desktop/` in the webmail; settings are on its General page. `os-rules.ts` holds the decisions with no Electron in them, and `assets/os` the tray and toolbar icons, made by `scripts/make-os-icons.cjs`.
+`src/main/features/os*.ts`: tray, badge, jump list, thumbnail toolbar, toasts, default mail app, files, start at login, sleep and wake. The page's side is `lib/desktop/` in the webmail; settings are on its General page. `os-rules.ts` holds the decisions with no Electron in them, and `assets/os` the icons: the tray's, made from the logo by `scripts/make-os-icons.cjs`, and those of the jump list, the thumbnail toolbar and the menus, made from the Tabler glyphs in `assets/glyphs` by `scripts/make-task-icons.mjs` (`node scripts/make-task-icons.mjs --webmail <webmail checkout>`, for sharp). Windows reads the jump list's .ico files itself, so a package has them as files in `resources/os-icons`, and the package guard checks each is there with every size. Test builds use their own AppUserModelID, so a test run never touches the installed app's jump list.
 
 Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu shortcut and a COM key. `test/os.spec.ts` takes them away again; on a hand run, look for `Bulwark Dev` under `Run`, `{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}` under `Software\Classes\CLSID` and `Electron.lnk` under Start Menu Programs.
 
