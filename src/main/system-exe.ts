@@ -15,6 +15,7 @@ const WINDOWS_TOOLS: Record<string, string[]> = {
   'powershell.exe': ['WindowsPowerShell', 'v1.0', 'powershell.exe'],
   'icacls.exe': ['icacls.exe'],
   'whoami.exe': ['whoami.exe'],
+  'subst.exe': ['subst.exe'],
 };
 
 export function systemExe(name: keyof typeof WINDOWS_TOOLS, root = process.env.SystemRoot || 'C:\\Windows'): string {

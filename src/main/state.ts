@@ -6,6 +6,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Mode, OsSettings, ThemeColours, UpdateChannel, WindowType } from '../shared/bridge';
+import type { StoredDrive } from './files/drive-controller';
 
 export interface StoredBounds {
   x: number;
@@ -110,6 +111,8 @@ export interface ShellState {
   certificateChoices?: Record<string, { fingerprint: string; account?: string }>;
   /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
   importJobs?: StoredImportJob[];
+  /** The Files drive: the accounts the user turned it on for, and the letter they chose. */
+  filesDrive?: StoredDrive;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };
