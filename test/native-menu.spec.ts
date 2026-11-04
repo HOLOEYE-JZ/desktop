@@ -5,7 +5,7 @@ import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { appPathOfDeepLink, deepLinkFromArgv, LinkRateLimit, parseDeepLink } from '../src/main/deep-link';
 import { AltTracker } from '../src/main/features/window-input';
-import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, tidySeparators, toMenuTemplate, type BarSourceItem } from '../src/main/menu-text';
+import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, tidySeparators, toMenuTemplate, windowMenuNames, type BarSourceItem } from '../src/main/menu-text';
 import { LABEL_KEY } from '../src/main/label-keys';
 import { accentHex, highContrastColours } from '../src/main/chrome-colours';
 import { nextInCycle, sumAnswers } from '../src/main/window-logic';
@@ -171,6 +171,26 @@ test.describe('the pure parts', () => {
     expect(labels(tidySeparators([sep, shown('A'), sep, sep, shown('B'), sep, hidden('C')]))).toEqual(['A', '-', 'B', 'C']);
     const [withSub] = tidySeparators([{ label: 'Sub', submenu: [sep, shown('x'), sep] }]);
     expect(labels(withSub.submenu as { label?: string }[])).toEqual(['x']);
+  });
+
+  test('Window menu names: as the page gives them, cut with an ellipsis, numbered when two read alike, only kinds while locked', () => {
+    const kinds = { main: 'Bulwark', message: 'Message', composer: 'New message', settings: 'Settings' };
+    const subject = 'Invoice 2026-118 (3) - dso-ux-desktop@example.org - Bulwark';
+    const list = [
+      { type: 'main', title: subject, menuName: 'Inbox - dso-ux-desktop@example.org' },
+      { type: 'message', title: subject, menuName: 'Invoice 2026-118 (3)' },
+      { type: 'message', title: 'x', menuName: 'Invoice 2026-118 (3)' },
+      { type: 'composer', title: 'New message - a@example.org - Bulwark', menuName: 'New message' },
+      { type: 'composer', title: '', menuName: '' },
+      { type: 'message', title: 'An older page' },
+      { type: 'message', title: '', menuName: 'A subject that goes on and on and on, far longer than any menu should be' },
+    ];
+    const names = windowMenuNames(list, kinds);
+    expect(names.slice(0, 6)).toEqual(['Inbox - dso-ux-desktop@example.org', 'Invoice 2026-118 (3)', 'Invoice 2026-118 (3) (2)', 'New message', 'New message (2)', 'An older page']);
+    expect(Array.from(names[6]).length).toBeLessThanOrEqual(50);
+    expect(names[6].endsWith('…')).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
+    expect(windowMenuNames(list.slice(0, 2), kinds, true)).toEqual(['Bulwark', 'Message']);
   });
 
   test('a second launch finds its link among the arguments', () => {
@@ -607,6 +627,20 @@ test.describe('the app menu and windows', () => {
       return seen;
     });
     expect(focused).toHaveLength(1);
+    await other.close();
+  });
+
+  test('a page that names its window is listed by that name, not by its title', async () => {
+    const other = await openPopout('named1');
+    const list = () => app.evaluate(({ Menu }) => {
+      const windowMenu = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'Window');
+      return windowMenu!.submenu!.items.filter((item) => item.id?.startsWith('window.focus.')).map((item) => item.label);
+    });
+    // Set again each time: the page names itself as it loads, and a new page starts unnamed.
+    await expect.poll(async () => {
+      await other.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { setMenuName(name: string): void } } }).bulwarkDesktop.windows.setMenuName('Quarterly budget'));
+      return (await list()).includes('Quarterly budget');
+    }).toBe(true);
     await other.close();
   });
 

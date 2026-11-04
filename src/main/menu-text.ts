@@ -179,6 +179,35 @@ export function enabledWhileLocked(item: { id?: string | null; role?: string | n
   return !!item.id && (IDS_WHILE_LOCKED.has(item.id) || item.id.startsWith('window.focus.'));
 }
 
+const WINDOW_NAME_MAX = 50;
+
+/**
+ * The Window menu's lines: each window by the name its page gave (the main window by view and
+ * account, a message by its subject, a composer by its subject or "New message"), else its
+ * title, else its kind. Long names end in "…", and two the same get a number, so no two lines
+ * read alike. Locked, only the kinds: a subject is mail.
+ */
+export function windowMenuNames(
+  list: readonly { type: string; title: string; menuName?: string }[],
+  kinds: Record<string, string>,
+  locked = false,
+): string[] {
+  const cut = (name: string) => {
+    const chars = Array.from(name);
+    return chars.length > WINDOW_NAME_MAX ? `${chars.slice(0, WINDOW_NAME_MAX - 1).join('').trimEnd()}…` : name;
+  };
+  const names = list.map((info) => cut((locked ? '' : (info.menuName || info.title)).trim() || kinds[info.type] || ''));
+  const total = new Map<string, number>();
+  for (const name of names) total.set(name, (total.get(name) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return names.map((name) => {
+    if ((total.get(name) ?? 0) < 2) return name;
+    const n = (seen.get(name) ?? 0) + 1;
+    seen.set(name, n);
+    return n === 1 ? name : `${name} (${n})`;
+  });
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');

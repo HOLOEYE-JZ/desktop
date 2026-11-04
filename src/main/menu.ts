@@ -18,8 +18,8 @@
  */
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
-import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics, barItemsOf, enabledWhileLocked, findBarItem, tidySeparators, type BarSourceItem } from './menu-text';
+import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState } from '../shared/bridge';
+import { assignMnemonics, barItemsOf, enabledWhileLocked, findBarItem, tidySeparators, windowMenuNames, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
 import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
@@ -126,7 +126,7 @@ export class MenuController {
     windows.on('changed', (list) => {
       // Windows came or went, or a title changed: the Window menu has other lines now.
       // Only the focus moving is a matter of ticks and greyed items.
-      const signature = list.map((w) => `${w.id}:${w.title}`).join('\n');
+      const signature = list.map((w) => `${w.id}:${w.title}:${w.menuName ?? ''}`).join('\n');
       if (signature !== this.windowSignature) {
         this.windowSignature = signature;
         this.scheduleRebuild();
@@ -295,12 +295,12 @@ export class MenuController {
     const text = strings();
     const list = windows.list();
     if (list.length === 0) return [];
-    const nameOf = (info: WindowInfo) => info.title || text.windowNames[info.type];
+    const names = windowMenuNames(list, text.windowNames, this.locked);
     return [
       { type: 'separator' },
-      ...list.map((info): MenuItemConstructorOptions => ({
+      ...list.map((info, index): MenuItemConstructorOptions => ({
         id: `window.focus.${info.id}`,
-        label: nameOf(info).replace(/&/g, '&&'),
+        label: names[index].replace(/&/g, '&&'),
         type: 'checkbox',
         checked: info.focused,
         click: () => windows.focus(info.id),

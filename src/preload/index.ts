@@ -164,6 +164,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       closeSelf: () => ipcRenderer.send(CHANNEL.windowsCloseSelf),
       setRestore: (urls: string[]) => ipcRenderer.send(CHANNEL.windowsSetRestore, urls),
       setRestoreEnabled: (enabled: boolean) => ipcRenderer.send(CHANNEL.windowsSetRestoreEnabled, enabled),
+      setMenuName: (name: string) => ipcRenderer.send(CHANNEL.windowsSetMenuName, name),
       sessionReady: () => ipcRenderer.send(CHANNEL.windowsSessionReady),
       sessionEnded: () => ipcRenderer.send(CHANNEL.windowsSessionEnded),
       spare: {
