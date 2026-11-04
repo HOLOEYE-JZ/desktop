@@ -25,6 +25,7 @@ import {
   type LocalImportScanResult,
 } from '../../shared/bridge';
 import { IMPORT_SCHEME, ImportGrants, type ConfirmedFile } from '../import-files';
+import { FILES_SCHEME } from '../files/read-grants';
 import type { FoundBook, FoundFile, ScanEnv } from '../import-scan';
 import { runImportWorker, type WorkerOutcome } from '../import-worker-client';
 import type { WorkerScan } from '../import-worker';
@@ -50,10 +51,14 @@ const TEST_HANG = __BULWARK_TEST_BUILD__ && process.argv.includes('--bulwark-tes
 
 const WORKER = path.join(path.dirname(fileURLToPath(import.meta.url)), 'import-worker.cjs');
 
-/** Before `ready`, or the scheme isn't privileged. bypassCSP: an instance's own CSP has no reason to name it. */
+/**
+ * Before `ready`, or the scheme isn't privileged. bypassCSP: an instance's own CSP has no reason to name it.
+ * The files sync's reads (features/files-folders.ts) go in the same call: Electron takes one list.
+ */
 export function registerImportScheme(): void {
   protocol.registerSchemesAsPrivileged([
     { scheme: IMPORT_SCHEME, privileges: { secure: true, supportFetchAPI: true, corsEnabled: true, bypassCSP: true } },
+    { scheme: FILES_SCHEME, privileges: { secure: true, supportFetchAPI: true, corsEnabled: true, bypassCSP: true } },
   ]);
 }
 
