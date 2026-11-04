@@ -67,6 +67,28 @@ test.describe('the NSIS window', () => {
     expect(text).toContain('SendMessage $R2 0x2001 0 0x262626');
   });
 
+  // Controls made from the install section belong to its thread, which paints them only
+  // while it waits (ExecWait): on an update, while the old uninstaller ran, the lines got a
+  // white background next to their text. So they're made in .onGUIInit, on the window's thread.
+  test('makes its logo and lines on the window thread, not in the install section', () => {
+    const text = theme();
+    const body = (start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
+    const window = body('Function ${UN}bulwarkThemeWindow', 'FunctionEnd');
+    expect(window.length).toBeGreaterThan(0);
+    expect(window).not.toContain('CreateWindowEx');
+    expect(body('!macro bulwarkThemeStatics', '!macroend').match(/user32::CreateWindowExW\(/g)).toHaveLength(3);
+    expect(text.match(/user32::CreateWindowExW\(/g)).toHaveLength(3);
+    for (const un of ['', 'un.']) expect(body(`Function ${un}bulwarkThemeGuiInit`, 'FunctionEnd'), `${un}bulwarkThemeGuiInit`).toContain('!insertmacro bulwarkThemeStatics');
+    for (const name of ['$bulwarkLogo', '$bulwarkTitle', '$bulwarkLine']) expect(window).toContain(`SetWindowPos(p ${name}`);
+  });
+
+  test("keeps NSIS's integrity check and its message", () => {
+    // SilentInstall would hide the "verifying installer" box, and the "integrity check failed" message with it.
+    for (const file of [path.join(BUILD, 'installer-theme.nsh'), path.join(ROOT, config.nsis.include)]) {
+      expect(read(file), file).not.toMatch(/^\s*(SilentInstall|SilentUnInstall|CRCCheck)\b/m);
+    }
+  });
+
   test('has a logo for every scale from 100 to 300 %', () => {
     expect(theme()).toContain('"${BULWARK_THEME_DIR}\\installer-logo.ico"');
     const sizes = icoSizes(readFileSync(path.join(BUILD, 'installer-logo.ico')));

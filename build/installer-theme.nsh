@@ -15,6 +15,10 @@
 ; The uninstaller used to run hidden after its question. Started by a person (no /S), it now
 ; shows this window while it removes the files. Updates run it with /S and see nothing.
 ;
+; NSIS's own "verifying installer" box still shows when the integrity check takes over a
+; second. Only SilentInstall can hide it, and that also hides the "integrity check failed"
+; message, so a broken download would close without a word.
+;
 ; Nothing here changes what gets installed or written: only the window.
 ;
 ; installer.nsh includes this. makensis runs with -WX, so a function or variable that one of
@@ -69,9 +73,30 @@ ManifestDPIAware true
   Pop ${OUT}
 !macroend
 
-; A static control on the main window, into $9.
-!macro bulwarkStatic STYLE X Y W H
-  System::Call 'user32::CreateWindowExW(i $R7, w "STATIC", w "", i ${STYLE}, i ${X}, i ${Y}, i ${W}, i ${H}, p $R0, p 0, p 0, p 0) p .r9'
+; The logo and the two lines: made hidden in .onGUIInit, placed and shown by
+; bulwarkThemeWindow. Made there, they'd belong to the install section's thread, which
+; paints them only while it waits for something (ExecWait): while an update ran the old
+; uninstaller, the lines got a white background next to their text. Made here, they're the
+; window's own, painted by its thread like the rest of it.
+Var bulwarkLogo
+Var bulwarkTitle
+Var bulwarkLine
+!macro bulwarkThemeStatics
+  ; Styles: child, hidden, no & prefix; right to left: WS_EX_RTLREADING, SS_RIGHT.
+  StrCpy $0 0
+  StrCpy $1 0x40000080
+  StrCpy $2 "$(^RTL)"
+  ${If} $2 == 1
+    StrCpy $0 0x2000
+    StrCpy $1 0x40000082
+  ${EndIf}
+  ; SS_ICON, SS_CENTERIMAGE.
+  System::Call 'user32::CreateWindowExW(i r0, w "STATIC", w "", i 0x40000043, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0) p .r2'
+  StrCpy $bulwarkLogo $2
+  System::Call 'user32::CreateWindowExW(i r0, w "STATIC", w "", i r1, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0) p .r2'
+  StrCpy $bulwarkTitle $2
+  System::Call 'user32::CreateWindowExW(i r0, w "STATIC", w "", i r1, i 0, i 0, i 0, i 0, p $HWNDPARENT, p 0, p 0, p 0) p .r2'
+  StrCpy $bulwarkLine $2
 !macroend
 
 ; Light or dark ($R4) colours for a control, unless High Contrast is on ($R3).
@@ -132,7 +157,6 @@ Function ${UN}bulwarkThemeWindow
   Push $R4
   Push $R5
   Push $R6
-  Push $R7
 
   StrCpy $R0 $HWNDPARENT
   ; The page: the dialog with the progress bar in it.
@@ -179,10 +203,6 @@ Function ${UN}bulwarkThemeWindow
   !endif
   ; Right to left: the logo on the right, text aligned right.
   StrCpy $R6 "$(^RTL)"
-  StrCpy $R7 0
-  ${If} $R6 == 1
-    StrCpy $R7 0x2000
-  ${EndIf}
 
   ; Segoe UI, 12 pt semibold and 9 pt.
   !insertmacro bulwarkPx $0 16
@@ -277,34 +297,25 @@ Function ${UN}bulwarkThemeWindow
     !insertmacro bulwarkPx $8 388
   ${EndIf}
   !insertmacro bulwarkPx $9 24
-  Push $0
-  !insertmacro bulwarkStatic 0x50000043 $8 $9 $7 $7
-  Pop $0
-  SendMessage $9 0x172 1 $0
-  !insertmacro bulwarkColours $9 title
+  SendMessage $bulwarkLogo 0x172 1 $0
+  !insertmacro bulwarkColours $bulwarkLogo title
+  ; SWP_NOZORDER, SWP_NOACTIVATE, SWP_SHOWWINDOW.
+  System::Call 'user32::SetWindowPos(p $bulwarkLogo, p 0, i r8, i r9, i r7, i r7, i 0x54)'
   Pop $9
 
-  ; The lines. Styles: child, visible, no & prefix; SS_RIGHT for right to left.
-  StrCpy $7 0x50000080
-  ${If} $R6 == 1
-    StrCpy $7 0x50000082
-  ${EndIf}
-  Push $9
-  !insertmacro bulwarkStatic $7 $6 $9 $1 $2
-  SendMessage $9 ${WM_SETTEXT} 0 "STR:$R9"
-  SendMessage $9 ${WM_SETFONT} $4 0
-  !insertmacro bulwarkColours $9 title
-  Pop $9
+  ; The lines.
+  SendMessage $bulwarkTitle ${WM_SETTEXT} 0 "STR:$R9"
+  SendMessage $bulwarkTitle ${WM_SETFONT} $4 0
+  !insertmacro bulwarkColours $bulwarkTitle title
+  System::Call 'user32::SetWindowPos(p $bulwarkTitle, p 0, i r6, i r9, i r1, i r2, i 0x54)'
   IntOp $9 $9 + $2
   ${If} $R8 != ""
     !insertmacro bulwarkPx $0 2
     IntOp $9 $9 + $0
-    Push $9
-    !insertmacro bulwarkStatic $7 $6 $9 $1 $3
-    SendMessage $9 ${WM_SETTEXT} 0 "STR:$R8"
-    SendMessage $9 ${WM_SETFONT} $5 0
-    !insertmacro bulwarkColours $9 muted
-    Pop $9
+    SendMessage $bulwarkLine ${WM_SETTEXT} 0 "STR:$R8"
+    SendMessage $bulwarkLine ${WM_SETFONT} $5 0
+    !insertmacro bulwarkColours $bulwarkLine muted
+    System::Call 'user32::SetWindowPos(p $bulwarkLine, p 0, i r6, i r9, i r1, i r3, i 0x54)'
     IntOp $9 $9 + $3
   ${EndIf}
 
@@ -354,7 +365,6 @@ Function ${UN}bulwarkThemeWindow
 done:
   ; Shown now: bulwarkThemeHide made it see-through until here.
   !insertmacro bulwarkThemeShow
-  Pop $R7
   Pop $R6
   Pop $R5
   Pop $R4
@@ -383,7 +393,10 @@ FunctionEnd
   Function bulwarkThemeGuiInit
     Push $0
     Push $1
+    Push $2
     !insertmacro bulwarkThemeHide
+    !insertmacro bulwarkThemeStatics
+    Pop $2
     Pop $1
     Pop $0
   FunctionEnd
@@ -422,7 +435,10 @@ FunctionEnd
   Function un.bulwarkThemeGuiInit
     Push $0
     Push $1
+    Push $2
     !insertmacro bulwarkThemeHide
+    !insertmacro bulwarkThemeStatics
+    Pop $2
     Pop $1
     Pop $0
   FunctionEnd
