@@ -10,7 +10,9 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
 import type { OsHub } from './os-hub';
+import { deepLinkFromArgv, parseDeepLink } from '../deep-link';
 import { launchFolder } from '../system-exe';
+import { deliverSignInLink } from './browser-sign-in';
 import { fileReason, launchSkipPaths, MAX_LAUNCH_FILE_BYTES, parseArgv, parseToastUrl, requestFromUrl, type LaunchRequest } from './os-rules';
 
 const early: { urls: string[]; files: string[]; launches: { argv: string[]; cwd: string }[] } = { urls: [], files: [], launches: [] };
@@ -24,6 +26,11 @@ let liveSecondLaunch: ((argv: string[], cwd: string) => void) | null = null;
 export function holdEarlyLaunches(): void {
   // A second launch during the boot waits as well, and doesn't get lost.
   app.on('second-instance', (_event, argv, cwd) => {
+    const link = deepLinkFromArgv(argv);
+    if (link?.kind === 'sign-in') {
+      deliverSignInLink(link.code, link.state);
+      return;
+    }
     if (liveSecondLaunch) liveSecondLaunch(argv, cwd);
     else early.launches.push({ argv, cwd });
   });
@@ -34,6 +41,11 @@ export function holdEarlyLaunches(): void {
   });
   app.on('open-url', (event, url) => {
     event.preventDefault();
+    const link = parseDeepLink(url);
+    if (link?.kind === 'sign-in') {
+      deliverSignInLink(link.code, link.state);
+      return;
+    }
     const asked = requestFromUrl(url);
     if (asked.commands.length + asked.links.length === 0) return;
     if (liveHandler) liveHandler({ ...asked, files: [], fromLogin: false, toastUrls: [] });
