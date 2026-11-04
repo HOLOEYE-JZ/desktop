@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -498,10 +498,25 @@ test.describe('the wipe nonce', () => {
     removeProfile(profile);
   });
 
-  test('a new value while running wipes with the window open, and brings it back', async () => {
+  test('a new value while running wipes, and the app starts again on a clean screen', async () => {
     const root = freshRoot();
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    const started = await start(root);
+    let started = await start(root);
+    // The relaunch is the one thing not done for real: nothing here could reach the new process.
+    const untilRestart = async (app: ElectronApplication) => {
+      const marker = path.join(started.profile, 'relaunched');
+      rmSync(marker, { force: true });
+      await app.evaluate(({ app: electronApp }, file) => {
+        electronApp.relaunch = (() => {
+          process.getBuiltinModule('node:fs').writeFileSync(file, 'x');
+        }) as typeof electronApp.relaunch;
+      }, marker);
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      return async () => {
+        await gone;
+        expect(existsSync(marker), 'it asked for a new start').toBe(true);
+      };
+    };
     await plant(started.page);
     // What the native windows keep locally: a copy to paste, and a window to bring back.
     const leftover = path.join(started.profile, 'clipboard-files', 'report.pdf');
@@ -509,17 +524,28 @@ test.describe('the wipe nonce', () => {
     writeFileSync(leftover, 'x');
     await started.page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: '/popout/message/secret-id', emailId: 'secret-id' }));
     await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).toContain('secret-id');
+    let restarted = await untilRestart(started.app);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
-    await expect.poll(() => (existsSync(path.join(started.profile, 'shell-state.json')) ? stateOf(started.profile).policyWipes : undefined)).toEqual(['live']);
+    await restarted();
+    expect(stateOf(started.profile).policyWipes).toEqual(['live']);
+    expect(existsSync(leftover)).toBe(false);
+    expect(JSON.stringify(stateOf(started.profile).session ?? [])).not.toContain('secret-id');
+    await stop(started, true);
+
+    started = await start(root, { profile: started.profile });
     await expect(started.page.locator('#stand-in')).toBeVisible();
     expect(await markers(started.page)).toEqual(NONE);
-    expect(existsSync(leftover)).toBe(false);
-    await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).not.toContain('secret-id');
+    expect(JSON.stringify(await windowUrls(started.app))).not.toContain('secret-id');
 
     // An old value again: remembered per value.
     await plant(started.page);
+    restarted = await untilRestart(started.app);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'next');
-    await expect.poll(() => stateOf(started.profile).policyWipes).toEqual(['live', 'next']);
+    await restarted();
+    expect(stateOf(started.profile).policyWipes).toEqual(['live', 'next']);
+    await stop(started, true);
+
+    started = await start(root, { profile: started.profile });
     await expect(started.page.locator('#stand-in')).toBeVisible();
     await plant(started.page);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'live');

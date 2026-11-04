@@ -29,7 +29,7 @@ import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
 import { createChannels, registerBridge } from './ipc';
 import { durableWrite, holdsAppLockRecords, KEY_CHECK_FOLDER, KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
-import { addWipeStep, notePartition } from './features/local-wipe';
+import { addWipeStep, notePartition, restartAfterWipe } from './features/local-wipe';
 import { native } from './native';
 import { LocalAdmin } from './local-admin';
 import { requestGate } from './request-gate';
@@ -586,18 +586,14 @@ function restartNow(): void {
   app.quit();
 }
 
+restartAfterWipe(restartNow);
+
 /**
  * A change that needs a restart asks for one, once for each outcome. Where a forced
  * connection is what changed, "Later" isn't for good: it asks again, and after the
  * deadline it restarts by itself.
  */
 function watchPolicyForRestart(booted: StartDecision): void {
-  // A wipe left the windows blank: they had nothing to come back to anyway.
-  policies.on('wiped', () => {
-    const main = windowManager?.mainWindow();
-    for (const window of BrowserWindow.getAllWindows()) if (window !== main) window.destroy();
-    if (main) void main.loadURL(appStartUrl).catch(() => {});
-  });
   let cancelTimers = () => {};
   let asking = false;
   const ask = (key: string) => {

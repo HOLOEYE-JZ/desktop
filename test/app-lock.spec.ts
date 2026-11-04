@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -330,23 +330,32 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('a local wipe takes the lock\'s folder and the DPAPI key along, and main lets go', async () => {
-    await run('yes', async (app, page) => {
+  test('a local wipe takes the lock\'s folder and the DPAPI key along, and the next start has no lock', async () => {
+    const profile = tempProfile('app-lock-wipe');
+    process.env.BULWARK_TEST_OS_VERIFY = 'yes';
+    let launched = await launchStandalone(profile);
+    try {
+      const { app, page } = launched;
+      await page.goto(new URL('/api/health', page.url()).href);
       await call(page, 'enroll', 1);
       await call(page, 'osEnroll', 1, 7);
       await call(page, 'lock');
       await expect.poll(() => gateLocked(app)).toBe(true);
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe());
-      const after = await app.evaluate(({ app: electronApp }) => {
-        const { existsSync } = process.getBuiltinModule('node:fs');
-        const { join } = process.getBuiltinModule('node:path');
-        const gate = (globalThis as unknown as { __bulwarkAppLock: { gate: { locked: boolean; enrolled: boolean } } }).__bulwarkAppLock.gate;
-        return { folder: existsSync(join(electronApp.getPath('userData'), 'app-lock')), locked: gate.locked, enrolled: gate.enrolled };
-      });
-      expect(after).toEqual({ folder: false, locked: false, enrolled: false });
-      // A real wipe restarts the app. Its windows are on a blank page now, with nothing to answer a quit.
-      await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined);
-    });
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe()).catch(() => undefined);
+      await gone;
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(false);
+
+      launched = await launchStandalone(profile);
+      expect(await gateLocked(launched.app)).toBe(false);
+      expect((await call<{ enrolled: boolean; osEnrolled: boolean }>(launched.page, 'status'))).toMatchObject({ enrolled: false, osEnrolled: false });
+    } finally {
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      await launched.app.close().catch(() => undefined);
+      removeProfile(profile);
+    }
   });
 
   test('a new start with a lock set up is locked before any page speaks', async () => {

@@ -117,7 +117,6 @@ export interface PolicyEvents {
    */
   'wipe-offline-data': [nonce: string];
   /** A wipe ran with windows open: they're blank now. */
-  wiped: [];
 }
 
 export class PolicyManager extends EventEmitter<PolicyEvents> {
@@ -312,7 +311,6 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       const { failed } = await runLocalWipe('policy-nonce', userData, state);
       // Done only if every partition is: otherwise the next start tries again.
       if (failed.length === 0) this.markWipeDone(nonce);
-      if (inUse.length > 0) this.emit('wiped');
     }
     const { OfflineEnabled } = this.snapshot;
     const forcedOff = OfflineEnabled.locked && OfflineEnabled.value === false;

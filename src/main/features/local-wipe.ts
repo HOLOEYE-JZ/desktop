@@ -7,6 +7,11 @@
  * `runLocalWipe` is what the remote wipe plugs into: call it with a reason, and add
  * anything it should also delete with `addWipeStep`. Only main's own code can reach
  * either: nothing here is on the bridge.
+ *
+ * A wipe with windows open ends in a restart, so whoever's there lands on a clean first
+ * screen. A wipe at the start, before any window, goes on into that same start: there's
+ * nothing to leave behind, and a step that failed mustn't restart the app for ever. It
+ * runs again at the next start.
  */
 
 import { readdirSync, rmSync } from 'node:fs';
@@ -19,6 +24,22 @@ export type WipeReason = 'policy-nonce' | 'remote';
 export type WipeStep = (session: Session, partition: string, reason: WipeReason) => Promise<void>;
 
 const steps = new Set<WipeStep>();
+
+/** How long a page gets to go. A hung one is destroyed with the rest at the restart. */
+const LEAVE_MS = 5_000;
+
+let restartApp: (() => void) | null = null;
+let wiping = false;
+
+/** The app's own restart: src/main/index.ts. */
+export function restartAfterWipe(restart: () => void): void {
+  restartApp = restart;
+}
+
+/** A page's "leave this site?" has nobody to ask and nothing to keep: windows.ts goes by this. */
+export function wipeUnderWay(): boolean {
+  return wiping;
+}
 
 export function addWipeStep(step: WipeStep): () => void {
   steps.add(step);
@@ -54,14 +75,30 @@ export function notePartition(state: StateFile, partition: string): void {
   state.save();
 }
 
-async function leaveWindows(): Promise<void> {
+async function leaveWindows(): Promise<boolean> {
+  const windows = BrowserWindow.getAllWindows();
   await Promise.all(
-    BrowserWindow.getAllWindows().map(async (window) => {
+    windows.map(async (window) => {
       if (window.isDestroyed()) return;
       // A page holds its database open, and an open file can't be deleted.
-      await window.webContents.loadURL('about:blank').catch(() => {});
+      await Promise.race([
+        window.webContents.loadURL('about:blank').catch(() => {}),
+        new Promise((resolve) => setTimeout(resolve, LEAVE_MS)),
+      ]);
     }),
   );
+  return windows.length > 0;
+}
+
+/**
+ * After the caller has written down what's done: its `await` goes first. Destroyed, not
+ * closed: a close would ask pages that are gone, and there's nothing left to save.
+ */
+function restartSoon(): void {
+  setImmediate(() => {
+    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.destroy();
+    restartApp?.();
+  });
 }
 
 export interface WipeResult {
@@ -75,7 +112,8 @@ export interface WipeResult {
  * Done means every partition finished: on any failure the caller asks again next time.
  */
 export async function runLocalWipe(reason: WipeReason, userData: string, state: StateFile): Promise<WipeResult> {
-  await leaveWindows();
+  wiping = true;
+  const hadWindows = await leaveWindows();
   // The windows to bring back name drafts and messages. A wipe at the start comes before any window manager.
   delete state.data.session;
   delete state.data.restoreAttempts;
@@ -101,6 +139,9 @@ export async function runLocalWipe(reason: WipeReason, userData: string, state: 
       failed.push(partition);
     }
   }
+  state.save();
+  if (hadWindows) restartSoon();
+  else wiping = false;
   return { partitions, failed };
 }
 
