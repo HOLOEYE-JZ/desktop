@@ -477,6 +477,52 @@ test.describe('the app menu and windows', () => {
     }
   });
 
+  test('View and Go fit the screen: Refresh reloads Calendar, Contacts and Files, and Go leaves mail out there', async () => {
+    const lines = (menu: string) => app.evaluate(({ Menu }, wanted) => {
+      const top = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === wanted)!;
+      return top.submenu!.items.filter((item) => item.visible).map((item) => (item.type === 'separator' ? '-' : item.id || item.label));
+    }, menu);
+    const searchLabels = { calendar: 'Search events', contacts: 'Search contacts', files: 'Search files' } as const;
+    const goMail = ['go.inbox', 'go.sent', 'go.drafts', 'go.nextMessage', 'go.previousMessage', 'go.nextUnread'];
+    try {
+      for (const section of ['calendar', 'contacts', 'files'] as const) {
+        await setState({ [`section.${section}`]: true, 'view.refresh': true, 'go.today': true, 'go.nextPeriod': true, 'go.previousPeriod': true });
+        // The menu is built anew for each part of the app: wait for that part's search line.
+        await expect.poll(async () => (await menuItem(app, 'edit.search'))?.label).toBe(searchLabels[section]);
+        await expect.soft.poll(async () => (await menuItem(app, 'view.refresh'))?.label, { message: section, timeout: 5_000 }).toBe('Refresh');
+        expect.soft(await menuItem(app, 'view.refresh'), section).toMatchObject({ enabled: true });
+        if (process.platform !== 'darwin') expect.soft(await menuItem(app, 'view.refresh'), section).toMatchObject({ accelerator: 'F9' });
+        const go = await lines('Go');
+        for (const id of goMail) expect.soft(go, `${section} ${id}`).not.toContain(id);
+        const calendarGo = ['go.today', 'go.nextPeriod', 'go.previousPeriod'];
+        for (const id of calendarGo) {
+          if (section === 'calendar') expect.soft(go, `${section} ${id}`).toContain(id);
+          else expect.soft(go, `${section} ${id}`).not.toContain(id);
+        }
+        for (const menu of ['View', 'Go']) {
+          const shown = await lines(menu);
+          expect.soft(shown.join(','), `${section} ${menu}`).not.toContain('-,-');
+          expect.soft(shown[0], `${section} ${menu}`).not.toBe('-');
+          expect.soft(shown[shown.length - 1], `${section} ${menu}`).not.toBe('-');
+        }
+      }
+      if (process.platform !== 'darwin') expect.soft(await menuItem(app, 'go.today')).toBeNull();
+      await setState({ 'section.calendar': true, 'go.today': true, 'go.nextPeriod': true, 'go.previousPeriod': true });
+      await expect.poll(async () => (await menuItem(app, 'go.today'))?.label).toBe('Today');
+      if (process.platform !== 'darwin') expect(await menuItem(app, 'go.today')).toMatchObject({ accelerator: 'T', registerAccelerator: false, enabled: true });
+      expect(await menuItem(app, 'go.nextPeriod')).toMatchObject({ label: 'Next period', enabled: true });
+      expect(await menuItem(app, 'go.previousPeriod')).toMatchObject({ label: 'Previous period', enabled: true });
+      // Mail keeps its own: check for new mail, and the folders and messages in Go.
+      await setState({ 'view.refresh': true });
+      await expect.poll(async () => (await menuItem(app, 'view.refresh'))?.label).toBe('Check for new mail');
+      const mailGo = await lines('Go');
+      for (const id of goMail) expect(mailGo).toContain(id);
+      expect(mailGo).not.toContain('go.today');
+    } finally {
+      await setState({});
+    }
+  });
+
   test('Window > Minimise has no Ctrl+M off a Mac: Windows apps don\'t minimise on it', async () => {
     test.skip(process.platform === 'darwin', 'a Mac minimises on Cmd+M');
     const minimise = await app.evaluate(({ Menu }) => {
