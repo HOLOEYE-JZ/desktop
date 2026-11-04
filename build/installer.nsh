@@ -186,8 +186,86 @@ bulwarkPoliciesDone:
   Pop $0
 !macroend
 
+; "Open with" for documents and pictures, Bulwark under "Choose another app", and
+; "Bulwark (as attachment)" in Send to: the same keys the app writes at its start
+; (src/main/features/os-rules.ts), so they are there before the first start. Never the
+; default for a type. A forced OpenWithEnabled policy other than 1 leaves them out, as the
+; app does. An update keeps a Send to entry the user deleted deleted.
+!ifndef BULWARK_CLASSES_KEY
+  !define BULWARK_CLASSES_KEY "Software\Classes"
+!endif
+!ifndef BULWARK_SENDTO_DIR
+  !define BULWARK_SENDTO_DIR "$APPDATA\Microsoft\Windows\SendTo"
+!endif
+
+!macro bulwarkOpenWithCheck HIVE
+  ClearErrors
+  ReadRegDWORD $R0 ${HIVE} "${BULWARK_POLICY_KEY}" "OpenWithEnabled"
+  ${IfNot} ${Errors}
+    ${If} $R0 != 1
+      StrCpy $R1 "off"
+    ${EndIf}
+  ${Else}
+    ClearErrors
+    ReadRegStr $R0 ${HIVE} "${BULWARK_POLICY_KEY}" "OpenWithEnabled"
+    ${IfNot} ${Errors}
+    ${AndIf} $R0 != "1"
+      StrCpy $R1 "off"
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+!macro bulwarkRegisterOpenWith
+  Push $R0
+  Push $R1
+  StrCpy $R1 "on"
+  SetRegView 64
+  !insertmacro bulwarkOpenWithCheck HKLM
+  SetRegView lastused
+  !insertmacro bulwarkOpenWithCheck HKCU
+  ${If} $R1 == "on"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Bulwark.File.attach" "" "File to send with Bulwark"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Bulwark.File.attach" "FriendlyTypeName" "File to send with Bulwark"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Bulwark.File.attach\DefaultIcon" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Bulwark.File.attach\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" -- "%1"'
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.pdf\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.doc\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.docx\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.xls\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.xlsx\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.ppt\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.pptx\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.odt\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.ods\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.odp\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.rtf\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.txt\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.csv\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.jpg\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.jpeg\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.png\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.gif\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.webp\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.heic\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.bmp\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.tif\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.tiff\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.svg\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\.zip\OpenWithProgids" "Bulwark.File.attach" ""
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Applications\${APP_EXECUTABLE_FILENAME}" "FriendlyAppName" "Bulwark"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Applications\${APP_EXECUTABLE_FILENAME}\DefaultIcon" "" "$INSTDIR\${APP_EXECUTABLE_FILENAME},0"
+    WriteRegStr HKCU "${BULWARK_CLASSES_KEY}\Applications\${APP_EXECUTABLE_FILENAME}\shell\open\command" "" '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" -- "%1"'
+    ${IfNot} ${isUpdated}
+      CreateShortCut "${BULWARK_SENDTO_DIR}\Bulwark (as attachment).lnk" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" "--bulwark-send-to --" "$INSTDIR\${APP_EXECUTABLE_FILENAME}" 0
+    ${EndIf}
+  ${EndIf}
+  Pop $R1
+  Pop $R0
+!macroend
+
 !macro customInstall
   !insertmacro bulwarkWritePolicies
+  !insertmacro bulwarkRegisterOpenWith
 !macroend
 
 ; What the app writes at runtime outside its folder goes at a real uninstall (see also
@@ -207,6 +285,34 @@ bulwarkPoliciesDone:
     DeleteRegValue HKCU "Software\Classes\.eml\OpenWithProgids" "Bulwark.File.eml"
     DeleteRegValue HKCU "Software\Classes\.ics\OpenWithProgids" "Bulwark.File.ics"
     DeleteRegValue HKCU "Software\Classes\.vcf\OpenWithProgids" "Bulwark.File.vcf"
+    ; "Open with", "Choose another app" and "Send to" (os-rules.ts OPEN_WITH_EXTENSIONS).
+    DeleteRegKey HKCU "Software\Classes\Bulwark.File.attach"
+    DeleteRegKey HKCU "Software\Classes\Applications\${APP_EXECUTABLE_FILENAME}"
+    DeleteRegValue HKCU "Software\Classes\.pdf\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.doc\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.docx\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.xls\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.xlsx\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.ppt\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.pptx\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.odt\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.ods\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.odp\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.rtf\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.txt\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.csv\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.jpg\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.jpeg\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.png\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.gif\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.webp\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.heic\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.bmp\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.tif\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.tiff\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.svg\OpenWithProgids" "Bulwark.File.attach"
+    DeleteRegValue HKCU "Software\Classes\.zip\OpenWithProgids" "Bulwark.File.attach"
+    Delete "$APPDATA\Microsoft\Windows\SendTo\Bulwark (as attachment).lnk"
     DeleteRegKey HKCU "Software\Classes\CLSID\{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Bulwark"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Bulwark"

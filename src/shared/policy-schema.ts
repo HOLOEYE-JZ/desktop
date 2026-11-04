@@ -80,6 +80,7 @@ export interface PolicyValues {
   KeystoreAllowedOrigins: string[];
   BrowserSignIn: boolean;
   WipeOfflineData: string | null;
+  OpenWithEnabled: boolean;
   DeveloperToolsAvailability: number | null;
 }
 
@@ -426,6 +427,19 @@ export const POLICY_SCHEMA: Record<PolicyKey, PolicyDefinition> = {
     description: {
       en: 'Set this to a new value, such as today\'s date, to delete everything the app keeps on the device for every server and account: mail, keys, and sign-ins, so people sign in again. Each value deletes once: the app remembers the ones it has acted on, so it stays safe to leave a value in place. Use a new value to delete again.',
       de: 'Setzen Sie dies auf einen neuen Wert, etwa das heutige Datum, um alles zu löschen, was die App für alle Server und Konten auf dem Gerät behält: E-Mails, Schlüssel und Anmeldungen, Benutzer melden sich also neu an. Jeder Wert löscht einmal: Die App merkt sich, welche sie schon ausgeführt hat, ein Wert kann also stehen bleiben. Verwenden Sie einen neuen Wert, um erneut zu löschen.',
+    },
+  },
+  OpenWithEnabled: {
+    category: 'system',
+    type: 'boolean',
+    default: true,
+    onInvalid: false,
+    forcedOnly: true,
+    sample: true,
+    title: { en: 'Offer the app in "Open with" and "Send to"', de: 'App unter „Öffnen mit“ und „Senden an“ anbieten' },
+    description: {
+      en: 'When enabled or not configured, the app adds itself to the "Open with" list for common documents and pictures and to the "Send to" menu on Windows, so people can attach a file to a new message from the file manager. It never becomes the default program for those files. When disabled, the app removes these entries for the user. Mail links and .eml, .ics and .vcf files are not affected.',
+      de: 'Wenn aktiviert oder nicht konfiguriert, trägt sich die App unter Windows in die Liste „Öffnen mit“ für gängige Dokumente und Bilder und in das Menü „Senden an“ ein, damit Benutzer eine Datei aus dem Dateimanager an eine neue Nachricht anhängen können. Sie wird nie zum Standardprogramm für diese Dateien. Wenn deaktiviert, entfernt die App diese Einträge für den Benutzer. Mail-Links und .eml-, .ics- und .vcf-Dateien sind nicht betroffen.',
     },
   },
   DeveloperToolsAvailability: {
@@ -874,6 +888,7 @@ export const POLICY_CONSUMERS: Record<PolicyKey, PolicyConsumer> = {
   KeystoreEnabled: { repo: 'shell', file: 'src/main/features/policies.ts' },
   KeystoreAllowedOrigins: { repo: 'shell', file: 'src/main/features/policies.ts' },
   BrowserSignIn: { repo: 'shell', file: 'src/main/features/browser-sign-in.ts' },
+  OpenWithEnabled: { repo: 'shell', file: 'src/main/features/os-default-app.ts' },
   DeveloperToolsAvailability: { repo: 'shell', file: 'src/main/features/dev-tools.ts' },
 };
 

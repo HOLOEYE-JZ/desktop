@@ -364,7 +364,8 @@ export type OsCommand =
   | { type: 'open-mailbox'; mailboxId: string }
   | { type: 'mailto'; url: string }
   | { type: 'webcal'; url: string }
-  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[] }
+  /** `ask`: opened with the app, so the user picks between a new message and Files. Without it, attach. */
+  | { type: 'files'; reason: 'open' | 'attach'; files: OsFile[]; failed: string[]; ask?: boolean }
   | { type: 'notification'; action: string; context: string; reply?: string };
 
 export interface OsNotification {
