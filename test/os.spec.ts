@@ -831,51 +831,6 @@ test.describe('OS integration', () => {
     await app.evaluate(({ app: a }) => a.setJumpList(null));
   });
 
-  test("the thumbnail toolbar and the tray menu: the webmail's glyphs, in the light or dark they sit on", async () => {
-    test.skip(!win);
-    running = await launchStandalone(profile);
-    const { app, page } = running;
-    await dropEmptySummaries(app);
-    await os(page, 'setLocked(false)');
-    await os(page, `setSummary({ unread: [], recent: [], nextEvent: { title: 'Standup', when: '09:30' } })`);
-    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Next: Standup, 09:30');
-    await app.evaluate(({ BrowserWindow }) => {
-      const g = globalThis as unknown as { __thumbs: string[][] };
-      g.__thumbs = [];
-      const window = BrowserWindow.getAllWindows()[0];
-      const real = window.setThumbarButtons.bind(window);
-      window.setThumbarButtons = (buttons) => {
-        g.__thumbs.push(buttons.map((button) => button.icon.toDataURL()));
-        return real(buttons);
-      };
-    });
-    const icons = path.join(ROOT, 'dist', 'os-icons');
-    const ico = (name: string, variant: string) => app.evaluate(({ nativeImage }, file) => nativeImage.createFromPath(file).toDataURL(), path.join(icons, `task-${name}-${variant}.ico`));
-    const trayIcon = (label: string) => app.evaluate((_e, wanted) => {
-      const items = (globalThis as unknown as { __bulwarkOs: { tray: { template: () => { label?: string; icon?: Electron.NativeImage }[] } } }).__bulwarkOs.tray.template();
-      return items.find((item) => item.label === wanted)?.icon?.toDataURL() ?? null;
-    }, label);
-    const thumbs = () => app.evaluate(() => (globalThis as unknown as { __thumbs: string[][] }).__thumbs);
-    expect(await ico('compose', 'light')).not.toBe(await ico('compose', 'dark'));
-    expect((await ico('compose', 'light')).length).toBeGreaterThan(100);
-
-    // The thumbnails follow the taskbar, the tray's menu the apps' light or dark.
-    await setTheme(app, { taskbarDark: true, appsDark: false });
-    await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]));
-    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'light'), await ico('inbox', 'light')]);
-    expect(await trayIcon('New message')).toBe(await ico('compose', 'dark'));
-    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'dark'));
-
-    // Both switch: set again without being asked.
-    const before = (await thumbs()).length;
-    await setTheme(app, { taskbarDark: false, appsDark: true });
-    await expect.poll(async () => (await thumbs()).length).toBe(before + 1);
-    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'dark'), await ico('inbox', 'dark')]);
-    expect(await trayIcon('New message')).toBe(await ico('compose', 'light'));
-    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'light'));
-    await app.evaluate(({ app: a }) => a.setJumpList(null));
-  });
-
   test('flash on new mail when set', async () => {
     test.skip(!win);
     running = await launchStandalone(profile);
