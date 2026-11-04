@@ -5,7 +5,8 @@ import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { appPathOfDeepLink, deepLinkFromArgv, LinkRateLimit, parseDeepLink } from '../src/main/deep-link';
 import { AltTracker } from '../src/main/features/window-input';
-import { assignMnemonics, escapeMenuLabel, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName } from '../src/main/menu-text';
+import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, toMenuTemplate, type BarSourceItem } from '../src/main/menu-text';
+import { LABEL_KEY } from '../src/main/label-keys';
 import { accentHex, highContrastColours } from '../src/main/chrome-colours';
 import { nextInCycle, sumAnswers } from '../src/main/window-logic';
 import { nextZoomLevel } from '../src/main/zoom';
@@ -90,6 +91,75 @@ test.describe('the pure parts', () => {
     expect(assignMnemonics(['Datei', 'Bearbeiten', 'Ansicht', 'Nachricht', 'Gehe zu', 'Fenster', 'Hilfe'])).toEqual(['&Datei', '&Bearbeiten', '&Ansicht', '&Nachricht', '&Gehe zu', '&Fenster', '&Hilfe']);
     expect(assignMnemonics(['Fichier', 'Fenêtre'])).toEqual(['&Fichier', 'F&enêtre']);
     expect(assignMnemonics(['ファイル', '編集'])).toEqual(['&ファイル', '&編集']);
+  });
+
+  test('the drawn bar gets each menu line with its key, state, shortcut and Alt letter', () => {
+    const line = (label: string, extra: Partial<BarSourceItem> = {}): BarSourceItem => ({ label, type: 'normal', enabled: true, visible: true, checked: false, ...extra });
+    const items = barItemsOf([
+      line('New message', { accelerator: 'CmdOrCtrl+N' }),
+      line('', { type: 'separator' }),
+      line('', { type: 'separator' }),
+      line('Hidden', { visible: false }),
+      line('Notes', { enabled: false }),
+      line('Undo', { role: 'undo', getDefaultRoleAccelerator: () => 'CommandOrControl+Z' }),
+      line('R&&D', {}),
+      line('Reading pane', { submenu: { items: [line('On the right', { type: 'radio', checked: true }), line('Off', { type: 'radio' })] } }),
+      line('Always show the menu bar', { type: 'checkbox', checked: true }),
+      line('', { type: 'separator' }),
+    ], '2');
+    expect(items.map((item) => [item.key, item.label, item.type])).toEqual([
+      ['2/0', 'New message', 'normal'],
+      ['2/1', '', 'separator'],
+      ['2/4', 'Notes', 'normal'],
+      ['2/5', 'Undo', 'normal'],
+      ['2/6', 'R&D', 'normal'],
+      ['2/7', 'Reading pane', 'submenu'],
+      ['2/8', 'Always show the menu bar', 'checkbox'],
+    ]);
+    expect(items[0].accelerator).toBe('CmdOrCtrl+N');
+    expect(items[3].accelerator, 'a role shows its own key').toBe('CommandOrControl+Z');
+    expect(items[2].enabled).toBe(false);
+    expect(items[6].checked).toBe(true);
+    expect(items[5].items?.map((item) => [item.key, item.label, item.checked])).toEqual([['2/7/0', 'On the right', true], ['2/7/1', 'Off', false]]);
+    // r is taken by R&D, so Reading pane gets its e.
+    expect(items.filter((item) => item.type !== 'separator').map((item) => item.label[item.mnemonic ?? -1])).toEqual(['N', 'o', 'U', 'R', 'e', 'A']);
+  });
+
+  test('a pick finds the same line only while it still says the same', () => {
+    const plain = (label: string): BarSourceItem => ({ label, type: 'normal', enabled: true, visible: true, checked: false });
+    const menus: BarSourceItem[] = [{ ...plain('File'), type: 'submenu', submenu: { items: [plain('New message'), plain('Window && more')] } }];
+    expect(findBarItem(menus, '0/0', 'New message')?.label).toBe('New message');
+    expect(findBarItem(menus, '0/1', 'Window & more')?.label).toBe('Window && more');
+    expect(findBarItem(menus, '0/0', 'Delete'), 'the menu changed under it').toBeNull();
+    expect(findBarItem(menus, '0', 'File'), 'a menu is not a command').toBeNull();
+    expect(findBarItem(menus, '0/9', 'New message')).toBeNull();
+    expect(findBarItem(menus, '../0', 'New message')).toBeNull();
+  });
+
+  test('a label reads as text, with its marked letter', () => {
+    expect(labelParts('&File')).toEqual({ text: 'File', mnemonic: 0 });
+    expect(labelParts('Fi&le')).toEqual({ text: 'File', mnemonic: 2 });
+    expect(labelParts('R&&D')).toEqual({ text: 'R&D', mnemonic: -1 });
+    expect(lineMnemonics(['Open', 'Over', '…', 'Ölen'])).toEqual([0, 1, -1, 0]);
+  });
+
+  test('the page may translate the tray as it does the menus', () => {
+    for (const key of ['trayNewMessage', 'trayOpen', 'trayExit', 'trayPause', 'menuShowMenuBar', 'menuExit']) expect(LABEL_KEY.test(key), key).toBe(true);
+  });
+
+  test('a menu the page built shows the keys the page answers, apart from the label, never registered', () => {
+    expect(shownAccelerator('D', 'win32')).toBe('D');
+    expect(shownAccelerator('Shift+I', 'linux')).toBe('Shift+I');
+    expect(shownAccelerator('Ctrl+Shift+Enter', 'win32')).toBe('Ctrl+Shift+Enter');
+    expect(shownAccelerator('Delete', 'win32')).toBe('Delete');
+    // A Mac menu shows only keys it runs itself.
+    expect(shownAccelerator('D', 'darwin')).toBeUndefined();
+    for (const bad of ['Ctrl+Alt+Shift+Super+X', 'Day', 'Ctrl+', '<b>D</b>', 'D'.repeat(41), 42, null]) {
+      expect(shownAccelerator(bad, 'win32'), String(bad)).toBeUndefined();
+    }
+    const [day, week] = toMenuTemplate([{ id: 'd', label: 'Day', accelerator: 'D' }, { id: 'w', label: 'Week', accelerator: 'not a key' }], () => {});
+    if (process.platform !== 'darwin') expect(day).toMatchObject({ label: 'Day', accelerator: 'D', registerAccelerator: false });
+    expect(week.accelerator).toBeUndefined();
   });
 
   test('a second launch finds its link among the arguments', () => {
@@ -219,15 +289,149 @@ test.describe('the app menu and windows', () => {
     expect(await menuItem(app, 'window.cycle')).toMatchObject({ accelerator: 'Ctrl+`' });
   });
 
+  test('the page\'s menu bar gets the app menu, runs its items, and the controls fit the bar\'s row', async () => {
+    test.skip(process.platform === 'darwin', 'macOS has the system bar');
+    type Bar = {
+      menus: () => Promise<{ id: string; label: string; items: { key: string; label: string; type: string; checked?: boolean; accelerator?: string }[] }[]>;
+      run: (key: string, label: string) => void;
+      report: (report: { height: number; active: boolean }) => void;
+    };
+    const menus = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.menus());
+    expect(menus.map((m) => m.label)).toEqual(['File', 'Edit', 'View', 'Message', 'Go', 'Window', 'Help']);
+    const file = menus.find((m) => m.id === 'file')!;
+    expect(file.items.find((i) => i.label === 'New message')?.accelerator).toBe('CmdOrCtrl+N');
+    const view = menus.find((m) => m.id === 'view')!;
+    const always = view.items.find((i) => i.label === 'Always show the menu bar')!;
+    expect(always).toMatchObject({ type: 'checkbox', checked: false });
+    // A line whose text changed since is refused.
+    await page.evaluate(([key]) => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.run(key, 'Something else'), [always.key]);
+    await page.waitForTimeout(300);
+    expect((await menuItem(app, 'view.menuBar'))?.checked).toBe(false);
+    await page.evaluate(([key, label]) => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.run(key, label), [always.key, always.label]);
+    await expect.poll(async () => (await menuItem(app, 'view.menuBar'))?.checked).toBe(true);
+    await page.evaluate(([key, label]) => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.run(key, label), [always.key, always.label]);
+    await expect.poll(async () => (await menuItem(app, 'view.menuBar'))?.checked).toBe(false);
+
+    const controlsHeight = () => page.evaluate(() => (navigator as unknown as { windowControlsOverlay: { getTitlebarAreaRect: () => DOMRect } }).windowControlsOverlay.getTitlebarAreaRect().height);
+    // Back to the toolbar's height once the always-shown bar has gone again.
+    await expect.poll(controlsHeight).toBeGreaterThan(40);
+    const tall = await controlsHeight();
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.report({ height: 32, active: true }));
+    await expect.poll(controlsHeight).toBe(32);
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { bar: Bar } } }).bulwarkDesktop.menu.bar.report({ height: 0, active: false }));
+    await expect.poll(controlsHeight).toBe(tall);
+  });
+
+  test('Settings is in File, where Windows and Linux mail apps have it, and Windows says Exit', async () => {
+    test.skip(process.platform === 'darwin', 'the app menu has them on a Mac');
+    expect(await menuItem(app, 'file.settings')).toMatchObject({ accelerator: 'Ctrl+,' });
+    expect(await menuItem(app, 'help.settings')).toBeNull();
+    expect((await menuItem(app, 'file.quit'))?.label).toBe(process.platform === 'win32' ? 'Exit' : 'Quit');
+    // The keys the page has for spam and the shortcut list, as people type them.
+    expect(await menuItem(app, 'message.spam')).toMatchObject({ accelerator: '!' });
+    expect(await menuItem(app, 'help.shortcuts')).toMatchObject({ accelerator: '?' });
+    expect((await menuItem(app, 'view.menuBar'))?.type).toBe('checkbox');
+  });
+
   test('single keys only show: the page has them, and knows when someone types', async () => {
-    const reply = await menuItem(app, 'message.reply');
-    expect(reply).toMatchObject({ accelerator: 'R', registerAccelerator: false });
+    const star = await menuItem(app, 'message.star');
+    expect(star).toMatchObject({ accelerator: 'S', registerAccelerator: false });
     await setState({ 'shortcuts.singleKeys': false });
-    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.accelerator).toBeFalsy();
-    // Delete is no character key, so that setting leaves it on.
+    await expect.poll(async () => (await menuItem(app, 'message.star'))?.accelerator).toBeFalsy();
+    // Delete is no character key, so that setting leaves it on, and the chords stay.
     expect(await menuItem(app, 'message.delete')).toMatchObject({ accelerator: 'Delete', registerAccelerator: false });
+    expect(await menuItem(app, 'message.reply')).toMatchObject({ accelerator: 'CmdOrCtrl+R' });
     await setState({});
-    await expect.poll(async () => (await menuItem(app, 'message.reply'))?.accelerator).toBe('R');
+    await expect.poll(async () => (await menuItem(app, 'message.star'))?.accelerator).toBe('S');
+  });
+
+  test('the keys Outlook users press: chords that run, and Ctrl+Q marks as read on Windows', async () => {
+    test.skip(process.platform === 'darwin', 'a Mac keeps its own keys');
+    const registered = async (id: string, accelerator: string) => {
+      const item = await menuItem(app, id);
+      expect(item, id).toMatchObject({ accelerator });
+      expect(item?.registerAccelerator, id).not.toBe(false);
+    };
+    await registered('message.reply', 'CmdOrCtrl+R');
+    await registered('message.replyAll', 'CmdOrCtrl+Shift+R');
+    await registered('message.forward', 'CmdOrCtrl+Shift+F');
+    await registered('message.markUnread', 'Ctrl+U');
+    await registered('edit.search', 'Ctrl+E');
+    await registered('view.refresh', 'F9');
+    await registered('view.refreshAlt', 'F5');
+    await registered('file.newMessageAlt', 'Ctrl+Shift+M');
+    await registered('go.mail', 'Ctrl+1');
+    await registered('go.calendar', 'Ctrl+2');
+    await registered('go.contacts', 'Ctrl+3');
+    await registered('go.files', 'Ctrl+4');
+    if (process.platform === 'win32') {
+      await registered('message.markRead', 'Ctrl+Q');
+      expect((await menuItem(app, 'file.quit'))?.accelerator).toBeFalsy();
+    } else {
+      expect(await menuItem(app, 'file.quit')).toMatchObject({ accelerator: 'Ctrl+Q' });
+    }
+    // A hidden twin follows the command it stands for.
+    await setState({ 'file.newMessage': false });
+    await expect.poll(async () => (await menuItem(app, 'file.newMessageAlt'))?.enabled).toBe(false);
+    await setState({ 'file.newMessage': true });
+    await expect.poll(async () => (await menuItem(app, 'file.newMessageAlt'))?.enabled).toBe(true);
+    await setState({});
+  });
+
+  test('the menus follow the part of the app on screen, and a composer adds its own lines', async () => {
+    const topLabels = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.items.filter((item) => item.visible).map((item) => item.label.replace('&', '')));
+    const visible = (id: string) => app.evaluate(({ Menu }, wanted) => Menu.getApplicationMenu()?.getMenuItemById(wanted)?.visible ?? null, id);
+    expect(await menuItem(app, 'file.newEvent')).not.toBeNull();
+    expect(await menuItem(app, 'file.newContact')).not.toBeNull();
+    expect(await menuItem(app, 'file.newTask')).not.toBeNull();
+    expect(await menuItem(app, 'file.import')).not.toBeNull();
+
+    await setState({ 'section.calendar': true, 'view.calendar.week': { enabled: true, checked: true }, 'edit.search': true });
+    await expect.poll(topLabels).not.toContain('Message');
+    expect(await menuItem(app, 'view.calendar.week')).toMatchObject({ type: 'radio', checked: true, enabled: true });
+    if (process.platform !== 'darwin') expect(await menuItem(app, 'view.calendar.day')).toMatchObject({ accelerator: 'D', registerAccelerator: false });
+    expect(await visible('view.readingPane')).toBe(false);
+    expect((await menuItem(app, 'edit.search'))?.label).toBe('Search events');
+
+    await setState({ 'compose.send': true, 'compose.saveDraft': true, 'compose.attach': true });
+    await expect.poll(topLabels).toContain('Message');
+    expect(await menuItem(app, 'compose.send')).toMatchObject({ label: 'Send', enabled: true });
+    if (process.platform !== 'darwin') expect(await menuItem(app, 'compose.send')).toMatchObject({ accelerator: 'CmdOrCtrl+Enter', registerAccelerator: false });
+    expect(await menuItem(app, 'compose.saveDraft')).toMatchObject({ accelerator: 'CmdOrCtrl+S', enabled: true });
+    expect(await menuItem(app, 'compose.attach')).toMatchObject({ label: 'Attach files…', enabled: true });
+    expect(await visible('view.readingPane')).toBe(true);
+
+    await setState({});
+    await expect.poll(async () => menuItem(app, 'compose.send')).toBeNull();
+    expect(await topLabels()).toContain('Message');
+  });
+
+  test('Settings opens in the main window, as the rail\'s button does: no second window', async () => {
+    test.skip(process.platform === 'darwin', 'the app menu has it on a Mac');
+    // What the shell sends the main window, read on the shell's side: a listener in the page would outlive this test.
+    await app.evaluate(({ BrowserWindow }) => {
+      const { webContents } = BrowserWindow.getAllWindows()[0];
+      const g = globalThis as unknown as { __sent: unknown[][]; __send?: typeof webContents.send };
+      g.__sent = [];
+      g.__send = webContents.send.bind(webContents);
+      webContents.send = ((channel: string, ...args: unknown[]) => {
+        g.__sent.push([channel, ...args]);
+        g.__send!(channel, ...args);
+      }) as typeof webContents.send;
+    });
+    try {
+      await setState({ 'file.settings': true });
+      await expect.poll(async () => (await menuItem(app, 'file.settings'))?.enabled).toBe(true);
+      await clickMenuItem(app, 'file.settings');
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __sent: unknown[][] }).__sent.map((args) => args[1]))).toContain('go.settings');
+      expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+    } finally {
+      await app.evaluate(({ BrowserWindow }) => {
+        const g = globalThis as unknown as { __send?: (channel: string, ...args: unknown[]) => void };
+        if (g.__send) BrowserWindow.getAllWindows()[0].webContents.send = g.__send;
+      });
+      await setState({});
+    }
   });
 
   test('items go on and off with what the page reports', async () => {

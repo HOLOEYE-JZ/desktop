@@ -11,14 +11,17 @@
  * Chords such as Ctrl+N are real accelerators. A key press reaches the page first,
  * and only one the page didn't take reaches the menu, so the two can't both fire.
  *
- * In a window with an integrated title bar on Windows there's no native bar: the page
- * draws a strip when Alt is pressed, and the strip opens these same menus natively.
+ * In a window with an integrated title bar on Windows and Linux there's no native bar:
+ * the page draws these same menus as a row at the top when Alt is pressed, or always
+ * with "Always show the menu bar" (`barMenus`, `runBarItem`). Its controls shrink to
+ * that row while it's there, as in a native window with a menu bar.
  */
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
-import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics } from './menu-text';
+import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
+import { assignMnemonics, barItemsOf, findBarItem, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
+import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
 
 export interface MenuHooks {
@@ -26,7 +29,6 @@ export interface MenuHooks {
   switchMode?: () => void;
   devTools: boolean;
   newWindow: () => void;
-  openSettings: () => void;
   zoom: (step: 1 | -1 | 0) => void;
   print: (window: BrowserWindow) => void;
   saveAsPdf: (window: BrowserWindow) => void;
@@ -40,11 +42,38 @@ type Extension = () => MenuItemConstructorOptions[];
 
 /** Commands that go to the main window, wherever the focus is. */
 function runsInMain(id: string): boolean {
-  return id.startsWith('go.') || id.startsWith('view.layout.') || id === 'view.refresh' || id === 'help.shortcuts';
+  return id.startsWith('go.') || id.startsWith('view.layout.') || id === 'view.refresh' || id === 'help.shortcuts' || MAIN_WINDOW_COMMANDS.has(id);
+}
+
+/** New items of the other apps, importing and settings: what the main window shows. */
+const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import']);
+
+/** Commands whose page action opens a file picker, which needs a user gesture in the page. */
+const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
+
+/** The part of the app the window shows, as its page reports it. Mail when it says nothing. */
+export type AppSection = 'mail' | 'calendar' | 'contacts' | 'files' | 'settings';
+
+export function sectionOf(state: MenuState | undefined): AppSection {
+  for (const section of ['calendar', 'contacts', 'files', 'settings'] as const) {
+    if (state?.[`section.${section}`] === true) return section;
+  }
+  return 'mail';
+}
+
+/** What decides which menus and lines there are, so a change means a new menu. */
+export function menuShapeOf(state: MenuState | undefined): string {
+  return `${sectionOf(state)}|${state?.['compose.send'] !== undefined}|${state?.['shortcuts.singleKeys'] === false}`;
+}
+
+/** A line that stands for another command: a hidden second key, or the macOS app menu's Settings. */
+function commandOf(id: string): string {
+  if (id === 'app.settings') return 'file.settings';
+  return id.endsWith('Alt') ? id.slice(0, -'Alt'.length) : id;
 }
 
 /** Enabled unless a state says otherwise, and available in a page with no state. */
-const SHELL_COMMANDS = new Set(['file.newWindow', 'file.print', 'file.savePdf', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'go.back', 'go.forward']);
+const SHELL_COMMANDS = new Set(['file.settings', 'file.newWindow', 'file.print', 'file.savePdf', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'go.back', 'go.forward']);
 
 const SHELL_STATE_COMMANDS = ['file.print', 'file.savePdf'];
 
@@ -78,6 +107,8 @@ export class MenuController {
     // A page's report is for that page: the next one starts over.
     windows.on('navigated', (window) => {
       this.stateByWindow.delete(window);
+      this.barReporting.delete(window);
+      this.barShown.delete(window);
       this.applyState();
     });
     windows.on('changed', (list) => {
@@ -129,8 +160,9 @@ export class MenuController {
           item.checked = this.windows?.focusedManaged()?.window.id === Number(id.slice('window.focus.'.length));
           continue;
         }
-        if (!/^(file|edit|view|message|go|help)\./.test(id) || !this.knownCommands.has(id)) continue;
-        const state = this.stateOf(id);
+        const command = commandOf(id);
+        if (!/^(file|edit|view|message|compose|go|help)\./.test(command) || !this.knownCommands.has(command)) continue;
+        const state = this.stateOf(command);
         item.enabled = state.enabled;
         if (item.type === 'checkbox' && state.checked !== undefined) item.checked = state.checked;
         // Setting a radio item at all ticks it, whatever the value: Electron's group does that.
@@ -163,7 +195,22 @@ export class MenuController {
     const window = this.target(id);
     if (!window || window.isDestroyed()) return;
     if (runsInMain(id)) this.windows?.focusWindow(window);
-    window.webContents.send(CHANNEL.menuCommand, id);
+    if (!GESTURE_COMMANDS.has(id)) {
+      window.webContents.send(CHANNEL.menuCommand, id);
+      return;
+    }
+    // A file picker opens only on a user action, and a menu pick isn't one the page sees.
+    noteUserGesture(window.webContents);
+    void window.webContents.executeJavaScript('0', true).catch(() => {}).finally(() => {
+      if (!window.isDestroyed()) window.webContents.send(CHANNEL.menuCommand, id);
+    });
+  }
+
+  /** The focused window's part of the app, and whether a composer is in it. */
+  private shape(): { section: AppSection; composing: boolean } {
+    const window = this.target('message.reply');
+    const state = window ? this.stateByWindow.get(window) : undefined;
+    return { section: sectionOf(state), composing: state?.['compose.send'] !== undefined };
   }
 
   private stateOf(id: string): { enabled: boolean; checked?: boolean } {
@@ -228,6 +275,9 @@ export class MenuController {
     const text = strings();
     const { hooks, windows } = this;
     const mac = process.platform === 'darwin';
+    const win = process.platform === 'win32';
+    const { section, composing } = this.shape();
+    const mail = section === 'mail';
     // A bare window counts: a preview's Ctrl+P prints the preview, not what's behind it.
     const focused = () => BrowserWindow.getFocusedWindow() ?? windows?.focusedManaged()?.window;
     const onFocused = (run: (window: BrowserWindow) => void) => () => {
@@ -240,6 +290,11 @@ export class MenuController {
       label: text.menuFile,
       submenu: [
         this.command('file.newMessage', text.menuNewMessage, { accelerator: 'CmdOrCtrl+N' }),
+        // Outlook's key for a new message, as well. Hidden, so only one shows.
+        ...(mac ? [] : [this.command('file.newMessage', text.menuNewMessage, { id: 'file.newMessageAlt', accelerator: 'Ctrl+Shift+M', visible: false, acceleratorWorksWhenHidden: true })]),
+        this.command('file.newEvent', text.menuNewEvent),
+        this.command('file.newTask', text.menuNewTask),
+        this.command('file.newContact', text.menuNewContact),
         ...(this.extensions.get('new') ?? []).flatMap((extension) => extension()),
         { id: 'file.newWindow', label: text.menuNewWindow, accelerator: 'CmdOrCtrl+Shift+N', enabled: !!windows, click: hooks.newWindow },
         { type: 'separator' },
@@ -258,12 +313,18 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
+        this.command('file.import', text.menuImport),
+        // Settings where Windows and Linux mail apps keep them, next to how the app connects.
+        // A page of the main window, as the rail's gear opens it (the page's go.settings).
+        ...(mac ? [] : [this.command('file.settings', text.menuSettings, { accelerator: 'Ctrl+,', click: () => this.dispatch('go.settings') })]),
         // Left out while a policy forces the connection.
         ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },
-        ...(mac ? [] : [{ id: 'file.quit', label: text.menuQuit, role: 'quit', accelerator: 'Ctrl+Q' } as MenuItemConstructorOptions]),
+        // Windows calls it Exit.
+        // Windows calls it Exit and leaves it to Alt+F4: Ctrl+Q marks as read there, as in Outlook.
+        ...(mac ? [] : [{ id: 'file.quit', label: win ? text.menuExit : text.menuQuit, role: 'quit', ...(win ? {} : { accelerator: 'Ctrl+Q' }) } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -280,7 +341,7 @@ export class MenuController {
         ...(mac ? [{ role: 'pasteAndMatchStyle' } as MenuItemConstructorOptions] : []),
         { role: 'selectAll', label: text.menuSelectAll },
         { type: 'separator' },
-        this.command('edit.search', text.menuSearch, this.pageKey('/')),
+        this.command('edit.search', section === 'calendar' ? text.menuSearchEvents : text.menuSearch, mac ? {} : { accelerator: 'Ctrl+E' }),
       ],
     };
 
@@ -288,10 +349,19 @@ export class MenuController {
       id: 'view',
       label: text.menuView,
       submenu: [
-        this.command('view.refresh', text.menuRefresh, { accelerator: 'F5' }),
+        this.command('view.refresh', text.menuRefresh, { accelerator: mac ? 'F5' : 'F9' }),
+        // The page takes F5 itself. Shown where it's the only one.
+        ...(mac ? [] : [this.command('view.refresh', text.menuRefresh, { id: 'view.refreshAlt', accelerator: 'F5', visible: false, acceleratorWorksWhenHidden: true })]),
         { type: 'separator' },
+        ...(section === 'calendar' ? [
+          this.command('view.calendar.day', text.menuDay, { type: 'radio', ...this.pageKey('D') }),
+          this.command('view.calendar.week', text.menuWeek, { type: 'radio', ...this.pageKey('W') }),
+          this.command('view.calendar.month', text.menuMonth, { type: 'radio', ...this.pageKey('M') }),
+          this.command('view.calendar.agenda', text.menuAgenda, { type: 'radio', ...this.pageKey('A') }),
+        ] : []),
         {
           id: 'view.readingPane',
+          visible: mail,
           label: text.menuReadingPane,
           submenu: [
             this.command('view.layout.split', text.menuPaneRight, { type: 'radio' }),
@@ -307,6 +377,13 @@ export class MenuController {
         { id: 'view.zoomReset', label: text.menuZoomReset, accelerator: 'CmdOrCtrl+0', click: () => hooks.zoom(0) },
         { type: 'separator' },
         { role: 'togglefullscreen', label: text.menuFullScreen },
+        ...(mac || !windows ? [] : [{
+          id: 'view.menuBar',
+          label: text.menuShowMenuBar,
+          type: 'checkbox',
+          checked: windows.menuBarPinned(),
+          click: (item: MenuItem) => this.setBarPinned(item.checked),
+        } as MenuItemConstructorOptions]),
         ...this.extras('view'),
       ],
     };
@@ -314,18 +391,27 @@ export class MenuController {
     const messageMenu: MenuItemConstructorOptions = {
       id: 'message',
       label: text.menuMessage,
+      // Calendar, Contacts and Files have menus of their own on the page.
+      visible: mail || composing,
       submenu: [
-        this.command('message.reply', text.menuReply, this.pageKey('R')),
-        this.command('message.replyAll', text.menuReplyAll, this.pageKey('Shift+R')),
-        this.command('message.forward', text.menuForward, this.pageKey('F')),
+        ...(composing ? [
+          this.command('compose.send', text.menuSend, this.pageKey('CmdOrCtrl+Enter', false)),
+          this.command('compose.saveDraft', text.menuSaveDraft, { accelerator: 'CmdOrCtrl+S' }),
+          this.command('compose.attach', text.menuAttach),
+          { type: 'separator' } as MenuItemConstructorOptions,
+        ] : []),
+        // Outlook's and Apple Mail's keys; the single ones still work beside them.
+        this.command('message.reply', text.menuReply, { accelerator: 'CmdOrCtrl+R' }),
+        this.command('message.replyAll', text.menuReplyAll, { accelerator: 'CmdOrCtrl+Shift+R' }),
+        this.command('message.forward', text.menuForward, { accelerator: 'CmdOrCtrl+Shift+F' }),
         { type: 'separator' },
-        this.command('message.markRead', text.menuMarkRead, this.pageKey('Shift+I')),
-        this.command('message.markUnread', text.menuMarkUnread, this.pageKey('U')),
+        this.command('message.markRead', text.menuMarkRead, win ? { accelerator: 'Ctrl+Q' } : this.pageKey('Shift+I')),
+        this.command('message.markUnread', text.menuMarkUnread, mac ? {} : { accelerator: 'Ctrl+U' }),
         this.command('message.star', text.menuStar, this.pageKey('S')),
         { type: 'separator' },
         this.command('message.move', text.menuMove),
         this.command('message.archive', text.menuArchive, this.pageKey('E')),
-        this.command('message.spam', text.menuSpam, this.pageKey('Shift+1')),
+        this.command('message.spam', text.menuSpam, this.pageKey('!')),
         this.command('message.delete', text.menuDelete, this.pageKey('Delete', false)),
         { type: 'separator' },
         this.command('message.openWindow', text.menuOpenInWindow),
@@ -344,10 +430,10 @@ export class MenuController {
         this.command('go.previousMessage', text.menuGoPrevious, this.pageKey('K')),
         this.command('go.nextUnread', text.menuGoNextUnread, this.pageKey('N')),
         { type: 'separator' },
-        this.command('go.mail', text.menuGoMail),
-        this.command('go.calendar', text.menuGoCalendar),
-        this.command('go.contacts', text.menuGoContacts),
-        this.command('go.files', text.menuGoFiles),
+        this.command('go.mail', text.menuGoMail, mac ? {} : { accelerator: 'Ctrl+1' }),
+        this.command('go.calendar', text.menuGoCalendar, mac ? {} : { accelerator: 'Ctrl+2' }),
+        this.command('go.contacts', text.menuGoContacts, mac ? {} : { accelerator: 'Ctrl+3' }),
+        this.command('go.files', text.menuGoFiles, mac ? {} : { accelerator: 'Ctrl+4' }),
         { type: 'separator' },
         {
           id: 'go.back',
@@ -393,10 +479,10 @@ export class MenuController {
       label: text.menuHelp,
       ...(mac ? { role: 'help' } : {}),
       submenu: [
-        this.command('help.shortcuts', text.menuShortcuts, this.pageKey('Shift+/')),
+        this.command('help.shortcuts', text.menuShortcuts, this.pageKey('?')),
         { id: 'help.docs', label: text.menuDocs, click: () => void shell.openExternal('https://bulwarkmail.org/docs').catch(() => {}) },
         ...this.extras('help'),
-        ...(mac ? [] : [{ type: 'separator' } as MenuItemConstructorOptions, { id: 'help.settings', label: text.menuSettings, accelerator: 'Ctrl+,', enabled: !!windows, click: hooks.openSettings }, { role: 'about', label: text.menuAbout } as MenuItemConstructorOptions]),
+        ...(mac ? [] : [{ type: 'separator' } as MenuItemConstructorOptions, { role: 'about', label: text.menuAbout } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -406,7 +492,7 @@ export class MenuController {
       submenu: [
         { role: 'about', label: text.menuAbout },
         { type: 'separator' },
-        { id: 'app.settings', label: text.menuSettings, accelerator: 'Cmd+,', enabled: !!windows, click: hooks.openSettings },
+        this.command('file.settings', text.menuSettings, { id: 'app.settings', accelerator: 'Cmd+,', click: () => this.dispatch('go.settings') }),
         ...this.extras('app'),
         { type: 'separator' },
         { role: 'services' },
@@ -439,10 +525,10 @@ export class MenuController {
   // ─── The state a page reports ───────────────────────────────
 
   setCommandState(window: BrowserWindow, state: MenuState): void {
-    const keysBefore = this.singleKeysOff();
+    const before = menuShapeOf(this.stateByWindow.get(this.target('message.reply') ?? window));
     this.stateByWindow.set(window, state);
-    // Accelerators only change in a new menu.
-    if (this.singleKeysOff() !== keysBefore) this.scheduleRebuild();
+    // Accelerators, and which menus and lines there are, only change in a new menu.
+    if (menuShapeOf(this.stateByWindow.get(this.target('message.reply') ?? window)) !== before) this.scheduleRebuild();
     else this.applyState();
   }
 
@@ -463,7 +549,7 @@ export class MenuController {
     this.barItems = (menu?.items ?? []).flatMap((item, index) => {
       const source = template[index];
       const label = typeof source?.label === 'string' ? source.label : item.label;
-      if (!item.submenu || !source?.id) return [];
+      if (!item.submenu || !source?.id || source.visible === false) return [];
       return [{ entry: { id: source.id, label: withoutMnemonic(label), mnemonic: mnemonicOf(label) }, item }];
     });
   }
@@ -487,15 +573,75 @@ export class MenuController {
     });
   }
 
+  /** Windows whose bar has the keys: Alt was pressed there. */
   private readonly barShown = new WeakSet<BrowserWindow>();
+  /** Windows whose page draws the whole bar and says when it goes (`barReport`). */
+  private readonly barReporting = new WeakSet<BrowserWindow>();
 
   isBarShown(window: BrowserWindow): boolean {
     return this.barShown.has(window);
   }
 
+  /** The page closes its own menus with Escape, and only then the bar. An older page can't. */
+  barHandlesEscape(window: BrowserWindow): boolean {
+    return this.barReporting.has(window);
+  }
+
   showBar(window: BrowserWindow, event: MenuBarEvent): void {
     if (event.visible) this.barShown.add(window);
     else this.barShown.delete(window);
-    window.webContents.send(CHANNEL.menuBarEvent, event);
+    window.webContents.send(CHANNEL.menuBarEvent, { ...event, pinned: this.barPinned() });
+  }
+
+  barPinned(): boolean {
+    return this.windows?.menuBarPinned() ?? false;
+  }
+
+  /** "Always show the menu bar", from the View menu or the settings page: every window, at once. */
+  setBarPinned(pinned: boolean): void {
+    const windows = this.windows;
+    if (!windows || process.platform === 'darwin') return;
+    windows.setMenuBarPinned(pinned);
+    for (const { window } of windows.all()) {
+      if (!window.isDestroyed()) window.webContents.send(CHANNEL.menuBarEvent, { visible: this.barShown.has(window), pinned } satisfies MenuBarEvent);
+    }
+    this.scheduleRebuild();
+  }
+
+  /** What the page's bar holds: every menu, with what's enabled and ticked in that window now. */
+  barMenus(window: BrowserWindow): MenuBarMenu[] {
+    // The state of the window asking, not the last one that had the focus.
+    if (BrowserWindow.getFocusedWindow() === window) this.applyState();
+    return this.barItems.map(({ entry, item }) => ({
+      ...entry,
+      items: barItemsOf((item.submenu?.items ?? []) as unknown as BarSourceItem[], String(this.topIndex(item))),
+    }));
+  }
+
+  private topIndex(item: MenuItem): number {
+    return Menu.getApplicationMenu()?.items.indexOf(item) ?? -1;
+  }
+
+  /** A line of the page's bar was picked: the same item the native menu has, clicked in that window. */
+  runBarItem(window: BrowserWindow, key: unknown, label: unknown): void {
+    const menu = Menu.getApplicationMenu();
+    if (!menu || typeof key !== 'string' || typeof label !== 'string' || window.isDestroyed()) return;
+    const item = findBarItem(menu.items as unknown as (BarSourceItem & MenuItem)[], key, label);
+    if (!item || !item.enabled) return;
+    noteUserGesture(window.webContents);
+    item.click(undefined, window, window.webContents);
+  }
+
+  /** The page's bar took this much room, or none, and has the keys or not. */
+  barReport(window: BrowserWindow, report: unknown): void {
+    const { height, active } = (report ?? {}) as Partial<MenuBarReport>;
+    if (typeof height !== 'number' || typeof active !== 'boolean') return;
+    // Its first word: it's listening now, and may have to show the bar from the start.
+    const first = !this.barReporting.has(window);
+    this.barReporting.add(window);
+    if (first && this.barPinned()) window.webContents.send(CHANNEL.menuBarEvent, { visible: active, pinned: true } satisfies MenuBarEvent);
+    if (active) this.barShown.add(window);
+    else this.barShown.delete(window);
+    this.windows?.setMenuBarHeight(window, height);
   }
 }

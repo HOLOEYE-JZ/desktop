@@ -712,9 +712,6 @@ function buildMenu(): MenuController {
       // Unique across runs: one restored from last time may hold a low number.
       windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
     },
-    // A page in the main window, as the rail's gear opens it, with "Back to mail" to return.
-    // A window of its own turned into a second Inbox on its way back.
-    openSettings: () => menu?.dispatch('go.settings'),
     zoom: (step) => zoom.step(step),
     print: (window) => printWindow(window, menu?.commandState(window)),
     saveAsPdf: (window) => void saveWindowAsPdf(window, menu?.commandState(window)),

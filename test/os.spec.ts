@@ -159,7 +159,7 @@ test.describe('OS integration', () => {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].close());
     await expect.poll(() => mainVisible(app)).toBe(false);
     const closed = app.waitForEvent('close', CLOSE_WAIT);
-    await clickTray(app, 'Quit Bulwark');
+    await clickTray(app, process.platform === 'win32' ? 'Exit Bulwark' : 'Quit Bulwark');
     await closed;
     running = null;
   });
@@ -177,7 +177,7 @@ test.describe('OS integration', () => {
     await expect.poll(() => mainVisible(app)).toBe(true);
 
     const before = (await trayItems(app)).map((i) => i.label);
-    expect(before).toEqual(expect.arrayContaining(['New message', 'Pause notifications', 'Open Bulwark', 'Quit Bulwark']));
+    expect(before).toEqual(expect.arrayContaining(['New message', 'Pause notifications', 'Open Bulwark', process.platform === 'win32' ? 'Exit Bulwark' : 'Quit Bulwark']));
 
     await os(page, 'setLocked(false)');
     await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice & Co', subject: 'Lunch?' }], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], nextEvent: { title: 'Standup', when: '09:30' } })`);

@@ -85,6 +85,9 @@ export interface ShellState {
   lastPopoutAt?: number;
   /** Chromium's zoom level: 0 is 100%. */
   zoomLevel?: number;
+  /** "Always show the menu bar" (Windows and Linux), and how tall the pages draw it, in CSS pixels. */
+  menuBarPinned?: boolean;
+  menuBarHeight?: number;
   privacy?: PrivacyChoices;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;

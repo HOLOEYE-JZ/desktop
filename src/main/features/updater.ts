@@ -486,7 +486,8 @@ class Updater {
 
   setup(): void {
     const { ctx } = this;
-    ctx.menu.extend('file', () => this.menuItems());
+    // Where Windows and Linux apps keep it, by About; macOS has it in the app menu.
+    ctx.menu.extend(process.platform === 'darwin' ? 'app' : 'help', () => this.menuItems());
     ctx.handle(CHANNEL.updatesState, () => this.state());
     ctx.handle(CHANNEL.updatesCheck, () => this.check());
     ctx.handle(CHANNEL.updatesSetChannel, (_event, _window, channel) => this.setChannel(channel));

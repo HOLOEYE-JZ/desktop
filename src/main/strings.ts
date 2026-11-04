@@ -192,6 +192,21 @@ const en = {
   trayResume: 'Turn notifications back on',
   trayOpen: 'Open Bulwark',
   trayQuit: 'Quit Bulwark',
+  trayExit: 'Exit Bulwark',
+  menuExit: 'Exit',
+  menuShowMenuBar: 'Always show the menu bar',
+  menuNewEvent: 'New event',
+  menuNewTask: 'New task',
+  menuNewContact: 'New contact',
+  menuImport: 'Import mail…',
+  menuSearchEvents: 'Search events',
+  menuDay: 'Day',
+  menuWeek: 'Week',
+  menuMonth: 'Month',
+  menuAgenda: 'Agenda',
+  menuSend: 'Send',
+  menuSaveDraft: 'Save draft',
+  menuAttach: 'Attach files…',
   trayTooltip: (count: number) => (count > 0 ? `Bulwark: ${count} unread` : 'Bulwark'),
   closedToTrayTitle: 'Bulwark is still running',
   editCancel: 'Cancel',
@@ -240,7 +255,7 @@ const en = {
   updateOlderConfirm: 'Install older version',
   sandboxTitle: "Bulwark can't run safely as an AppImage here",
   sandboxDetail: 'This Linux blocks the security sandbox that keeps your mail apart from the rest of your computer, and an AppImage has no way round that. Bulwark does not run without it. Install the deb or rpm package from https://bulwarkmail.org/download instead: they bring what the sandbox needs.',
-  menuLockNow: 'Lock Now',
+  menuLockNow: 'Lock now',
   appLockForgetTitle: 'Remove local data and sign out?',
   appLockForgetDetail: 'A forgotten PIN can\'t be recovered. This removes the mail kept on this computer and signs out all accounts. Your mail on the server stays. Messages still waiting to be sent from this computer are lost.',
   appLockForgetConfirm: 'Remove and sign out',
@@ -479,6 +494,21 @@ const de: typeof en = {
   trayResume: 'Benachrichtigungen wieder einschalten',
   trayOpen: 'Bulwark öffnen',
   trayQuit: 'Bulwark beenden',
+  trayExit: 'Bulwark beenden',
+  menuExit: 'Beenden',
+  menuShowMenuBar: 'Menüleiste immer anzeigen',
+  menuNewEvent: 'Neuer Termin',
+  menuNewTask: 'Neue Aufgabe',
+  menuNewContact: 'Neuer Kontakt',
+  menuImport: 'E-Mails importieren…',
+  menuSearchEvents: 'Termine durchsuchen',
+  menuDay: 'Tag',
+  menuWeek: 'Woche',
+  menuMonth: 'Monat',
+  menuAgenda: 'Agenda',
+  menuSend: 'Senden',
+  menuSaveDraft: 'Entwurf speichern',
+  menuAttach: 'Dateien anhängen…',
   trayTooltip: (count) => (count > 0 ? `Bulwark: ${count} ungelesen` : 'Bulwark'),
   closedToTrayTitle: 'Bulwark läuft weiter',
   editCancel: 'Abbrechen',
@@ -565,6 +595,15 @@ export function cleanLabels(raw: unknown): Record<string, string> {
 export function setUiLanguage(language: string, translated?: unknown): void {
   uiLanguage = language;
   labels = cleanLabels(translated) as Partial<typeof en>;
+  for (const listener of languageListeners) listener();
+}
+
+const languageListeners = new Set<() => void>();
+
+/** The tray and anything else built once hear when the text changed. Returns the unsubscribe. */
+export function onUiLanguage(listener: () => void): () => void {
+  languageListeners.add(listener);
+  return () => languageListeners.delete(listener);
 }
 
 /** The line about mail waiting at quit. */

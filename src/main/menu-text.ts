@@ -4,7 +4,7 @@
  */
 
 import type { MenuItemConstructorOptions } from 'electron';
-import type { NativeMenuItem } from '../shared/bridge';
+import type { MenuBarItem, NativeMenuItem } from '../shared/bridge';
 
 const MAX_ITEMS = 2000;
 const MAX_DEPTH = 5;
@@ -30,9 +30,125 @@ export function assignMnemonics(labels: string[]): string[] {
   });
 }
 
+/** A menu label as text, with `&&` as one `&`, and where its `&` marker was, or -1. */
+export function labelParts(label: string): { text: string; mnemonic: number } {
+  let text = '';
+  let mnemonic = -1;
+  for (let i = 0; i < label.length; i++) {
+    const c = label[i];
+    if (c === '&' && label[i + 1] === '&') {
+      text += '&';
+      i++;
+    } else if (c === '&' && i + 1 < label.length && mnemonic < 0) {
+      mnemonic = text.length;
+    } else if (c !== '&') {
+      text += c;
+    }
+  }
+  return { text, mnemonic };
+}
+
+/** For the lines of one menu: where each one's Alt letter is, the first letter no earlier line has, or -1. */
+export function lineMnemonics(texts: string[]): number[] {
+  const used = new Set<string>();
+  return texts.map((text) => {
+    const chars = [...text];
+    let offset = 0;
+    for (const c of chars) {
+      if (/\p{L}|\p{N}/u.test(c) && !used.has(c.toLowerCase())) {
+        used.add(c.toLowerCase());
+        return offset;
+      }
+      offset += c.length;
+    }
+    return -1;
+  });
+}
+
+/** What the drawn menu bar needs of a menu item. Electron's MenuItem has all of it. */
+export interface BarSourceItem {
+  label: string;
+  type: string;
+  enabled: boolean;
+  visible: boolean;
+  checked: boolean;
+  accelerator?: string | null;
+  role?: string | null;
+  submenu?: { items: BarSourceItem[] } | null;
+  getDefaultRoleAccelerator?: () => string | undefined | null;
+}
+
+/**
+ * A menu as the page draws it in a window with no native bar. Each line's key is its place,
+ * and a pick sends that and its text back, so a menu built anew in between can't run
+ * something else (`findBarItem`).
+ */
+export function barItemsOf(items: readonly BarSourceItem[], prefix: string): MenuBarItem[] {
+  const lines: MenuBarItem[] = [];
+  const texts: string[] = [];
+  items.forEach((item, index) => {
+    if (item.visible === false) return;
+    const key = `${prefix}/${index}`;
+    if (item.type === 'separator') {
+      if (lines.length && lines[lines.length - 1].type !== 'separator') lines.push({ key, label: '', type: 'separator', enabled: false });
+      return;
+    }
+    const { text } = labelParts(item.label ?? '');
+    if (!text.trim()) return;
+    texts.push(text);
+    const accelerator = item.accelerator || item.getDefaultRoleAccelerator?.() || undefined;
+    const sub = item.submenu?.items;
+    const line: MenuBarItem = {
+      key,
+      label: text,
+      type: sub ? 'submenu' : item.type === 'checkbox' || item.type === 'radio' ? item.type : 'normal',
+      enabled: item.enabled !== false,
+      ...(item.type === 'checkbox' || item.type === 'radio' ? { checked: item.checked === true } : {}),
+      ...(accelerator && !sub ? { accelerator } : {}),
+      ...(sub ? { items: barItemsOf(sub, key) } : {}),
+    };
+    lines.push(line);
+  });
+  if (lines[lines.length - 1]?.type === 'separator') lines.pop();
+  const marks = lineMnemonics(lines.filter((line) => line.type !== 'separator').map((line) => line.label));
+  let at = 0;
+  for (const line of lines) {
+    if (line.type === 'separator') continue;
+    const mark = marks[at++];
+    if (mark >= 0) line.mnemonic = mark;
+  }
+  return lines;
+}
+
+/** The item a key names, if it still has the text it had when the page drew it. */
+export function findBarItem<T extends BarSourceItem>(menus: readonly T[], key: string, label: string): T | null {
+  const path = key.split('/').map((part) => Number(part));
+  if (path.some((n) => !Number.isInteger(n) || n < 0)) return null;
+  let list: readonly T[] = menus;
+  let found: T | undefined;
+  for (const index of path) {
+    found = list[index];
+    if (!found) return null;
+    list = (found.submenu?.items ?? []) as T[];
+  }
+  if (!found || found.submenu || found.type === 'separator') return null;
+  return labelParts(found.label ?? '').text === label ? found : null;
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');
+}
+
+const ACCELERATOR = /^((Ctrl|Cmd|CmdOrCtrl|Alt|Shift|Super)\+){0,3}([A-Z0-9]|F([1-9]|1[0-9]|2[0-4])|[)!@#$%^&*(:;=<,_\-.>?/~`{\][|\\}"']|Plus|Space|Tab|Backspace|Delete|Insert|Enter|Up|Down|Left|Right|Home|End|PageUp|PageDown|Escape)$/;
+
+/**
+ * A key the page says it answers, to show next to an item. Only in Electron's own
+ * syntax, and never registered: the page runs it. macOS menus show only what they run.
+ */
+export function shownAccelerator(raw: unknown, platform: string = process.platform): string | undefined {
+  if (platform === 'darwin' || typeof raw !== 'string' || raw.length > 40) return undefined;
+  return ACCELERATOR.test(raw) ? raw : undefined;
 }
 
 /**
@@ -62,7 +178,8 @@ export function toMenuTemplate(items: unknown, onPick: (id: string) => void): Me
       const id = raw.id;
       if (typeof id !== 'string') continue;
       const type = raw.type === 'checkbox' || raw.type === 'radio' ? raw.type : 'normal';
-      out.push({ label, enabled, type, ...(type !== 'normal' ? { checked: raw.checked === true } : {}), click: () => onPick(id) });
+      const key = type === 'normal' ? shownAccelerator(raw.accelerator) : undefined;
+      out.push({ label, enabled, type, ...(type !== 'normal' ? { checked: raw.checked === true } : {}), ...(key ? { accelerator: key, registerAccelerator: false } : {}), click: () => onPick(id) });
     }
     if (out[out.length - 1]?.type === 'separator') out.pop();
     return out;
