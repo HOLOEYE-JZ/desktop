@@ -46,7 +46,7 @@ function runsInMain(id: string): boolean {
 }
 
 /** New items of the other apps, importing and settings: what the main window shows. */
-const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import', 'file.settings']);
+const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import']);
 
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
 const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
@@ -73,7 +73,7 @@ function commandOf(id: string): string {
 }
 
 /** Enabled unless a state says otherwise, and available in a page with no state. */
-const SHELL_COMMANDS = new Set(['file.newWindow', 'file.print', 'file.savePdf', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'go.back', 'go.forward']);
+const SHELL_COMMANDS = new Set(['file.settings', 'file.newWindow', 'file.print', 'file.savePdf', 'view.zoomIn', 'view.zoomOut', 'view.zoomReset', 'go.back', 'go.forward']);
 
 const SHELL_STATE_COMMANDS = ['file.print', 'file.savePdf'];
 
@@ -315,7 +315,8 @@ export class MenuController {
         { type: 'separator' },
         this.command('file.import', text.menuImport),
         // Settings where Windows and Linux mail apps keep them, next to how the app connects.
-        ...(mac ? [] : [this.command('file.settings', text.menuSettings, { accelerator: 'Ctrl+,' })]),
+        // A page of the main window, as the rail's gear opens it (the page's go.settings).
+        ...(mac ? [] : [this.command('file.settings', text.menuSettings, { accelerator: 'Ctrl+,', click: () => this.dispatch('go.settings') })]),
         // Left out while a policy forces the connection.
         ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
@@ -491,7 +492,7 @@ export class MenuController {
       submenu: [
         { role: 'about', label: text.menuAbout },
         { type: 'separator' },
-        this.command('file.settings', text.menuSettings, { id: 'app.settings', accelerator: 'Cmd+,' }),
+        this.command('file.settings', text.menuSettings, { id: 'app.settings', accelerator: 'Cmd+,', click: () => this.dispatch('go.settings') }),
         ...this.extras('app'),
         { type: 'separator' },
         { role: 'services' },

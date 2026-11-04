@@ -423,7 +423,7 @@ test.describe('the app menu and windows', () => {
       await setState({ 'file.settings': true });
       await expect.poll(async () => (await menuItem(app, 'file.settings'))?.enabled).toBe(true);
       await clickMenuItem(app, 'file.settings');
-      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __sent: unknown[][] }).__sent.map((args) => args[1]))).toContain('file.settings');
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __sent: unknown[][] }).__sent.map((args) => args[1]))).toContain('go.settings');
       expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
     } finally {
       await app.evaluate(({ BrowserWindow }) => {
