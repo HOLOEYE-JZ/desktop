@@ -6,7 +6,7 @@
     <title>Bulwark</title>
     <style>
       :root { color-scheme: light dark; }
-      body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 32px 36px; user-select: none; cursor: default; background: Canvas; color: CanvasText; min-height: 100vh; box-sizing: border-box; }
+      body { font: 15px/1.5 system-ui, sans-serif; margin: 0; padding: 28px 36px; user-select: none; cursor: default; background: Canvas; color: CanvasText; min-height: 100vh; box-sizing: border-box; }
       h1 { font-size: 1.4em; font-weight: 600; margin: 0 0 4px; }
       p { margin: 0 0 20px; opacity: .75; }
       button { display: block; width: 100%; text-align: start; font: inherit; padding: 14px 16px; margin-bottom: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, currentColor 25%, transparent); background: transparent; color: inherit; cursor: default; }
@@ -18,7 +18,11 @@
       label { display: block; margin-bottom: 4px; }
       input { width: 100%; box-sizing: border-box; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: transparent; color: inherit; user-select: text; }
       .connect { display: inline-block; width: auto; margin-top: 10px; padding: 8px 18px; }
-      .error { color: #d43; min-height: 1.4em; margin-top: 6px; }
+      .error { color: #d43; margin-top: 6px; }
+      .error:empty { display: none; }
+      html[dir="rtl"] #url { text-align: right; }
+      .actions { display: flex; gap: 10px; }
+      .actions .connect { margin-bottom: 0; }
       #privacy { display: none; margin: 0; }
       #privacy.open { display: block; }
       .choice { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 14px; }
@@ -35,9 +39,9 @@
     <button id="instance" type="button"><strong id="instance-title"></strong><span id="instance-text"></span></button>
     <form id="form">
       <label for="url" id="url-label"></label>
-      <input id="url" type="url" placeholder="https://mail.example.org" autocomplete="url" />
-      <button id="connect" class="connect" type="submit"></button>
+      <input id="url" type="text" inputmode="url" placeholder="mail.example.com" autocomplete="url" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="error" />
       <div id="error" class="error" role="alert"></div>
+      <button id="connect" class="connect" type="submit"></button>
     </form>
     </div>
     <form id="privacy">
@@ -45,7 +49,7 @@
       <p id="privacy-intro"></p>
       <div class="choice" id="telemetry-row"><input id="telemetry" type="checkbox" aria-describedby="telemetry-text" /><div><label for="telemetry" id="telemetry-label"></label><small id="telemetry-text"></small></div></div>
       <div class="choice" id="crash-row"><input id="crash" type="checkbox" aria-describedby="crash-text" /><div><label for="crash" id="crash-label"></label><small id="crash-text"></small></div></div>
-      <button id="continue" class="connect" type="submit"></button>
+      <div class="actions"><button id="back" class="connect" type="button"></button><button id="continue" class="connect" type="submit"></button></div>
     </form>
     <script src="welcome.js"></script>
   </body>
