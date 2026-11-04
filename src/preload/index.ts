@@ -408,7 +408,8 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     : undefined;
   const filesControls: FilesControls = {
     roots: () => ipcRenderer.invoke(CHANNEL.filesRoots),
-    addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string }) => ipcRenderer.invoke(CHANNEL.filesAddFolder, request, clicked()),
+    addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string; chosen?: string }) => ipcRenderer.invoke(CHANNEL.filesAddFolder, request, clicked()),
+    chooseFolder: () => ipcRenderer.invoke(CHANNEL.filesChooseFolder, clicked()),
     removeRoot: (rootId: string) => ipcRenderer.invoke(CHANNEL.filesRemoveRoot, rootId),
     setPaused: (rootId: string, paused: boolean) => ipcRenderer.invoke(CHANNEL.filesSetPaused, rootId, paused),
     scan: (rootId: string, under?: string) => ipcRenderer.invoke(CHANNEL.filesScan, rootId, under),
