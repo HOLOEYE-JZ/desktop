@@ -481,8 +481,11 @@ export interface OsNotification {
   sound?: boolean;
   /** New mail: flash the taskbar or bounce the dock if that's on. */
   attention?: boolean;
-  /** What a locked app says instead: new mail unless this says otherwise. */
-  kind?: 'mail' | 'reminder';
+  /**
+   * What a locked app says instead: new mail unless this says otherwise. `undo`: the answer
+   * to the user's own click (a discarded draft's Undo), shown past pause, quiet hours and focus.
+   */
+  kind?: 'mail' | 'reminder' | 'undo';
 }
 
 export interface OsNotifyResult {

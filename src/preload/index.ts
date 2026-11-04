@@ -167,7 +167,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       onConnectionsReset: (listener: () => void) => subscribe(CHANNEL.certificatesConnectionsReset, listener),
     },
     windows: {
-      open: (url: string, options: { name: string; width: number; height: number }) =>
+      open: (url: string, options: { name: string; width: number; height: number; quick?: boolean }) =>
         ipcRenderer.send(CHANNEL.windowsOpen, url, options),
       openMessage: (target: { url: string; emailId: string }) => ipcRenderer.send(CHANNEL.windowsOpenMessage, target),
       openComposer: (target: { url: string; name?: string }) => ipcRenderer.send(CHANNEL.windowsOpenComposer, target),
