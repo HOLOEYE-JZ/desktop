@@ -29,6 +29,15 @@ import { clientAuth } from './client-certificates';
 import type { Feature } from './index';
 
 const MAX_SUGGESTIONS = 6;
+/** How much of a selection the Search entry quotes, and how much it searches for. */
+const SEARCH_LABEL_CHARS = 30;
+const SEARCH_TEXT_CHARS = 200;
+
+/** A selection as one line, cut to `max` characters. */
+export function selectionExcerpt(text: string, max: number): string {
+  const line = text.replace(/\s+/g, ' ').trim();
+  return line.length > max ? `${line.slice(0, max).trimEnd()}…` : line;
+}
 
 export interface ContextTarget {
   params: ContextMenuParams;
@@ -39,12 +48,14 @@ export interface ContextTarget {
   openLink: (url: string, text: string) => void;
   saveImage: (url: string) => void;
   imageAllowed: (url: string) => boolean;
+  /** Searches the page's mail for selected text. Absent where the page has no such search. */
+  searchMail?: (text: string) => void;
 }
 
 /** The menu for what's under the pointer, or nothing where a native app shows nothing. */
 export function contextTemplate(contents: WebContents, target: ContextTarget): MenuItemConstructorOptions[] {
   const text = strings();
-  const { params, downloadsOff, origin, openLink, saveImage, imageAllowed } = target;
+  const { params, downloadsOff, origin, openLink, saveImage, imageAllowed, searchMail } = target;
   const { editFlags } = params;
   const sections: MenuItemConstructorOptions[][] = [];
 
@@ -91,7 +102,18 @@ export function contextTemplate(contents: WebContents, target: ContextTarget): M
       { id: 'context.selectAll', label: text.contextSelectAll, enabled: editFlags.canSelectAll, click: () => contents.selectAll() },
     ]);
   } else if (params.selectionText.trim()) {
-    sections.push([{ id: 'context.copy', label: text.contextCopy, enabled: editFlags.canCopy, click: () => contents.copy() }]);
+    sections.push([
+      { id: 'context.copy', label: text.contextCopy, enabled: editFlags.canCopy, click: () => contents.copy() },
+      { id: 'context.selectAll', label: text.contextSelectAll, enabled: editFlags.canSelectAll, click: () => contents.selectAll() },
+    ]);
+    if (searchMail) {
+      const selected = selectionExcerpt(params.selectionText, SEARCH_TEXT_CHARS);
+      sections.push([{
+        id: 'context.searchMail',
+        label: escapeMenuLabel(text.contextSearchMail.replaceAll('{text}', () => selectionExcerpt(params.selectionText, SEARCH_LABEL_CHARS))),
+        click: () => searchMail(selected),
+      }]);
+    }
   }
 
   return sections.flatMap((section, index) => (index ? [{ type: 'separator' } as MenuItemConstructorOptions, ...section] : section));
@@ -140,6 +162,10 @@ export const contextMenuFeature: Feature = {
           downloadsOff: !policyAllowsDownload(menu.commandState(window)),
           imageAllowed: (url) => clientAuth.mayFetchForPage(url),
           openLink: (url, text) => openLink(window, url, text),
+          // Only a page that says it searches mail this way gets the entry.
+          searchMail: menu.commandState(window)?.['mail.searchText'] === true
+            ? (text) => window.webContents.send(CHANNEL.menuCommand, `mail.searchText:${JSON.stringify(text)}`)
+            : undefined,
           saveImage: (url) => {
             if (!clientAuth.mayFetchForPage(url)) return;
             pendingImages.add(url);

@@ -773,6 +773,36 @@ test.describe('the app menu and windows', () => {
       expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe('https://example.org/a?b=1');
     });
 
+    test('selected text gets Copy, Select all and Search mail, and the search goes to the page', async () => {
+      await page.evaluate(() => {
+        const w = window as unknown as { __searches: string[]; bulwarkDesktop: { menu: { onCommand: (l: (id: string) => void) => void } } };
+        w.__searches = [];
+        w.bulwarkDesktop.menu.onCommand((id) => {
+          if (id.startsWith('mail.searchText:')) w.__searches.push(id);
+        });
+      });
+      await setState({ 'mail.searchText': true });
+      const label = 'Search mail for "Are you free at 12? Sam"';
+      await pickNext(app, label);
+      await contextMenuAt({ selectionText: 'Are you free at 12?\n\nSam', editFlags: { canCopy: true, canSelectAll: true } });
+      const seen = (await lastMenu(app))!;
+      expect(seen.map((item) => (item.type === 'separator' ? '-' : item.label))).toEqual(['Copy', 'Select all', '-', label]);
+      await expect.poll(() => page.evaluate(() => (window as unknown as { __searches: string[] }).__searches.at(-1))).toBe(`mail.searchText:${JSON.stringify('Are you free at 12? Sam')}`);
+      // A long selection is quoted short; the search gets more of it.
+      await pickNext(app, '');
+      await contextMenuAt({ selectionText: 'word '.repeat(80), editFlags: { canCopy: true, canSelectAll: true } });
+      const long = (await lastMenu(app))!.at(-1)!.label;
+      expect(long.length).toBeLessThan(60);
+      expect(long).toContain('…');
+      await setState({});
+    });
+
+    test('selected text on a page with no mail search: no Search entry', async () => {
+      await setState({});
+      await contextMenuAt({ selectionText: 'Sam', editFlags: { canCopy: true, canSelectAll: true } });
+      expect((await lastMenu(app))!.map((item) => item.label)).toEqual(['Copy', 'Select all']);
+    });
+
     test('no link section for a link inside the app, or a blob', async () => {
       for (const linkURL of [`${APP_ORIGIN}/settings`, `blob:${APP_ORIGIN}/abc`, 'file:///C:/Windows/win.ini', 'javascript:alert(1)']) {
         const count = await menuCount(app);

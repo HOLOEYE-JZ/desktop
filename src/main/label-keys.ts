@@ -11,6 +11,7 @@ const MUST_KEEP: Record<string, readonly string[]> = {
   certificateIssued: ['{issuer}', '{date}'],
   signInPageTitle: ['{server}'],
   signInPageIntro: ['{server}'],
+  contextSearchMail: ['{text}'],
 };
 
 export function labelKeepsPlaceholders(key: string, value: string): boolean {
