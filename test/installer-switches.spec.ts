@@ -72,7 +72,7 @@ test.describe('the installer writes the same policies as the MSI', () => {
   });
 
   test.afterAll(() => {
-    reg('delete', 'HKCU\\Software\\BulwarkTest', '/f');
+    reg('delete', `HKCU\\${KEY}`, '/f');
     rmSync(dir, { recursive: true, force: true });
   });
 

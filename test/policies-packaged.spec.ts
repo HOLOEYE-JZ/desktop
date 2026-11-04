@@ -20,16 +20,24 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const UNPACKED = path.join(ROOT, 'release-strict', 'win-unpacked');
 const EXE = path.join(UNPACKED, 'Bulwark.exe');
 const PROFILE_FILE = path.join(ROOT, 'release-strict', 'profile.txt');
-const POLICY_ROOT = 'HKCU\\Software\\BulwarkTest\\Policies\\packaged';
+const POLICY_ROOT = `HKCU\\Software\\BulwarkTest\\Policies\\packaged${process.pid}`;
 const electron = createRequire(import.meta.url)('electron') as unknown as string;
 
 test.skip(process.platform !== 'win32' || !existsSync(EXE), 'needs npm run pack:strict');
 
+/** Whatever of this package still runs, under any name: it would hold the profile's lock for the next test. */
+function stopPackage(): void {
+  const script = `Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '${UNPACKED}\\*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`;
+  spawnSync('powershell.exe', ['-NoProfile', '-Command', script], { stdio: 'ignore' });
+}
+
+test.afterEach(stopPackage);
+
 const profile = existsSync(PROFILE_FILE) ? readFileSync(PROFILE_FILE, 'utf8').trim() : '';
 const HOSTILE_STATE = { mode: 'instance', instanceUrl: 'https://mail.bulwark-test.example/' };
 
-function cleanEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+function cleanEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
 }
@@ -47,15 +55,47 @@ function prepareProfile(state?: object): void {
   if (state) writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify(state));
 }
 
-/** Every process of this name, with its command line. */
-function commandLines(name: string): string[] {
-  const script = `Get-CimInstance Win32_Process -Filter "Name='${name}'" | ForEach-Object { $_.CommandLine }`;
+/** Every process of this name that's this package's, with its command line. Others may be running theirs. */
+function commandLines(name: string, folder = UNPACKED): string[] {
+  const script = `Get-CimInstance Win32_Process -Filter "Name='${name}'" | Where-Object { $_.CommandLine -like '*${folder}*' } | ForEach-Object { $_.CommandLine }`;
   return spawnSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).stdout.split(/\r?\n/).filter(Boolean);
 }
 
+/**
+ * The title of this package's visible window. Through the OS's own list: .NET's
+ * MainWindowTitle can pick an empty helper window of the process instead.
+ */
 function windowTitle(baseName: string): string {
-  const script = `(Get-Process -Name '${baseName}' -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowTitle -and $_.Path -like '*release-strict*' }).MainWindowTitle`;
-  return spawnSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).stdout.trim();
+  const script = `
+Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices; using System.Collections.Generic;
+public static class BulwarkWindows {
+  public delegate bool Each(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(Each c, IntPtr l);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  public static string Title(uint[] ids) {
+    string found = "";
+    EnumWindows((h, l) => {
+      uint p; GetWindowThreadProcessId(h, out p);
+      if (Array.IndexOf(ids, p) < 0 || !IsWindowVisible(h)) return true;
+      var c = new StringBuilder(64); GetClassName(h, c, 64);
+      if (c.ToString() != "Chrome_WidgetWin_1") return true;
+      var t = new StringBuilder(256); GetWindowText(h, t, 256);
+      if (t.Length > 0) found = t.ToString();
+      return found == "";
+    }, IntPtr.Zero);
+    return found;
+  }
+}
+'@
+$ids = [uint32[]]@(Get-Process -Name '${baseName}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '${UNPACKED}*' } | ForEach-Object { $_.Id })
+if ($ids.Count -gt 0) { [BulwarkWindows]::Title($ids) }
+`;
+  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  return spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], { encoding: 'utf8' }).stdout.trim();
 }
 
 function portOpen(port: number): Promise<boolean> {
@@ -72,26 +112,33 @@ function portOpen(port: number): Promise<boolean> {
 const freePort = () => 20000 + Math.floor(Math.random() * 20000);
 
 /** The strict package. A denied switch makes it restart itself, so this waits for the survivor's window. */
-async function runStrict(args: string[], exe = EXE): Promise<() => Promise<void>> {
-  const child = spawn(exe, args, { env: cleanEnv(), stdio: 'ignore' });
+async function runStrict(args: string[], exe = EXE, env: NodeJS.ProcessEnv = {}): Promise<() => Promise<void>> {
+  const child = spawn(exe, args, { env: cleanEnv(env), stdio: 'ignore' });
   const baseName = path.basename(exe, '.exe');
-  await expect.poll(() => windowTitle(baseName), { timeout: 60_000, intervals: [1000] }).toMatch(/\S/);
-  return async () => {
+  const stop = async () => {
     killTree(child);
-    for (const line of spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-Process -Name '${baseName}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*release-strict*' } | ForEach-Object { $_.Id }`], { encoding: 'utf8' }).stdout.split(/\r?\n/).filter(Boolean)) {
+    for (const line of spawnSync('powershell.exe', ['-NoProfile', '-Command', `Get-Process -Name '${baseName}' -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '${UNPACKED}*' } | ForEach-Object { $_.Id }`], { encoding: 'utf8' }).stdout.split(/\r?\n/).filter(Boolean)) {
       spawnSync('taskkill', ['/F', '/T', '/PID', line], { stdio: 'ignore' });
     }
     await pause(800);
   };
+  try {
+    await expect.poll(() => windowTitle(baseName), { timeout: 60_000, intervals: [1000] }).toMatch(/\S/);
+  } catch (error) {
+    // Or it holds the profile and the package's files for everything after it.
+    await stop();
+    throw error;
+  }
+  return stop;
 }
 
 /** The control: the same switch on a test build. The same code, without the guard. */
-async function withControl(args: string[], state: object | undefined, check: () => Promise<void>): Promise<void> {
+async function withControl(args: string[], state: object | undefined, check: (dir: string) => Promise<void>, env: NodeJS.ProcessEnv = {}): Promise<void> {
   const dir = tempProfile('control');
   if (state) writeFileSync(path.join(dir, 'shell-state.json'), JSON.stringify(state));
-  const child = spawn(electron, [path.join(ROOT, 'dist', 'main.mjs'), `--bulwark-user-data=${dir}`, ...args], { cwd: ROOT, env: cleanEnv(), stdio: 'ignore' });
+  const child = spawn(electron, [path.join(ROOT, 'dist', 'main.mjs'), `--bulwark-user-data=${dir}`, ...args], { cwd: ROOT, env: cleanEnv(env), stdio: 'ignore' });
   try {
-    await check();
+    await check(dir);
   } finally {
     killTree(child);
     await pause(800);
@@ -120,6 +167,60 @@ test.describe('a production build, with no policy set', () => {
     }
   });
 
+  // Chromium trims each argument first. The guard has to read them the same way.
+  for (const [name, pad] of [['a space', (flag: string) => ` ${flag}`], ['a tab', (flag: string) => `\t${flag}`], ['a trailing space', (flag: string) => `${flag} `]] as const) {
+    test(`--remote-debugging-port behind ${name} opens nothing (control: a test build does)`, async () => {
+      const controlPort = freePort();
+      await withControl([pad(`--remote-debugging-port=${controlPort}`)], undefined, async () => {
+        await expect.poll(() => portOpen(controlPort), { timeout: 40_000 }).toBe(true);
+      });
+
+      const port = freePort();
+      const done = await runStrict([pad(`--remote-debugging-port=${port}`)]);
+      try {
+        await pause(2000);
+        expect(await portOpen(port)).toBe(false);
+      } finally {
+        await done();
+      }
+    });
+  }
+
+  test('padded switches reach no process', async () => {
+    const flags = [' --no-sandbox', '\t--js-flags=--expose-gc', ' --disable-web-security', '--enable-features=BulwarkNoSuchFeature ', ' --proxy-server=127.0.0.1:9', ' --ignore-certificate-errors', ` --user-data-dir=${path.join(ROOT, 'bulwarknosuch')}`];
+    const done = await runStrict(flags);
+    try {
+      const lines = commandLines('Bulwark.exe');
+      expect(lines.length).toBeGreaterThan(1);
+      for (const line of lines) {
+        for (const flag of ['no-sandbox', 'expose-gc', 'disable-web-security', 'bulwarknosuch', 'proxy-server', 'ignore-certificate-errors']) {
+          expect(line.toLowerCase(), line).not.toContain(flag);
+        }
+      }
+    } finally {
+      await done();
+    }
+  });
+
+  test('the environment doesn\'t turn the sandbox off or logging on (control: on a test build it does)', async () => {
+    const env = { ELECTRON_DISABLE_SANDBOX: '1', ELECTRON_ENABLE_LOGGING: '1' };
+    await withControl([], undefined, async (dir) => {
+      await expect.poll(() => commandLines('electron.exe', dir).join('\n'), { timeout: 40_000 }).toContain('--no-sandbox');
+    }, env);
+
+    const done = await runStrict([], EXE, env);
+    try {
+      const lines = commandLines('Bulwark.exe');
+      expect(lines.length).toBeGreaterThan(1);
+      for (const line of lines) {
+        expect(line, line).not.toContain('--no-sandbox');
+        expect(line, line).not.toContain('--enable-logging');
+      }
+    } finally {
+      await done();
+    }
+  });
+
   test('--user-data-dir moves nothing', async () => {
     const elsewhere = tempProfile('moved');
     const moved = path.join(elsewhere, 'ud');
@@ -139,7 +240,7 @@ test.describe('a production build, with no policy set', () => {
     const flags = ['--no-sandbox', '--js-flags=--expose-gc', '--disable-web-security', '--enable-features=BulwarkNoSuchFeature', '/DISABLE-FEATURES=BulwarkNoSuchOther', '-disable-site-isolation-trials', '--load-extension=C:\\nothing', '--allow-running-insecure-content', '--host-rules=MAP bulwarknosuch.example 127.0.0.1', '--ignore-certificate-errors', '--user-data-dir=C:\bulwarknosuch'];
     const done = await runStrict(flags);
     try {
-      const lines = commandLines('Bulwark.exe').filter((line) => line.includes('release-strict'));
+      const lines = commandLines('Bulwark.exe');
       expect(lines.length).toBeGreaterThan(1);
       for (const line of lines) {
         for (const flag of ['no-sandbox', 'expose-gc', 'disable-web-security', 'bulwarknosuch', 'disable-site-isolation-trials', 'load-extension', 'allow-running-insecure-content', 'host-rules', 'ignore-certificate-errors']) {
@@ -219,11 +320,22 @@ test.describe('renamed to electron.exe, which turns app.isPackaged off', () => {
 
   test.afterAll(() => {
     if (existsSync(renamed)) renameSync(renamed, EXE);
-    spawnSync('reg.exe', ['delete', 'HKCU\\Software\\BulwarkTest', '/f'], { windowsHide: true });
+    spawnSync('reg.exe', ['delete', POLICY_ROOT, '/f'], { windowsHide: true });
     removeProfile(profile);
   });
 
+  test('the test hooks aren\'t even in the bundle', () => {
+    const { extractFile } = createRequire(import.meta.url)('@electron/asar') as { extractFile(archive: string, file: string): Buffer };
+    const bundle = extractFile(path.join(UNPACKED, 'resources', 'app.asar'), path.join('dist', 'main.mjs')).toString('utf8');
+    expect(bundle).toContain('Ignoring these switches');
+    for (const hook of ['BULWARK_TEST_OS_VERIFY', '__bulwarkAppLock', '__bulwarkOs', 'BULWARK_TELEMETRY_ALLOW_PRIVATE', '--bulwark-test-', 'bulwark-test-no-native', 'bulwark-user-data', 'bulwark-server-dir', 'BulwarkTest']) {
+      expect(bundle, hook).not.toContain(hook);
+    }
+  });
+
   test('the dev switches and the test root do nothing', async () => {
+    stopPackage();
+    prepareProfile();
     const elsewhere = tempProfile('moved');
     const moved = path.join(elsewhere, 'ud');
     const done = await runStrict([`--bulwark-user-data=${moved}`, `--bulwark-server-dir=${elsewhere}`, '--dev', `--bulwark-test-policy-root=${POLICY_ROOT}`, '--lang=en-US'], renamed);
@@ -239,7 +351,20 @@ test.describe('renamed to electron.exe, which turns app.isPackaged off', () => {
   });
 });
 
-test('the package holds the watcher\'s addon where it can be loaded', () => {
+test('the package\'s watcher really loads', async () => {
+  prepareProfile();
   const addon = path.join(UNPACKED, 'resources', 'app.asar.unpacked', 'node_modules', '@vscode', 'policy-watcher', 'build', 'Release', 'vscode-policy-watcher.node');
   expect(existsSync(addon)).toBe(true);
+  const child = spawn(EXE, ['--lang=en-US'], { env: cleanEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  child.stdout.on('data', (chunk) => (output += String(chunk)));
+  child.stderr.on('data', (chunk) => (output += String(chunk)));
+  try {
+    await expect.poll(() => windowTitle('Bulwark'), { timeout: 60_000, intervals: [1000] }).toMatch(/\S/);
+    expect(output).not.toContain('policy watcher is not available');
+  } finally {
+    killTree(child);
+    await pause(800);
+    removeProfile(profile);
+  }
 });

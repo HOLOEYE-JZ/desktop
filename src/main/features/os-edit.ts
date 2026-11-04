@@ -50,6 +50,7 @@ import { systemExe } from '../system-exe';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { addWipeStep } from './local-wipe';
 import type { OsHub } from './os-hub';
+import { isInstalledBuild } from '../installed';
 
 declare const __BULWARK_TEST_BUILD__: boolean;
 
@@ -120,7 +121,7 @@ interface LiveSession {
  */
 function editRoot(): string {
   const local = process.env.LOCALAPPDATA;
-  if (process.platform === 'win32' && app.isPackaged && local) return path.join(local, 'Bulwark', 'edit-files');
+  if (process.platform === 'win32' && isInstalledBuild() && local) return path.join(local, 'Bulwark', 'edit-files');
   return path.join(app.getPath('userData'), 'edit-files');
 }
 

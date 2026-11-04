@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { _electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, type Launched } from './helpers';
+import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, waitForLogin, type Launched } from './helpers';
 
 /**
  * The real app, on its login page: the bridge and the OS calls don't need a sign-in or
@@ -193,6 +193,39 @@ test.describe('OS integration', () => {
     await os(page, 'setLocked(false)');
     await page.waitForTimeout(200);
     expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
+  });
+
+  test('the tray says until when notifications are paused, can pause until turned back on, and names the account', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await waitForLogin(page);
+    // The page's own empty summaries would land over the test's.
+    await app.evaluate(() => {
+      const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setSummary: (s: { unread: unknown[] }) => void } } }).__bulwarkOs.hub;
+      const real = hub.setSummary.bind(hub);
+      hub.setSummary = (summary) => {
+        if (summary.unread.length) real(summary);
+      };
+    });
+
+    await clickTray(app, 'Pause notifications', 'For 1 hour');
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Turn notifications back on');
+    const paused = (await trayItems(app)).find((i) => i.label?.startsWith('Paused until '));
+    expect(paused?.enabled).toBe(false);
+    expect(paused?.label).toMatch(/\d/);
+    await clickTray(app, 'Turn notifications back on');
+
+    await expect.poll(async () => (await trayItems(app)).find((i) => i.label === 'Pause notifications')?.submenu?.map((s) => s.label)).toEqual(['For 1 hour', 'Until tomorrow', 'Until I turn them back on']);
+    await clickTray(app, 'Pause notifications', 'Until I turn them back on');
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Paused until you turn them back on');
+    await clickTray(app, 'Turn notifications back on');
+
+    // With more than one account signed in, the page names the one the list is for.
+    await os(page, 'setLocked(false)');
+    await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null, account: 'b@example.org' })`);
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Unread in b@example.org');
+    await os(page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Unread');
   });
 
   test('the app lock: main decides, the tray locks, and no page lifts it, not after a restart either', async () => {

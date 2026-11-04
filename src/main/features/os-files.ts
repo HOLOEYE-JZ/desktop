@@ -19,6 +19,7 @@ import path from 'node:path';
 import { app, clipboard, nativeImage, type WebContents } from 'electron';
 import { systemExe } from '../system-exe';
 import { safeDragFileName } from './os-rules';
+import { isInstalledBuild } from '../installed';
 
 /** A drop is over when Windows' startDrag returns. Elsewhere it returns at once. */
 const DRAG_FILE_LIFE_MS = process.platform === 'win32' ? 2 * 60 * 1000 : 10 * 60 * 1000;
@@ -99,7 +100,7 @@ export interface FilesHandle {
 
 function filesRoot(): string {
   const local = process.env.LOCALAPPDATA;
-  if (process.platform === 'win32' && app.isPackaged && local) return path.join(local, 'Bulwark', 'os-files');
+  if (process.platform === 'win32' && isInstalledBuild() && local) return path.join(local, 'Bulwark', 'os-files');
   return path.join(app.getPath('userData'), 'os-files');
 }
 

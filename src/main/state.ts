@@ -95,8 +95,6 @@ export interface ShellState {
   policyWipes?: string[];
   /** Every partition this profile has used: a wipe covers them all. */
   partitions?: string[];
-  /** OfflineEnabled was forced off and the partitions' store files were cleared for it. */
-  offlineClearedForPolicy?: boolean;
   /** A hash of the key DPAPI stopped opening, once the user was told their sign-ins went with it. */
   keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */

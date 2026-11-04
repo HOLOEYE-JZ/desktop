@@ -882,8 +882,9 @@ export class WindowManager extends EventEmitter<{
       const { window, type, key } = managed;
       if (window.isDestroyed()) continue;
       const bounds = window.getNormalBounds();
-      // A composer comes back through its draft, or not at all.
-      if (type === 'message' || type === 'settings') {
+      // A composer comes back through its draft, or not at all. Settings is a page of the main
+      // window, not a window to bring back.
+      if (type === 'message') {
         let url = managed.url;
         try {
           const current = window.webContents.getURL();
@@ -993,6 +994,8 @@ export class WindowManager extends EventEmitter<{
   }
 
   private validSessionEntry(entry: SessionWindow): boolean {
+    // Saved by an older version, which opened Settings as a window.
+    if (entry.type === 'settings') return false;
     try {
       const url = new URL(entry.url);
       return url.protocol === 'https:' && url.origin === this.options.origin && windowTypeOf(url.pathname) === entry.type;
