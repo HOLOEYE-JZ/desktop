@@ -40,7 +40,10 @@ exports.default = async function afterPack(context) {
   // on macOS that takes a signature, which is only known here.
   writeFileSync(path.join(resources, 'bulwark-build.json'), `${JSON.stringify({ macSigned: Boolean(process.env.CSC_LINK || process.env.CSC_NAME) })}\n`);
 
-  const { guardResources, guardExtraFiles } = await import('./package-guard.mjs');
+  const { guardModes, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
+  // Last, so it covers what's copied above. Before fpm and the others pack the tree.
+  tightenModes(context.appOutDir);
   guardResources(resources);
   guardExtraFiles(context.appOutDir);
+  guardModes(context.appOutDir);
 };

@@ -260,6 +260,9 @@ jobs:
           unset APPLE_API_KEY_BASE64 MAC_CERTIFICATE MAC_CERTIFICATE_PASSWORD
           npx electron-builder --mac --universal --publish never "${signing[@]}"
 
+      - name: Check the file modes in the packages
+        run: node scripts/verify-package-modes.mjs release
+
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -311,7 +314,7 @@ jobs:
           ARCH: ${{ matrix.arch }}
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm xvfb dbus-x11 gnome-keyring x11-utils
+          sudo apt-get install -y rpm squashfs-tools xvfb dbus-x11 gnome-keyring x11-utils
           if [ "$ARCH" = "arm64" ]; then
             sudo apt-get install -y ruby ruby-dev build-essential
             sudo gem install --no-document fpm -v 1.16.0
@@ -355,6 +358,10 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: npx electron-builder --linux "--$ARCH" --publish never
+
+      # after-pack checks the tree, and fpm and the others run after that.
+      - name: Check the file modes in the packages
+        run: node scripts/verify-package-modes.mjs release
 
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
