@@ -34,7 +34,8 @@ export interface MenuHooks {
 }
 
 /** Features add their own lines, such as "Restart to update". */
-export type MenuSection = 'file' | 'view' | 'help' | 'app';
+/** `new` sits right under New message in File, with no line of its own. */
+export type MenuSection = 'new' | 'file' | 'view' | 'help' | 'app';
 type Extension = () => MenuItemConstructorOptions[];
 
 /** Commands that go to the main window, wherever the focus is. */
@@ -239,6 +240,7 @@ export class MenuController {
       label: text.menuFile,
       submenu: [
         this.command('file.newMessage', text.menuNewMessage, { accelerator: 'CmdOrCtrl+N' }),
+        ...(this.extensions.get('new') ?? []).flatMap((extension) => extension()),
         { id: 'file.newWindow', label: text.menuNewWindow, accelerator: 'CmdOrCtrl+Shift+N', enabled: !!windows, click: hooks.newWindow },
         { type: 'separator' },
         {

@@ -115,6 +115,7 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
     if (typeof enabled === 'boolean') windows.setRestoreEnabled(enabled);
   });
   ctx.on(CHANNEL.windowsSessionReady, () => windows.emit('sessionReady'));
+  ctx.on(CHANNEL.windowsSessionEnded, () => windows.emit('sessionEnded'));
   ctx.on(CHANNEL.windowsSpareReady, (_event, window) => {
     if (window) windows.spareReady(window);
   });
