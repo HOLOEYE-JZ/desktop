@@ -433,7 +433,7 @@ test.describe('counting main\'s errors, for instance mode', () => {
 });
 
 test('the shell\'s copy of the pure module is the webmail\'s, byte for byte', () => {
-  const webmail = process.env.BULWARK_WEBMAIL_DIR ?? 'C:/Users/info/worktrees/jmap-webmail-do-telemetry';
+  const webmail = process.env.BULWARK_WEBMAIL_DIR ?? '../..';
   const theirs = path.join(webmail, 'lib/desktop/desktop-telemetry.ts');
   test.skip(!existsSync(theirs), 'no webmail checkout here');
   const clean = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');

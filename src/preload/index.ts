@@ -96,6 +96,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     version: BRIDGE_VERSION,
     platform,
     mode,
+    certificates: {
+      clearChoices: (scope: { account?: string; last?: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices, scope),
+      setAccount: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesSetAccount, account),
+      onConnectionsReset: (listener: () => void) => subscribe(CHANNEL.certificatesConnectionsReset, listener),
+    },
     windows: {
       open: (url: string, options: { name: string; width: number; height: number }) =>
         ipcRenderer.send(CHANNEL.windowsOpen, url, options),

@@ -20,6 +20,7 @@ import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toM
 import { openExternally } from '../navigation';
 import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads } from '../spellcheck';
 import { setUiLanguage, strings } from '../strings';
+import { clientAuth } from './client-certificates';
 import type { Feature } from './index';
 
 const MAX_SUGGESTIONS = 6;
@@ -32,12 +33,13 @@ export interface ContextTarget {
   /** Opens a link, past the page's checks if it has them. */
   openLink: (url: string, text: string) => void;
   saveImage: (url: string) => void;
+  imageAllowed: (url: string) => boolean;
 }
 
 /** The menu for what's under the pointer, or nothing where a native app shows nothing. */
 export function contextTemplate(contents: WebContents, target: ContextTarget): MenuItemConstructorOptions[] {
   const text = strings();
-  const { params, downloadsOff, origin, openLink, saveImage } = target;
+  const { params, downloadsOff, origin, openLink, saveImage, imageAllowed } = target;
   const { editFlags } = params;
   const sections: MenuItemConstructorOptions[][] = [];
 
@@ -69,7 +71,7 @@ export function contextTemplate(contents: WebContents, target: ContextTarget): M
     ]);
   }
 
-  if (params.mediaType === 'image' && params.hasImageContents && !downloadsOff) {
+  if (params.mediaType === 'image' && params.hasImageContents && !downloadsOff && imageAllowed(params.srcURL)) {
     sections.push([
       { id: 'context.saveImage', label: text.contextSaveImage, click: () => saveImage(params.srcURL) },
       { id: 'context.copyImage', label: text.contextCopyImage, click: () => contents.copyImageAt(params.x, params.y) },
@@ -131,8 +133,10 @@ export const contextMenuFeature: Feature = {
           params,
           origin,
           downloadsOff: !policyAllowsDownload(menu.commandState(window)),
+          imageAllowed: (url) => clientAuth.mayFetchForPage(url),
           openLink: (url, text) => openLink(window, url, text),
           saveImage: (url) => {
+            if (!clientAuth.mayFetchForPage(url)) return;
             pendingImages.add(url);
             window.webContents.downloadURL(url);
           },
