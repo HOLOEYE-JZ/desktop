@@ -154,7 +154,7 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   });
 
   const signIn = options.signIn!;
-  ctx.handle(CHANNEL.authBegin, (event) => signIn.begin(event.sender.id));
+  ctx.handle(CHANNEL.authBegin, (event, _window, clicked) => signIn.begin(event.sender.id, clicked === true));
   ctx.handle(CHANNEL.authComplete, (event, _window, flowId, authorizeUrl) => signIn.complete(flowId, authorizeUrl, event.sender.id));
   ctx.on(CHANNEL.authCancel, (event, _window, flowId) => signIn.cancel(flowId, event.sender.id));
 

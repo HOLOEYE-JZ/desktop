@@ -28,6 +28,20 @@ export function closeDictionaryDownloads(session: SpellSession): void {
   });
 }
 
+/**
+ * Whether the server behind the page allows outside hosts, asked by main so that no call on the
+ * bridge can get around the page's own check. Only a clear "off" for no-third-party mode counts.
+ */
+export async function outsideHostsAllowed(readConfig: () => Promise<{ ok: boolean; json(): Promise<unknown> }>): Promise<boolean> {
+  try {
+    const answer = await readConfig();
+    if (!answer.ok) return false;
+    return ((await answer.json()) as { noThirdPartyTraffic?: unknown } | null)?.noThirdPartyTraffic === false;
+  } catch {
+    return false;
+  }
+}
+
 export function missingDictionaries(): string[] {
   return [...missing];
 }

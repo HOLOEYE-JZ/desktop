@@ -120,6 +120,23 @@ export function cleanSettingsPatch(patch: unknown): Partial<OsSettings> {
   return out;
 }
 
+/**
+ * Starting with the OS is persistence: it outlasts this run and the page that asked. A same-origin
+ * plugin frame can make this call, so turning it on takes a real click. Turning it off doesn't.
+ */
+export function settingsAllowedWithoutClick(patch: unknown, clicked: boolean): unknown {
+  if (clicked || !patch || typeof patch !== 'object' || (patch as { startAtLogin?: unknown }).startAtLogin !== true) return patch;
+  const { startAtLogin: _left, ...rest } = patch as Record<string, unknown>;
+  return rest;
+}
+
+/** Longest a page may pause notifications. The tray's own choices don't go through here. */
+export const MAX_PAGE_PAUSE_MS = 24 * 60 * 60 * 1000;
+
+export function pageSetPause(until: unknown, now: number): number | null {
+  return typeof until === 'number' && Number.isFinite(until) ? Math.min(until, now + MAX_PAGE_PAUSE_MS) : null;
+}
+
 function minutesOf(time: string): number {
   return Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 }

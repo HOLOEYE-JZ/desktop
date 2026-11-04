@@ -408,7 +408,21 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
   const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
-  signIn = new LoopbackSignIn(() => windows.focus());
+  signIn = new LoopbackSignIn(() => windows.focus(), async (host, owner) => {
+    const text = strings();
+    const options = {
+      type: 'question' as const,
+      message: text.signInAskTitle.replaceAll('{host}', host),
+      detail: text.signInAskDetail.replaceAll('{host}', host),
+      buttons: [text.signInAskConfirm, text.signInAskCancel],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    };
+    const asking = BrowserWindow.getAllWindows().find((window) => !window.isDestroyed() && window.webContents.id === owner);
+    const { response } = asking ? await dialog.showMessageBox(asking, options) : await dialog.showMessageBox(options);
+    return response === 0;
+  });
   const ctx: FeatureContext = {
     mode: 'standalone',
     origin: APP_ORIGIN,

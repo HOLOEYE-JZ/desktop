@@ -21,6 +21,8 @@ interface Flow {
   redirectUri: string;
   expectedState: string | null;
   owner: number;
+  /** A real click on the page, seen as the flow began. */
+  clicked: boolean;
   settle: (result: BrowserSignInResult) => void;
   result: Promise<BrowserSignInResult>;
   timer: NodeJS.Timeout;
@@ -34,9 +36,10 @@ function page(message: string): string {
 export class LoopbackSignIn {
   private readonly flows = new Map<string, Flow>();
 
-  constructor(private readonly onDone?: () => void) {}
+  /** `askHost` is the native question for a flow that no click started. */
+  constructor(private readonly onDone?: () => void, private readonly askHost?: (host: string, owner: number) => Promise<boolean>) {}
 
-  begin(owner: number): Promise<{ flowId: string; redirectUri: string }> {
+  begin(owner: number, clicked = false): Promise<{ flowId: string; redirectUri: string }> {
     return new Promise((resolve, reject) => {
       const flowId = randomUUID();
       let settle!: (result: BrowserSignInResult) => void;
@@ -70,7 +73,7 @@ export class LoopbackSignIn {
         const redirectUri = `http://127.0.0.1:${port}${CALLBACK_PATH}`;
         const timer = setTimeout(() => this.finish(flowId, { ok: false, error: 'timeout' }), FLOW_TIMEOUT_MS);
         timer.unref?.();
-        this.flows.set(flowId, { server, redirectUri, expectedState: null, owner, settle, result, timer });
+        this.flows.set(flowId, { server, redirectUri, expectedState: null, owner, clicked: clicked === true, settle, result, timer });
         resolve({ flowId, redirectUri });
       });
     });
@@ -96,6 +99,13 @@ export class LoopbackSignIn {
       this.finish(flowId as string, { ok: false, error: 'invalid_url' });
       return { ok: false, error: 'invalid_url' };
     }
+    // A same-origin plugin frame can make these calls too, and the code would go to it. A click
+    // says the user meant to sign in. With none, the user has to say so, knowing where to.
+    if (!flow.clicked && !(await this.askHost?.(target.host, owner))) {
+      this.finish(flowId as string, { ok: false, error: 'cancelled' });
+      return { ok: false, error: 'cancelled' };
+    }
+    if (this.flows.get(flowId as string) !== flow) return flow.result;
     flow.expectedState = target.searchParams.get('state');
     try {
       await shell.openExternal(target.toString());

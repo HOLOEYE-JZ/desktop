@@ -53,6 +53,16 @@ import { DEFAULT_POLICY_SNAPSHOT, type PolicySnapshot } from '../shared/policy-s
 
 let appLockClaimed = false;
 
+/**
+ * A real click or key press in the last few seconds. Read here, in the preload's own world, so a
+ * page can't replace the answer, and no script can make one. A same-origin frame reaches these
+ * calls through `parent` and main can't tell (ipc.ts), so this is what separates "the user just
+ * did something" from a call alone. It doesn't say what was clicked.
+ */
+function clicked(): boolean {
+  return navigator.userActivation?.isActive === true;
+}
+
 function argument(prefix: string): string | null {
   const found = process.argv.find((arg) => arg.startsWith(prefix));
   return found ? found.slice(prefix.length) : null;
@@ -149,10 +159,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           osUnlock: (): Promise<OsUnlockAnswer> => ipcRenderer.invoke(CHANNEL.appLockOsUnlock),
         };
       },
-      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof),
+      enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof, clicked()),
       prove: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockProve, proof),
       disable: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockDisable, proof),
       forget: (proof?: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockForget, proof),
+      clearOrphan: (): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockClearOrphan),
       wrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockWrap, data),
       unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
       osEnroll: (proof: Uint8Array, lockKey: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockOsEnroll, proof, lockKey),
@@ -205,7 +216,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       get: () => ipcRenderer.invoke(CHANNEL.privacyGet),
       setTelemetry: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetTelemetry, on),
       setCrashReports: (on: boolean) => ipcRenderer.invoke(CHANNEL.privacySetCrashReports, on),
-      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url),
+      setCrashUploadUrl: (url: string) => ipcRenderer.invoke(CHANNEL.privacySetCrashUploadUrl, url, clicked()),
       listCrashes: () => ipcRenderer.invoke(CHANNEL.privacyListCrashes),
       sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
       deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
@@ -222,7 +233,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         return stop;
       },
       getStatus: (): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osGetStatus),
-      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch),
+      setSettings: (patch: Partial<OsSettings>): Promise<OsStatus> => ipcRenderer.invoke(CHANNEL.osSetSettings, patch, clicked()),
       setPaused: (until: number | null) => ipcRenderer.send(CHANNEL.osSetPaused, until),
       onStatusChange: (listener: (status: OsStatus) => void) => subscribe(CHANNEL.osStatusChanged, listener),
       setBadge: (count: number) => ipcRenderer.send(CHANNEL.osSetBadge, count),
@@ -262,7 +273,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           forget: (serverUrl: string, reason: 'failed' | 'signed-out') => ipcRenderer.send(CHANNEL.serversForget, serverUrl, reason),
         },
         auth: {
-          beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin),
+          beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin, clicked()),
           completeBrowserSignIn: (flowId: string, authorizeUrl: string) =>
             ipcRenderer.invoke(CHANNEL.authComplete, flowId, authorizeUrl),
           cancelBrowserSignIn: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
