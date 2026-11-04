@@ -193,6 +193,8 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     },
     menu: {
       setState: (state: MenuState) => ipcRenderer.send(CHANNEL.menuSetState, state),
+      // File > Change connection…, after the page asked: restarts on the first screen.
+      changeConnection: (): Promise<boolean> => ipcRenderer.invoke(CHANNEL.menuChangeConnection),
       onCommand: (listener: (id: string) => void) => subscribe(CHANNEL.menuCommand, listener),
       popup: (items: NativeMenuItem[], at: { x: number; y: number }): Promise<string | null> =>
         ipcRenderer.invoke(CHANNEL.menuPopup, items, at),
