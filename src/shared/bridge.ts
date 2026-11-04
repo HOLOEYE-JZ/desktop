@@ -120,9 +120,18 @@ export interface AppLockStatus {
   enrolled: boolean;
   os: OsUnlockKind | null;
   osEnrolled: boolean;
-  /** The OS has a real key store, so `wrap` and `unwrap` work. */
+  /** The OS has a real key store, so `wrap` and `unwrap` work. False: secrets on this machine are only obfuscated. */
   wrap: boolean;
 }
+
+/** What a page's wipe asks of main. `account` null: everything on this device. */
+export interface LocalWipeRequest {
+  reason: 'remote' | 'settings';
+  account: string | null;
+}
+
+/** A PIN guess through main. Blocked: too many wrong ones. No secret: this profile lost it, or the OS won't open it. */
+export type PinStepAnswer = { ok: true; bytes: Uint8Array } | { ok: false; blockedUntil?: number };
 
 export type OsUnlockAnswer =
   | { ok: true; key: Uint8Array }
@@ -579,6 +588,11 @@ export const CHANNEL = {
   appLockOsRemove: 'bulwark:appLock.osRemove',
   appLockOsUnlock: 'bulwark:appLock.osUnlock',
   appLockWrap: 'bulwark:appLock.wrap',
+  appLockPinStep: 'bulwark:appLock.pinStep',
+  appLockReplaceRenderer: 'bulwark:appLock.replaceRenderer',
+  httpCacheClear: 'bulwark:httpCache.clear',
+  localWipeRun: 'bulwark:localWipe.run',
+  localWipeFinish: 'bulwark:localWipe.finish',
   appLockUnwrap: 'bulwark:appLock.unwrap',
   appLockRequest: 'bulwark:appLock.request',
   updatesState: 'bulwark:updates.state',

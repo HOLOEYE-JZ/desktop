@@ -7,6 +7,7 @@
 
 import { powerMonitor, type BrowserWindow } from 'electron';
 import { strings } from '../strings';
+import { replacingRenderer } from '../windows';
 import type { OsHub } from './os-hub';
 import { isRetryableLoadError, reloadDelayMs } from './os-rules';
 
@@ -65,7 +66,7 @@ export function setupResilience(hub: OsHub, notice: (title: string, body: string
     });
 
     webContents.on('render-process-gone', (_event, details) => {
-      if (details.reason === 'clean-exit' || window.isDestroyed()) return;
+      if (details.reason === 'clean-exit' || window.isDestroyed() || replacingRenderer.has(webContents)) return;
       const now = Date.now();
       crashes = crashes.filter((at) => now - at < CRASH_WINDOW_MS);
       crashes.push(now);
