@@ -108,7 +108,13 @@ export class OsHub extends EventEmitter<{
   private setLockState(next: 'unknown' | 'open' | 'page' | 'main'): void {
     const before = this.locked;
     this.lockState = next;
-    if (this.lockIsReal) this.summaryNow = EMPTY_SUMMARY;
+    if (this.lockIsReal) {
+      this.summaryNow = EMPTY_SUMMARY;
+      // What waits for the page and names a message must not run after the unlock either.
+      const kept = this.pending.filter((command) => command.type !== 'notification' && command.type !== 'open-message');
+      this.pending.length = 0;
+      this.pending.push(...kept);
+    }
     if (before !== this.locked || this.lockIsReal) this.emit('locked', this.locked);
   }
 
