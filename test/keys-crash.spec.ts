@@ -439,8 +439,10 @@ test.describe('deciding before Chromium reads Local State', () => {
 
   test('the separate run is started with the profile and its own switch, and nothing else', () => {
     const argv = ['app.exe', 'main.mjs', '--bulwark-user-data=C:\\p', '--lang=en-US', '--standalone', '--remote-debugging-port=0'];
-    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_INIT_SWITCH)).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_INIT_SWITCH]);
-    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_CHECK_SWITCH)).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_CHECK_SWITCH]);
+    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_INIT_SWITCH, '--bulwark-user-data=')).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_INIT_SWITCH]);
+    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_CHECK_SWITCH, '--bulwark-user-data=')).toEqual(['C:\\app\\main.mjs', '--bulwark-user-data=C:\\p', KEY_CHECK_SWITCH]);
+    // A build without the test code has no such switch to pass on.
+    expect(keyInitArgs(argv, false, 'C:\\app\\main.mjs', KEY_INIT_SWITCH)).toEqual(['C:\\app\\main.mjs', KEY_INIT_SWITCH]);
   });
 
   test('a package names no script: Electron would take it for the app', () => {

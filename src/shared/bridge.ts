@@ -290,6 +290,19 @@ export interface OsSettings {
   quietHoursEnd: string;
   /** "Show Bulwark", an Electron accelerator. Null: off. */
   showShortcut: string | null;
+  /** Quick compose, an Electron accelerator. Null: off. Unset: nobody chose, so the policy's or the built-in one. */
+  quickComposeShortcut?: string | null;
+}
+
+export interface QuickComposeStatus {
+  /** What's in force after policy and the user's choice. Null: off. */
+  shortcut: string | null;
+  /** Really held. False with a shortcut: another app has it. */
+  active: boolean;
+  /** Set by the `QuickComposeShortcut` policy. */
+  locked: boolean;
+  /** What turning it on again gives. */
+  builtIn: string | null;
 }
 
 export interface OsStatus {
@@ -297,6 +310,7 @@ export interface OsStatus {
   pausedUntil: number | null;
   /** The shortcut in settings is really held. Another app can have it. */
   shortcutActive: boolean;
+  quickCompose?: QuickComposeStatus;
 }
 
 export interface OsFile {
@@ -448,6 +462,7 @@ export const CHANNEL = {
   windowsSetRestore: 'bulwark:windows.setRestore',
   windowsSetRestoreEnabled: 'bulwark:windows.setRestoreEnabled',
   windowsSessionReady: 'bulwark:windows.sessionReady',
+  windowsSessionEnded: 'bulwark:windows.sessionEnded',
   windowsSpareReady: 'bulwark:windows.spareReady',
   windowsSpareActivate: 'bulwark:windows.spareActivate',
   windowsSpareTaken: 'bulwark:windows.spareTaken',
@@ -547,6 +562,9 @@ export const CHANNEL = {
   keystoreAccess: 'bulwark:keystore.access',
   keystoreRevoke: 'bulwark:keystore.revoke',
   keystoreClearGrants: 'bulwark:keystore.clearGrants',
+  certificatesClearChoices: 'bulwark:certificates.clearChoices',
+  certificatesSetAccount: 'bulwark:certificates.setAccount',
+  certificatesConnectionsReset: 'bulwark:certificates.connectionsReset',
   localImportScan: 'bulwark:localImport.scan',
   localImportGrant: 'bulwark:localImport.grant',
   localImportResume: 'bulwark:localImport.resume',

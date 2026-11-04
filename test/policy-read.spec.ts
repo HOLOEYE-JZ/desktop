@@ -425,6 +425,9 @@ test.describe('the test root', () => {
     expect(withHooks).toContain('BulwarkTest');
     expect(production).not.toContain('--bulwark-test-policy');
     expect(production).not.toContain('BulwarkTest');
+    // Nothing in a real build can move the quick compose keys, or hold none.
+    expect(withHooks).toContain('--bulwark-test-quick-compose-default=');
+    expect(production).not.toContain('--bulwark-test-quick-compose-default=');
     // Dev switches hang on the build, not on the exe's name.
     for (const name of ['bulwark-user-data', 'bulwark-server-dir', 'bulwark-test-wrong-pin']) expect(production).not.toContain(name);
     expect(withHooks).toContain('bulwark-user-data');
@@ -605,7 +608,7 @@ test.describe('every key has someone acting on it', () => {
 
   test('a key nobody wired yet names who owes it', () => {
     const pending = POLICY_KEYS.filter((key) => 'pendingConsumer' in POLICY_CONSUMERS[key]);
-    expect(pending.sort()).toEqual(['AutoSelectCertificateForUrls', 'AutoUpdate', 'QuickComposeShortcut', 'UpdateChannel'].sort());
+    expect(pending.sort()).toEqual(['AutoUpdate', 'UpdateChannel'].sort());
     for (const key of pending) expect((POLICY_CONSUMERS[key] as { pendingConsumer: string }).pendingConsumer).toMatch(/\S{3}/);
   });
 });

@@ -7,7 +7,8 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { WebContents } from 'electron';
-import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary } from '../../shared/bridge';
+import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary, type QuickComposeStatus } from '../../shared/bridge';
+import { LinkRateLimit } from '../deep-link';
 import type { FeatureContext } from './index';
 import { cleanSettingsPatch, defaultSettings } from './os-rules';
 
@@ -34,6 +35,11 @@ export class OsHub extends EventEmitter<{
   private summaryNow: OsSummary = EMPTY_SUMMARY;
   private badgeNow = 0;
   shortcutActive = false;
+  /** Opens the quick composer: os-quick-compose.ts. */
+  quickCompose: (() => void) | null = null;
+  quickComposeStatus: QuickComposeStatus | undefined;
+  /** Any web page can fire `bulwark://new` in a loop, and each would take the focus. */
+  private readonly newMessageLimit = new LinkRateLimit();
 
   constructor(readonly ctx: FeatureContext) {
     super();
@@ -57,7 +63,7 @@ export class OsHub extends EventEmitter<{
   }
 
   status(): OsStatus {
-    return { settings: this.settings(), pausedUntil: this.pausedUntil(), shortcutActive: this.shortcutActive };
+    return { settings: this.settings(), pausedUntil: this.pausedUntil(), shortcutActive: this.shortcutActive, quickCompose: this.quickComposeStatus };
   }
 
   update(patch: unknown): OsStatus {
@@ -196,6 +202,11 @@ export class OsHub extends EventEmitter<{
 
   /** `show` brings the main window up. Without it, there still has to be a page to do the work. */
   dispatch(command: OsCommand, options: { show: boolean } = { show: true }): void {
+    // A new message from outside the app is its own small window.
+    if (command.type === 'new-message' && this.quickCompose) {
+      if (this.newMessageLimit.allow(Date.now())) this.quickCompose();
+      return;
+    }
     this.pending.push(command);
     this.flush();
     const { windows } = this.ctx;

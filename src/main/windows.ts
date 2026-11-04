@@ -44,6 +44,8 @@ const DEFAULT_SIZE: Record<WindowType, { width: number; height: number }> = {
   settings: { width: 1040, height: 760 },
 };
 
+const QUICK_COMPOSER_SIZE = { width: 680, height: 560 };
+
 const MIN_SIZE: Record<WindowType, { minWidth: number; minHeight: number }> = {
   main: { minWidth: 640, minHeight: 480 },
   message: { minWidth: 420, minHeight: 360 },
@@ -100,6 +102,8 @@ export interface OpenOptions {
   /** Come up behind the window in use: one coming back from last time. */
   inactive?: boolean;
   maximized?: boolean;
+  /** Remembers its size apart from others of its type, and opens on the monitor the pointer is on. */
+  boundsKey?: 'quickComposer';
 }
 
 export interface ManagedWindow {
@@ -107,6 +111,7 @@ export interface ManagedWindow {
   type: WindowType;
   key: string | null;
   url: string;
+  boundsKey?: 'quickComposer';
   /** What the OS made of the place it was given. Until it changes, nothing is stored. */
   initialBounds?: Electron.Rectangle;
   /** The page has something to save before it closes (lib/desktop/types.ts `lifecycle`). */
@@ -166,6 +171,8 @@ export class WindowManager extends EventEmitter<{
   hiddenToBackground: [ManagedWindow];
   /** A main window is signed in, with a session to lend. */
   sessionReady: [];
+  /** Nobody is signed in any more: a pop-out would find no session. */
+  sessionEnded: [];
   /** A window went to another document: what its old page said no longer holds. */
   navigated: [BrowserWindow];
 }> {
@@ -270,7 +277,12 @@ export class WindowManager extends EventEmitter<{
   }
 
   /** Remembered, cascaded, on the current monitor. */
-  placeFor(type: WindowType, size?: { width: number; height: number }): Rect {
+  placeFor(type: WindowType, size?: { width: number; height: number }, boundsKey?: 'quickComposer'): Rect {
+    if (boundsKey === 'quickComposer') {
+      // It opens from any app, so where the user is, not where this app last was.
+      const current = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+      return placeWindow({ size: size ?? QUICK_COMPOSER_SIZE, stored: this.options.state.data.windowBounds.quickComposer, displays: [current], current });
+    }
     // Not a main window hidden behind its pop-outs. One still painting does count: a second window opened right after it must not land on top.
     const others = [...this.windows.values()].filter((w) => !w.window.isDestroyed() && (w.type !== 'main' || w.window.isVisible()));
     const sameType = others.filter((w) => w.type === type).at(-1)?.window.getNormalBounds();
@@ -301,11 +313,12 @@ export class WindowManager extends EventEmitter<{
       const warm = this.activateSpare(options, key);
       if (warm) return warm;
     }
-    const place = options.place ?? this.placeFor(options.type, options.size);
+    const place = options.place ?? this.placeFor(options.type, options.size, options.boundsKey);
     const window = new BrowserWindow({ ...this.windowOptions(options.type), ...place });
     // The constructor is further off than setBounds on a scaled display.
     window.setBounds(place);
     const managed = this.adopt(window, options.type, key, options.url, false, options.inactive);
+    managed.boundsKey = options.boundsKey;
     managed.initialBounds = window.getNormalBounds();
     if (options.maximized || (options.type === 'main' && this.options.state.data.windowBounds.main?.maximized)) window.maximize();
     void window.loadURL(options.url).catch(() => {
@@ -523,6 +536,11 @@ export class WindowManager extends EventEmitter<{
     this.options.state.save();
   }
 
+  /** Windows are going. Choosing Stay in a prompt ends that. */
+  isQuitting(): boolean {
+    return this.quitting;
+  }
+
   /** The next main window loads but isn't shown: a start at login, or a toast's button. */
   startMainHidden(): void {
     this.mainStartsHidden = true;
@@ -593,7 +611,8 @@ export class WindowManager extends EventEmitter<{
   }
 
   private rememberBounds(managed: ManagedWindow): void {
-    const { window, type } = managed;
+    const { window } = managed;
+    const type = managed.boundsKey ?? managed.type;
     if (window.isDestroyed() || window.isFullScreen() || window.isMinimized()) return;
     const bounds = window.getNormalBounds();
     // On a scaled display a window comes out a few pixels off what was asked for.
@@ -702,11 +721,12 @@ export class WindowManager extends EventEmitter<{
     this.spare = null;
     if (spare.idle) clearTimeout(spare.idle);
     const { window } = spare;
-    const place = options.place ?? this.placeFor(options.type, options.size);
+    const place = options.place ?? this.placeFor(options.type, options.size, options.boundsKey);
     const { minWidth, minHeight } = MIN_SIZE[options.type];
     window.setMinimumSize(minWidth, minHeight);
     window.setBounds(place);
     const managed = this.adopt(window, options.type, key, options.url, true);
+    managed.boundsKey = options.boundsKey;
     managed.initialBounds = window.getNormalBounds();
     let taken = false;
     // The page says other things first (its theme, its menu state).

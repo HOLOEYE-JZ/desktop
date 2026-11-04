@@ -27,6 +27,7 @@ import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
 import { privacy } from './features/privacy';
+import { clientAuth } from './features/client-certificates';
 import { createChannels, registerBridge } from './ipc';
 import { durableWrite, holdsAppLockRecords, KEY_CHECK_FOLDER, KEY_CHECK_SWITCH, KEY_INIT_SWITCH, keyInitArgs, keyOnDisk, keyOpens, KEYS_FOLDER, savedKey, saveKey, settleKeyBeforeChromium, waitForKeyOnDisk } from './key-on-disk';
 import { addWipeStep, notePartition } from './features/local-wipe';
@@ -137,10 +138,11 @@ if (gotLock) {
 const stateFile = new StateFile(path.join(app.getPath('userData'), 'shell-state.json'));
 policies.attachState(stateFile);
 if (gotLock) privacy.start(stateFile);
+if (gotLock) clientAuth.start(stateFile);
 
 /** A production build has refused the switches that move the profile by now. */
 function runKeyInit(run: string): void {
-  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
+  spawnSync(process.execPath, keyInitArgs(process.argv, app.isPackaged, path.join(HERE, 'main.mjs'), run, __BULWARK_TEST_BUILD__ ? '--bulwark-user-data=' : undefined), { stdio: 'ignore', windowsHide: true, timeout: 20_000 });
 }
 
 // Holding the lock, so no other run of the app is making a key for this profile.

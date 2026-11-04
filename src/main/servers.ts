@@ -121,7 +121,7 @@ export class ServerRegistry {
   }
 
   /** Is this one of ours: stored, or prepared in this run? */
-  private known(origin: string): boolean {
+  isKnown(origin: string): boolean {
     return this.isApproved(origin) || this.pendingCors.has(origin) || this.options.state.data.corsOrigins.includes(origin);
   }
 
@@ -133,7 +133,7 @@ export class ServerRegistry {
    */
   async noteSession(serverUrl: unknown, urls: SessionUrls | undefined, parent: BrowserWindow | null): Promise<void> {
     const origin = serverOrigin(serverUrl);
-    if (!origin || !this.known(origin)) return;
+    if (!origin || !this.isKnown(origin)) return;
     if (this.options.isAllowedByPolicy && !this.options.isAllowedByPolicy(origin)) return;
     const { state, cors } = this.options;
 

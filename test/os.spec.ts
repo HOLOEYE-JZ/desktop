@@ -271,7 +271,6 @@ test.describe('OS integration', () => {
     await clickTray(app, 'Alice: Lunch?');
     await clickTray(app, 'Next: Standup, 09:30');
     await expect.poll(() => commands(page)).toEqual([
-      { type: 'new-message' },
       { type: 'open-message', emailId: 'e1', accountId: 'a1', context: 'ctx' },
       { type: 'navigate', target: 'calendar' },
     ]);
@@ -558,7 +557,7 @@ test.describe('OS integration', () => {
     delete env.ELECTRON_RUN_AS_NODE;
     const hold = path.join(ROOT, 'test', 'support', 'hold-boot.cjs');
     const app = await _electron.launch({
-      args: ['-r', hold, MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone'],
+      args: ['-r', hold, MAIN, `--bulwark-user-data=${profile}`, '--lang=en-US', '--standalone', ...(process.env.BULWARK_TEST_WEBMAIL ? [`--bulwark-server-dir=${process.env.BULWARK_TEST_WEBMAIL}`] : [])],
       cwd: ROOT,
       env: { ...env, BULWARK_TEST_BOOT_GATE: gate },
     });
