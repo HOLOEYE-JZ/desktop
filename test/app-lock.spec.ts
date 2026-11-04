@@ -424,20 +424,45 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('a local wipe forgets which mail servers this profile used', async () => {
-    const profile = tempProfile('wipe-servers');
+  test('a page\'s wipe through main: the steps run, the answer comes back, then the restart. A frame can\'t ask', async () => {
+    const profile = tempProfile('page-wipe');
     writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({
       corsOrigins: ['https://mail.example.test'],
       approvedServers: [{ origin: 'https://lan.example.test', approvedAt: 1 }],
+      signInPorts: { 'https://mail.example.test': 1234 },
     }));
+    process.env.BULWARK_TEST_OS_VERIFY = 'yes';
     const launched = await launchStandalone(profile);
+    const { app, page } = launched;
     try {
-      await launched.app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe());
+      await page.goto(new URL('/api/health', page.url()).href);
+      await call(page, 'enroll', 1);
+      await call(page, 'osEnroll', 1, 7);
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const answers = await page.evaluate(async () => {
+        const held = window as unknown as { __controls: { localWipe(request: unknown): Promise<{ failed: string[] }> }; bulwarkDesktop: { appLock: Record<string, unknown> } };
+        const bridge = held.bulwarkDesktop.appLock;
+        const one = await held.__controls.localWipe({ reason: 'remote', account: 'a@example.test' });
+        const stillThere = (localStorage.setItem('kept', 'yes'), localStorage.getItem('kept'));
+        return { onBridge: 'localWipe' in bridge, one, stillThere };
+      });
+      expect(answers).toEqual({ onBridge: false, one: { failed: [] }, stillThere: 'yes' });
+      // One account of several leaves the lock and the servers.
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      const all = await page.evaluate(async () => (window as unknown as { __controls: { localWipe(request: unknown): Promise<{ failed: string[] }> } }).__controls.localWipe({ reason: 'settings', account: null }));
+      expect(all).toEqual({ failed: [] });
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(false);
       const saved = readFileSync(path.join(profile, 'shell-state.json'), 'utf8');
-      expect(saved).not.toContain('mail.example.test');
-      expect(saved).not.toContain('lan.example.test');
+      for (const name of ['mail.example.test', 'lan.example.test', 'signInPorts']) expect(saved).not.toContain(name);
+      // The page is still there to tell the instance, and then asks to go.
+      expect(await page.evaluate(() => localStorage.getItem('kept'))).toBe('yes');
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      await page.evaluate(() => (window as unknown as { __controls: { finishLocalWipe(options: unknown): Promise<void> } }).__controls.finishLocalWipe({ keepLocalStorage: false })).catch(() => undefined);
+      await gone;
     } finally {
-      await launched.app.close().catch(() => undefined);
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      await app.close().catch(() => undefined);
       removeProfile(profile);
     }
   });

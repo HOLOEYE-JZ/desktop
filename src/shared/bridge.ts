@@ -124,6 +124,12 @@ export interface AppLockStatus {
   wrap: boolean;
 }
 
+/** What a page's wipe asks of main. `account` null: everything on this device. */
+export interface LocalWipeRequest {
+  reason: 'remote' | 'settings';
+  account: string | null;
+}
+
 /** A PIN guess through main. Blocked: too many wrong ones. No secret: this profile lost it, or the OS won't open it. */
 export type PinStepAnswer = { ok: true; bytes: Uint8Array } | { ok: false; blockedUntil?: number };
 
@@ -585,6 +591,8 @@ export const CHANNEL = {
   appLockPinStep: 'bulwark:appLock.pinStep',
   appLockReplaceRenderer: 'bulwark:appLock.replaceRenderer',
   httpCacheClear: 'bulwark:httpCache.clear',
+  localWipeRun: 'bulwark:localWipe.run',
+  localWipeFinish: 'bulwark:localWipe.finish',
   appLockUnwrap: 'bulwark:appLock.unwrap',
   appLockRequest: 'bulwark:appLock.request',
   updatesState: 'bulwark:updates.state',

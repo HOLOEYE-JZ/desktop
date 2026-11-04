@@ -28,7 +28,7 @@ import { native } from '../native';
 import { randomSecret, SecretStore } from '../secrets';
 import { strings } from '../strings';
 import { replacingRenderer } from '../windows';
-import { addWipeStep, runLocalWipe } from './local-wipe';
+import { addWipeStep, finishWipeForPage, runLocalWipe, wipeForPage } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
 
 const OS_KEY_NAME = 'app-lock-key';
@@ -238,6 +238,15 @@ function setup(ctx: FeatureContext): void {
     // Ended from outside rather than crashed: a crash would write its memory to a dump.
     process.kill(webContents.getOSProcessId());
   });
+
+  // The webmail's remote wipe and its wipe from settings run in the page, and end here. The page has
+  // asked its own questions by now: a remote wipe has nobody to ask, and settings have asked already.
+  ctx.handle(CHANNEL.localWipeRun, async (event, _window, request) => {
+    const { reason, account } = (request ?? {}) as { reason?: unknown; account?: unknown };
+    if ((reason !== 'remote' && reason !== 'settings') || (account !== null && typeof account !== 'string')) return { failed: ['bad request'] };
+    return { failed: await wipeForPage({ reason, account }, event.sender.session, app.getPath('userData'), ctx.state) };
+  });
+  ctx.handle(CHANNEL.localWipeFinish, (event, _window, options) => finishWipeForPage(event.sender.session, (options as { keepLocalStorage?: unknown } | undefined)?.keepLocalStorage === true));
 
   // Only ever deletes. What the app's pages already fetched comes back from the local server.
   ctx.handle(CHANNEL.httpCacheClear, (event) => event.sender.session.clearCache());

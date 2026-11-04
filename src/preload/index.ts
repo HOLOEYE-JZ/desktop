@@ -21,6 +21,7 @@ import {
   type EditSession,
   BRIDGE_VERSION,
   type AppLockStatus,
+  type LocalWipeRequest,
   type PinStepAnswer,
   type OsUnlockAnswer,
   CHANNEL,
@@ -201,6 +202,9 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
           pinStep: (data: Uint8Array): Promise<PinStepAnswer> => ipcRenderer.invoke(CHANNEL.appLockPinStep, data),
           replaceRenderer: () => ipcRenderer.send(CHANNEL.appLockReplaceRenderer),
+          // Here too: a frame could delete what the page can, but not everything else as well.
+          localWipe: (request: LocalWipeRequest): Promise<{ failed: string[] }> => ipcRenderer.invoke(CHANNEL.localWipeRun, request),
+          finishLocalWipe: (options: { keepLocalStorage: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.localWipeFinish, options),
         };
       },
       enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof, clicked()),

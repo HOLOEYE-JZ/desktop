@@ -44,11 +44,21 @@ function files(dir: string): string[] {
 function holding(profile: string, text: string): string[] {
   const needles = [Buffer.from(text, 'latin1'), Buffer.from(text, 'utf16le')];
   return files(profile)
-    .filter((file) => statSync(file).size < 300 * 1024 * 1024 && needles.some((needle) => readFileSync(file).includes(needle)))
+    .filter((file) => {
+      // A file the running app holds locked: a lock file, the cookie database. Read the rest.
+      try {
+        return statSync(file).size < 300 * 1024 * 1024 && needles.some((needle) => readFileSync(file).includes(needle));
+      } catch {
+        return false;
+      }
+    })
     .map((file) => path.relative(profile, file));
 }
 
-const records = (page: Page) => page.evaluate(() => new Promise<{ layers: string[]; rekey?: boolean }[]>((resolve, reject) => {
+const records = (page: Page) => page.evaluate(async () => {
+  // Opening one that isn't there would make it, empty, and break the app's own first open.
+  if (!(await indexedDB.databases()).some((database) => database.name === 'bulwark-store')) return [];
+  return new Promise<{ layers: string[]; rekey?: boolean }[]>((resolve, reject) => {
   const open = indexedDB.open('bulwark-store');
   open.onerror = () => reject(open.error);
   open.onsuccess = () => {
@@ -58,7 +68,8 @@ const records = (page: Page) => page.evaluate(() => new Promise<{ layers: string
       resolve(request.result);
     };
   };
-}));
+  });
+});
 
 async function storeHas(page: Page, subject: string): Promise<boolean> {
   return page.evaluate(async (mark) => {
@@ -117,14 +128,16 @@ test.describe('the bytes on disk', () => {
     await started.page.getByTestId('wipe-device-button').click();
     await started.page.getByTestId('wipe-device-details').waitFor({ state: 'visible' });
     await started.page.waitForTimeout(2500);
+    // The wipe ends in a restart. This test's app stays down for the look at the disk.
+    await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+    const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
     await started.page.getByRole('button', { name: 'Remove everything', exact: true }).click();
     // Electron never answers getNotifications(): this used to wait for good.
-    await started.page.locator('#username').waitFor({ state: 'visible', timeout: 60_000 });
-    const left = await started.page.evaluate(async () => ({
-      databases: (await indexedDB.databases()).map((database) => database.name),
-      pending: localStorage.getItem('bulwark-wipe-pending'),
-    }));
-    expect(left.databases).not.toContain('bulwark-store');
-    expect(left.pending).toBeNull();
+    await gone;
+    const partition = path.join(profile, 'Partitions', 'bulwark');
+    const left = files(partition).filter((file) => /IndexedDB.*\.(log|ldb)$|File System[\/]000[\/]t[\/]00[\/]/.test(file) && statSync(file).size > 0);
+    expect(left.map((file) => path.relative(profile, file))).toEqual([]);
+    expect(holding(profile, subject)).toEqual([]);
+    expect(readFileSync(path.join(profile, 'shell-state.json'), 'utf8')).not.toContain(new URL(SERVER).host);
   });
 });
