@@ -51,6 +51,8 @@ export interface NativeSyncRoot {
   id: string;
   path: string;
   displayName: string;
+  /** `<file>,<index>`, as it was registered. Empty if Windows has none. */
+  icon: string;
 }
 
 /** What Windows' FETCH_DATA and CANCEL_FETCH_DATA callbacks bring. Keys are 64-bit, so text. */

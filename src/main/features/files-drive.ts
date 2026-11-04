@@ -13,6 +13,7 @@
 
 import { homedir, release } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, type WebContents } from 'electron';
 import { CHANNEL, type FilesDriveState, type FilesFetchRequest } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
@@ -25,11 +26,15 @@ import { native } from '../native';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { forgetRootState } from './files-folders';
 import { addWipeStep } from './local-wipe';
+import { appIconResource, taskIconsDir } from './os-tasks';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
 
 // Set by build.mjs.
 declare const __BULWARK_TEST_BUILD__: boolean;
+
+/** Where a build from source has the task icons and the app's (build.mjs): main.mjs is in dist/. */
+const BUILD_ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-icons');
 
 /** Windows 10 1809: where StorageProviderSyncRootManager and the placeholder calls are complete. */
 const FIRST_BUILD = 17763;
@@ -68,7 +73,9 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
     provider: testArgument('provider') ?? DRIVE_PROVIDER,
     base: testArgument('drive-dir') ?? path.join(homedir(), DRIVE_FOLDER),
     profile: app.getPath('userData'),
-    icon: `${process.execPath},0`,
+    // Explorer shows it beside the drive. A root registered with another (the exe's, before)
+    // gets it at the next start.
+    icon: appIconResource(taskIconsDir(app.isPackaged, process.resourcesPath, BUILD_ICONS)),
     version: app.getVersion(),
     store: {
       read: () => (state ? state.data.filesDrive ?? {} : detached),

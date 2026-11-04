@@ -161,9 +161,10 @@ test.describe('the package guard in the real flow', () => {
       const resources = path.join(unpacked, 'resources');
       expect(findResourceProblems(resources)).toEqual([]);
       expect(asarFiles(path.join(resources, 'app.asar'))).toContain('dist/main.cjs');
-      // The jump list's icons, as real files where the app looks for them.
+      // The jump list's icons and the Files drive's, as real files where the app looks for them.
       expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual([]);
-      expect(readdirSync(path.join(resources, 'os-icons')).length).toBe(10);
+      expect(readdirSync(path.join(resources, 'os-icons')).sort()).toEqual([...readdirSync(path.join(ROOT, 'assets', 'os')).filter((name) => name.startsWith('task-')), 'bulwark.ico'].sort());
+      expect(readFileSync(path.join(resources, 'os-icons', 'bulwark.ico')).equals(readFileSync(path.join(ROOT, 'build', 'icon.ico')))).toBe(true);
 
       expect(asarFiles(path.join(resources, 'server.asar'))).toContain('server.js');
       expect(existsSync(path.join(resources, 'server.asar.unpacked', 'public', 'a.txt'))).toBe(true);

@@ -378,6 +378,8 @@ pub struct FilesSyncRoot {
     pub id: String,
     pub path: String,
     pub display_name: String,
+    /// `<file>,<index>`, as it was registered.
+    pub icon: String,
 }
 
 #[napi(object)]

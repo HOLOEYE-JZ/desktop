@@ -88,6 +88,9 @@ win:
       to: os-icons
       filter:
         - task-*.ico
+    # The Files drive's icon in Explorer: the exe's own, as a file (scripts/task-icons.mjs).
+    - from: build/icon.ico
+      to: os-icons/bulwark.ico
   target:
     - target: nsis
       arch: [x64, arm64]

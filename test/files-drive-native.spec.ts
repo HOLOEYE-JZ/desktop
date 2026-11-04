@@ -66,6 +66,22 @@ function registryKeys(): string[] {
   }
 }
 
+/** A registry value's data, as `reg query` prints it; null if there's none. */
+function registryValue(key: string, name: string | null): string | null {
+  try {
+    const out = execFileSync('reg', ['query', key, ...(name ? ['/v', name] : ['/ve'])], { encoding: 'latin1' });
+    return /REG_(?:EXPAND_)?SZ\s+(.*)/.exec(out)?.[1]?.trim() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The icon Explorer's navigation pane draws for a sync root: its namespace entry's. */
+function navigationPaneIcon(syncRootId: string): string | null {
+  const clsid = registryValue(`${SYNC_ROOT_MANAGER}\\${syncRootId}`, 'NamespaceCLSID');
+  return clsid ? registryValue(`HKCU\\Software\\Classes\\CLSID\\${clsid}\\DefaultIcon`, null) : null;
+}
+
 const ours = (keys: string[]) => keys.filter((key) => key.includes(`\\${PROVIDER}!`));
 
 async function ourRoots(native: NativeFilesModule): Promise<string[]> {
@@ -117,7 +133,7 @@ test.describe('the helper', () => {
   test('registers with an id of provider, user and account, and Windows lists it with its folder', async () => {
     expect(id).toMatch(new RegExp(`^${PROVIDER}!S-1-5-[0-9-]+!helper$`));
     const listed = (await native.filesDriveRoots()).find((entry) => entry.id === id);
-    expect(listed).toEqual({ id, path: root, displayName: PROVIDER });
+    expect(listed).toEqual({ id, path: root, displayName: PROVIDER, icon: ICON });
     expect(ours(registryKeys())).toHaveLength(1);
   });
 
@@ -241,7 +257,7 @@ interface FakePage {
   answering: boolean;
 }
 
-function controllerWith(native: NativeFilesModule, page: FakePage, store: { value: StoredDrive }, options: { forcedOff?: () => boolean; letter?: () => string | null; letters?: boolean; timeoutMs?: number; watchPins?: boolean } = {}) {
+function controllerWith(native: NativeFilesModule, page: FakePage, store: { value: StoredDrive }, options: { forcedOff?: () => boolean; letter?: () => string | null; letters?: boolean; timeoutMs?: number; watchPins?: boolean; icon?: string } = {}) {
   const registry = new Map<string, RegisteredRoot>();
   const forgotten: string[] = [];
   let drive: DriveController;
@@ -251,7 +267,7 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
     provider: PROVIDER,
     base: path.join(BASE, 'drive'),
     profile: BASE,
-    icon: ICON,
+    icon: options.icon ?? ICON,
     version: '0.1.0',
     store: { read: () => store.value, write: (next) => (store.value = next) },
     policy: () => ({ forcedOff: options.forcedOff?.() ?? false, letter: options.letter?.() ?? null }),
@@ -514,6 +530,32 @@ test.describe('the drive controller', () => {
       expect((await native.filesDriveRoots()).filter((entry) => entry.id.startsWith(`${PROVIDER}!`)).map((entry) => entry.displayName)).toEqual(['Bulwark Files']);
     } finally {
       await drive.wipe();
+    }
+  });
+
+  test("a start gives a root registered with another icon this one, in Explorer's pane too, without turning it off", async () => {
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    // As an older version left it: the exe's icon.
+    const old = `${process.execPath},0`;
+    const before = controllerWith(native, page, store, { icon: old }).drive;
+    const on = await before.enable('acct-1', 'alice@example.org', yes);
+    expect(on.ok).toBe(true);
+    const folder = on.ok ? on.value.path : '';
+    before.shutdown();
+    const [id] = await ourRoots(native);
+    expect(navigationPaneIcon(id)).toBe(old);
+
+    const after = controllerWith(native, page, store).drive;
+    try {
+      await after.startUp();
+      expect(await ourRoots(native)).toEqual([id]);
+      expect((await native.filesDriveRoots()).find((entry) => entry.id === id)).toEqual({ id, path: folder, displayName: 'Bulwark Files', icon: ICON });
+      expect(navigationPaneIcon(id)).toBe(ICON);
+      expect(existsSync(folder)).toBe(true);
+      expect(store.value.accounts?.['acct-1']).toMatchObject({ label: 'alice@example.org' });
+    } finally {
+      await after.wipe();
     }
   });
 

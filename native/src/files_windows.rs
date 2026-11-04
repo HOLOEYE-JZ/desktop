@@ -295,6 +295,7 @@ pub fn roots() -> Result<Vec<FilesSyncRoot>, String> {
         found.push(FilesSyncRoot {
             path: registry_text(manager.0, &format!(r"{id}\UserSyncRoots"), &sid).unwrap_or_default(),
             display_name: registry_text(manager.0, &id, "DisplayNameResource").unwrap_or_default(),
+            icon: registry_text(manager.0, &id, "IconResource").unwrap_or_default(),
             id,
         });
     }

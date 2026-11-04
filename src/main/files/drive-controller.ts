@@ -427,15 +427,49 @@ export class DriveController {
   /**
    * At a start, before any sign-in: sync roots of ours nobody wants any more go (a crash
    * between a sign-out and its cleanup, an account removed elsewhere), and so does all of it
-   * when the policy says off. Wanted ones stay registered, unconnected, until the page asks.
+   * when the policy says off. Wanted ones stay registered, unconnected, until the page asks,
+   * and take this version's icon if they have another.
    */
   startUp(): Promise<void> {
     return this.serial(async () => {
       if (!this.available) return;
       await this.settleWithPolicy();
+      await this.refreshIcons();
       await this.applyLetter();
       this.emit();
     });
+  }
+
+  /**
+   * A root registered with another icon (the exe's, before the app had its own .ico, or an
+   * install somewhere else) is registered again with this one. Registering updates it in
+   * place, so the user's drive switches without being turned off and on.
+   */
+  private async refreshIcons(): Promise<void> {
+    if (this.deps.policy().forcedOff) return;
+    const labels = new Map<string, string>();
+    for (const [account, entry] of Object.entries(this.deps.store.read().accounts ?? {})) {
+      if (!entry.signedOut) labels.set(accountKey(this.deps.profile, account), entry.label);
+    }
+    for (const root of await this.ourRoots()) {
+      const key = root.id.split('!').at(-1) ?? '';
+      const label = labels.get(key);
+      // An older helper lists no icon: nothing to compare, so nothing changes.
+      if (label === undefined || !root.path || typeof root.icon !== 'string') continue;
+      if (root.icon.toLowerCase() === this.deps.icon.toLowerCase()) continue;
+      try {
+        await this.native().filesDriveRegister({
+          provider: this.deps.provider,
+          account: key,
+          path: root.path,
+          displayName: root.displayName || displayNameFor(label, labels.size),
+          icon: this.deps.icon,
+          version: this.deps.version,
+        });
+      } catch (error) {
+        this.warn(`Updating the drive's icon failed: ${(error as Error).message}`);
+      }
+    }
   }
 
   /** `FilesDriveEnabled` or `FilesDriveLetter` changed. */

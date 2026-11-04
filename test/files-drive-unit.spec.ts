@@ -1,8 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { FilesFetchRequest } from '../src/shared/bridge';
+import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
 import { ALIGN, FetchRelay, PIECE } from '../src/main/files/drive-fetch';
 import { settleLetter, type LetterSystem } from '../src/main/files/drive-letter';
 import {
+  accountKey,
   displayNameFor,
   filesErrorOf,
   folderNameFor,
@@ -13,7 +18,7 @@ import {
   resolveUnder,
   wantedLetter,
 } from '../src/main/files/drive-places';
-import type { NativeFetchEvent } from '../src/main/native-loader';
+import type { NativeFetchEvent, NativeFilesModule, NativeSyncRoot } from '../src/main/native-loader';
 
 /**
  * The Files drive's rules that need no Windows: the fetch relay against a fake helper, names,
@@ -273,5 +278,86 @@ test.describe('the drive letter', () => {
     const system = fakeLetters({ Y: 'D:\\other' });
     expect(await settleLetter(system, 'C:\\B', 'Y', 'C:\\B\\a', () => {})).toBeNull();
     expect(system.map.get('Y')).toBe('D:\\other');
+  });
+});
+
+test.describe('the icon of a drive from before', () => {
+  const PROVIDER = 'Bulwark Test Unit';
+  const PROFILE = 'C:\profile';
+  const NEW = 'C:\Program Files\Bulwark\resources\os-icons\bulwark.ico,0';
+  type Registration = Parameters<NativeFilesModule['filesDriveRegister']>[0];
+
+  function setUp(roots: NativeSyncRoot[], accounts: StoredDrive['accounts'], forcedOff = false) {
+    const base = mkdtempSync(path.join(tmpdir(), 'bw-drive-icon-'));
+    const registered: Registration[] = [];
+    const unregistered: string[] = [];
+    const native = {
+      filesDriveRoots: async () => roots.map((root) => ({ ...root })),
+      filesDriveRegister: async (options: Registration) => {
+        registered.push(options);
+        return `${options.provider}!S-1-5-21-1!${options.account}`;
+      },
+      filesDriveUnregister: async (id: string) => {
+        unregistered.push(id);
+      },
+    } as unknown as NativeFilesModule;
+    const drive = new DriveController({
+      native,
+      supported: true,
+      provider: PROVIDER,
+      base,
+      profile: PROFILE,
+      icon: NEW,
+      version: '1.2.3',
+      store: { read: () => ({ accounts }), write: () => {} },
+      policy: () => ({ forcedOff, letter: null }),
+      page: { fetch: () => true, fetchCancelled: () => {}, stateChanged: () => {} },
+      registry: { add: () => {}, remove: () => {} },
+      letters: null,
+      warn: () => {},
+      watchPins: false,
+    });
+    return { drive, registered, unregistered, remove: () => rmSync(base, { recursive: true, force: true }) };
+  }
+
+  const root = (account: string, icon: string | undefined, displayName = 'Bulwark Files'): NativeSyncRoot =>
+    ({ id: `${PROVIDER}!S-1-5-21-1!${accountKey(PROFILE, account)}`, path: `C:\Users\a\Bulwark Files\${account}`, displayName, ...(icon === undefined ? {} : { icon }) }) as NativeSyncRoot;
+  const wish = (label: string, signedOut = false) => ({ label, folder: label, rootId: `r-${label}`, createdAt: 1, ...(signedOut ? { signedOut } : {}) });
+
+  test("a start registers a wanted root with another icon again, in place, with this version's", async () => {
+    const roots = [
+      root('acct-old', 'C:\dev\node_modules\electron\dist\electron.exe,0', 'Bulwark Files - a@example.org'),
+      root('acct-same', NEW.toUpperCase(), 'Bulwark Files - b@example.org'),
+      root('acct-gone', 'C:\dev\electron.exe,0'),
+      root('acct-out', 'C:\dev\electron.exe,0'),
+      // An older helper lists no icon: left as it is.
+      root('acct-unknown', undefined),
+    ];
+    const { drive, registered, unregistered, remove } = setUp(roots, {
+      'acct-old': wish('a@example.org'),
+      'acct-same': wish('b@example.org'),
+      'acct-out': wish('c@example.org', true),
+      'acct-unknown': wish('d@example.org'),
+    });
+    try {
+      await drive.startUp();
+      expect(registered).toEqual([
+        { provider: PROVIDER, account: accountKey(PROFILE, 'acct-old'), path: roots[0].path, displayName: 'Bulwark Files - a@example.org', icon: NEW, version: '1.2.3' },
+      ]);
+      // Not wanted any more: they go, and get no new icon first.
+      expect(unregistered.sort()).toEqual([roots[2].id, roots[3].id].sort());
+    } finally {
+      remove();
+    }
+  });
+
+  test('nothing is registered again while the policy keeps the drive off', async () => {
+    const { drive, registered, remove } = setUp([root('acct-old', 'C:\dev\electron.exe,0')], { 'acct-old': wish('a@example.org') }, true);
+    try {
+      await drive.startUp();
+      expect(registered).toEqual([]);
+    } finally {
+      remove();
+    }
   });
 });
