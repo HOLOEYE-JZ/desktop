@@ -450,6 +450,8 @@ export const CHANNEL = {
   keystoreRevoke: 'bulwark:keystore.revoke',
   keystoreClearGrants: 'bulwark:keystore.clearGrants',
   certificatesClearChoices: 'bulwark:certificates.clearChoices',
+  certificatesSetAccount: 'bulwark:certificates.setAccount',
+  certificatesConnectionsReset: 'bulwark:certificates.connectionsReset',
   localImportScan: 'bulwark:localImport.scan',
   localImportGrant: 'bulwark:localImport.grant',
   localImportResume: 'bulwark:localImport.resume',

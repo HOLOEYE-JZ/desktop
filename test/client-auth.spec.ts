@@ -5,6 +5,8 @@ import {
   certificateRow,
   classifyRequest,
   cleanName,
+  hostOnSignInList,
+  cookieToSetBack,
   displayHost,
   hostPortOf,
   MAX_WAITING_HOSTS,
@@ -20,7 +22,7 @@ import {
 } from '../src/main/client-auth';
 import { parseCertificateRule, type CertificateRule } from '../src/shared/policy-schema';
 import { deniedSwitches } from '../src/main/switch-guard';
-import { LABEL_KEY } from '../src/main/label-keys';
+import { LABEL_KEY, labelKeepsPlaceholders } from '../src/main/label-keys';
 
 /** Who gets a certificate or a Windows sign-in, with the dialog as a fake. The real thing: client-certs.spec.ts. */
 
@@ -62,6 +64,25 @@ test.describe('who is asking', () => {
     expect(classifyRequest({ url: `${SERVER}/jmap`, resourceType: 'xhr', webContentsId: 1, initiatorOrigin: OWN, frame: top }, OWN, listed)).toBe('listed-server');
     expect(classifyRequest({ url: `${SERVER}/x.png`, resourceType: 'image', webContentsId: 1, initiatorOrigin: OWN, frame: mailFrame }, OWN, listed)).toBe('frame');
     expect(classifyRequest({ url: `${SERVER}/x`, resourceType: 'xhr', webContentsId: 1, initiatorOrigin: 'https://idp.example', frame: { parent: null, origin: 'https://idp.example' } }, OWN, listed)).toBe('other-page');
+  });
+
+  test('a print pop-up is a frame: its images look like the main window\'s top frame asking', () => {
+    const listed = () => true;
+    for (const resourceType of ['image', 'stylesheet', 'font', 'media', 'script', 'object', 'ping', 'cspReport']) {
+      expect(classifyRequest({ url: `${SERVER}/x`, resourceType, webContentsId: 1, initiatorOrigin: OWN, frame: top }, OWN, listed), resourceType).toBe('frame');
+    }
+    for (const resourceType of ['xhr', 'webSocket']) {
+      expect(classifyRequest({ url: `${SERVER}/x`, resourceType, webContentsId: 1, initiatorOrigin: OWN, frame: top }, OWN, listed), resourceType).toBe('listed-server');
+    }
+    expect(classifyRequest({ url: `${OWN}/x.png`, resourceType: 'image', webContentsId: 1, initiatorOrigin: OWN, frame: top }, OWN, never), 'the app\'s own server is one party').toBe('first-party');
+    expect(classifyRequest({ url: 'https://idp.example/x.png', resourceType: 'image', webContentsId: 1, initiatorOrigin: 'https://idp.example', frame: { parent: null, origin: 'https://idp.example' } }, OWN, never), 'a page\'s own image').toBe('first-party');
+  });
+
+  test('so is what a window of its own, outside the manager, asks for', () => {
+    const facts = { url: `${SERVER}/next`, resourceType: 'mainFrame', webContentsId: 2, frame: top };
+    expect(classifyRequest(facts, OWN, () => true, () => true)).toBe('frame');
+    expect(classifyRequest(facts, OWN, () => true, () => false)).toBe('first-party');
+    expect(classifyRequest({ ...facts, url: `${OWN}/x.png` }, OWN, () => true, () => true)).toBe('first-party');
   });
 
   test('addresses read as the event spells them', () => {
@@ -116,21 +137,23 @@ function certificate(name: string, issuer = 'Test CA', extra: Partial<ChoosableC
   return { fingerprint: `sha256/${name}`, subjectName: name, issuerName: issuer, validExpiry: 1_900_000_000, subject: { commonName: name }, issuer: { commonName: issuer }, ...extra };
 }
 
-function harness(options: { rules?: string[]; answer?: (question: PickQuestion<ChoosableCertificate>) => PickAnswer<ChoosableCertificate> } = {}) {
+function harness(options: { rules?: string[]; userServers?: string[]; answer?: (question: PickQuestion<ChoosableCertificate>) => PickAnswer<ChoosableCertificate> } = {}) {
   const stored = new Map<string, string>();
   const asked: PickQuestion<ChoosableCertificate>[] = [];
   const rules: CertificateRule[] = (options.rules ?? []).map((rule) => parseCertificateRule(rule)!);
   const chooser = new CertificateChooser<ChoosableCertificate>({
     rules: () => rules,
-    choices: { get: (host) => stored.get(host), set: (host, value) => void stored.set(host, value), clear: () => stored.clear() },
+    choices: { get: (host) => stored.get(host), set: (host, value) => void stored.set(host, value), clear: () => stored.clear(), clearAccount: (account) => void stored.delete(account) },
     ask: async (question) => {
       asked.push(question);
       return options.answer ? options.answer(question) : { certificate: question.certificates[0], remember: false };
     },
+    isUserServer: (host) => options.userServers?.includes(host) ?? false,
   });
   return { chooser, stored, asked };
 }
 
+const NO_CHOICES = { get: () => undefined, set: () => {}, clear: () => {}, clearAccount: () => {} };
 const ALICE = certificate('Alice');
 const BOB = certificate('Bob', 'Other CA');
 
@@ -162,8 +185,9 @@ test.describe('what goes out', () => {
     let answer!: (value: PickAnswer<ChoosableCertificate>) => void;
     const chooser = new CertificateChooser<ChoosableCertificate>({
       rules: () => [],
-      choices: { get: () => undefined, set: () => {}, clear: () => {} },
+      choices: NO_CHOICES,
       ask: () => new Promise((resolve) => { answer = resolve; }),
+      isUserServer: never,
     });
     const decided = chooser.decide('a:443', 'first-party', [ALICE], null);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -184,8 +208,9 @@ test.describe('what goes out', () => {
   test('a dialog that fails is a no', async () => {
     const chooser = new CertificateChooser<ChoosableCertificate>({
       rules: () => [],
-      choices: { get: () => undefined, set: () => {}, clear: () => {} },
+      choices: NO_CHOICES,
       ask: () => Promise.reject(new Error('no window')),
+      isUserServer: never,
     });
     expect(await chooser.decide('a:443', 'first-party', [ALICE], null)).toEqual({ kind: 'none' });
   });
@@ -202,12 +227,67 @@ test.describe('what goes out', () => {
   test('past the limit a host waits on no dialog', async () => {
     const chooser = new CertificateChooser<ChoosableCertificate>({
       rules: () => [],
-      choices: { get: () => undefined, set: () => {}, clear: () => {} },
+      choices: NO_CHOICES,
       ask: () => new Promise(() => {}),
+      isUserServer: never,
     });
     for (let host = 0; host < MAX_WAITING_HOSTS; host += 1) void chooser.decide(`h${host}:443`, 'first-party', [ALICE], null);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(await chooser.decide('more:443', 'first-party', [ALICE], null)).toEqual({ kind: 'none' });
+  });
+});
+
+test.describe('a question still open at a sign-out', () => {
+  function held() {
+    const stored = new Map<string, string>();
+    const asks: { resolve: (answer: PickAnswer<ChoosableCertificate>) => void; signal: AbortSignal }[] = [];
+    const chooser = new CertificateChooser<ChoosableCertificate>({
+      rules: () => [],
+      choices: { get: (host) => stored.get(host), set: (host, value) => void stored.set(host, value), clear: () => stored.clear(), clearAccount: () => {} },
+      ask: (_question, _window, signal) => new Promise((resolve) => asks.push({ resolve, signal })),
+      isUserServer: never,
+    });
+    return { chooser, stored, asks };
+  }
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  for (const [name, clear] of [['the last', (chooser: CertificateChooser<ChoosableCertificate>) => void chooser.forget()], ['an account\'s own', (chooser: CertificateChooser<ChoosableCertificate>) => chooser.forgetAccount('a')]] as const) {
+    test(`${name}: it closes, and a pick that comes anyway sends and stores nothing, and leaves no answer`, async () => {
+      const { chooser, stored, asks } = held();
+      const decided = chooser.decide('a:443', 'first-party', [ALICE], null);
+      await tick();
+      expect(asks[0].signal.aborted).toBe(false);
+      clear(chooser);
+      expect(asks[0].signal.aborted).toBe(true);
+      asks[0].resolve({ certificate: ALICE, remember: true });
+      expect(await decided).toEqual({ kind: 'leave' });
+      expect(stored.size).toBe(0);
+    });
+  }
+
+  test('the next request asks afresh', async () => {
+    const { chooser, asks } = held();
+    void chooser.decide('a:443', 'first-party', [ALICE], null);
+    await tick();
+    chooser.forget();
+    const next = chooser.decide('a:443', 'first-party', [ALICE], null);
+    await tick();
+    expect(asks).toHaveLength(2);
+    expect(asks[1].signal.aborted).toBe(false);
+    asks[1].resolve({ certificate: ALICE, remember: false });
+    expect(await next).toEqual({ kind: 'send', certificate: ALICE });
+  });
+});
+
+test.describe('one account signing out', () => {
+  test('takes that account\'s choices and doesn\'t ask for the network to go', async () => {
+    const { chooser, stored } = harness();
+    await chooser.decide('a:443', 'first-party', [ALICE], null);
+    stored.set('acct', ALICE.fingerprint);
+    chooser.forgetAccount('acct');
+    expect(stored.has('acct')).toBe(false);
+    expect(chooser.holdsAnswers(), 'Chromium keeps it for the accounts still here').toBe(true);
+    expect(chooser.holds('a:443')).toBe(true);
   });
 });
 
@@ -294,6 +374,62 @@ test.describe('AutoSelectCertificateForUrls', () => {
   });
 });
 
+test.describe('a rule that only covers a host by wildcard', () => {
+  const RULE = '{"pattern":"https://[*.]example.com","filter":{"ISSUER":{"CN":"Test CA"}}}';
+  const HOST = 'mail.example.com:443';
+
+  test('the page\'s own request asks, once a run, with nothing to remember', async () => {
+    const { chooser, asked, stored } = harness({ rules: [RULE] });
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE, BOB], null)).toEqual({ kind: 'send', certificate: ALICE });
+    expect(asked).toHaveLength(1);
+    expect(asked[0].rememberable).toBe(false);
+    expect(asked[0].certificates).toEqual([ALICE]);
+    expect(stored.size, 'for this run only').toBe(0);
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE, BOB], null)).toEqual({ kind: 'send', certificate: ALICE });
+    expect(asked).toHaveLength(1);
+    await chooser.decide('other.example.com:443', 'listed-server', [ALICE, BOB], null);
+    expect(asked, 'per host').toHaveLength(2);
+    chooser.forget();
+    await chooser.decide(HOST, 'listed-server', [ALICE, BOB], null);
+    expect(asked, 'consent goes at the last sign-out').toHaveLength(3);
+  });
+
+  test('a no holds, and sends nothing', async () => {
+    const { chooser, asked } = harness({ rules: [RULE], answer: () => ({ certificate: null, remember: false }) });
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE], null)).toEqual({ kind: 'none' });
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE], null)).toEqual({ kind: 'none' });
+    expect(asked).toHaveLength(1);
+  });
+
+  test('with no fitting certificate there is nothing to ask about', async () => {
+    const { chooser, asked } = harness({ rules: [RULE] });
+    expect(await chooser.decide(HOST, 'listed-server', [BOB], null)).toEqual({ kind: 'none' });
+    expect(asked).toHaveLength(0);
+  });
+
+  test('a window going there stays silent', async () => {
+    const { chooser, asked } = harness({ rules: [RULE] });
+    expect(await chooser.decide(HOST, 'first-party', [ALICE, BOB], null)).toEqual({ kind: 'send', certificate: ALICE });
+    expect(asked).toHaveLength(0);
+  });
+
+  test('a rule that spells out the host stays silent', async () => {
+    const { chooser, asked } = harness({ rules: ['{"pattern":"https://mail.example.com","filter":{"ISSUER":{"CN":"Test CA"}}}'] });
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE, BOB], null)).toEqual({ kind: 'send', certificate: ALICE });
+    expect(asked).toHaveLength(0);
+  });
+
+  test('a server the user added stays as it was', async () => {
+    const { chooser, asked } = harness({ rules: [RULE], userServers: [HOST] });
+    expect(await chooser.decide(HOST, 'listed-server', [ALICE, BOB], null)).toEqual({ kind: 'send', certificate: ALICE });
+    expect(asked, 'the rule fits one, and the user chose this server').toHaveLength(0);
+    const open = harness({ userServers: [HOST] });
+    await open.chooser.decide(HOST, 'listed-server', [ALICE, BOB], null);
+    expect(open.asked[0].rememberable).toBe(true);
+    expect(open.asked[0].certificates).toEqual([ALICE, BOB]);
+  });
+});
+
 test.describe('the Windows sign-in', () => {
   test('a 401 that names it, and nothing else', () => {
     for (const value of ['Negotiate', 'NTLM', 'negotiate abc', 'Basic realm="x", NTLM']) {
@@ -306,6 +442,13 @@ test.describe('the Windows sign-in', () => {
     expect(asksForWindowsSignIn(401, undefined)).toBe(false);
   });
 
+  test('a host is on the list as Chromium reads it, or wider', () => {
+    const list = 'sso.example,*.corp.example,other.example:8080';
+    for (const host of ['sso.example', 'SSO.example', 'a.corp.example', 'a.b.corp.example', 'corp.example', 'other.example']) expect(hostOnSignInList(list, host), host).toBe(true);
+    for (const host of ['a.sso.example', 'xcorp.example', 'example']) expect(hostOnSignInList(list, host), host).toBe(false);
+    expect(hostOnSignInList(null, 'sso.example')).toBe(false);
+  });
+
   test('a list narrows, and never widens', () => {
     expect(narrowedList('a.example,*.b.example', '*.b.example')).toBe('*.b.example');
     expect(narrowedList('a.example', 'a.example,new.example')).toBe('a.example');
@@ -315,7 +458,10 @@ test.describe('the Windows sign-in', () => {
   });
 
   test('the responses to watch cover the whole list', () => {
-    expect(signInListUrls('sso.example,*.corp.example:8443')).toEqual(['*://sso.example/*', '*://*.corp.example/*']);
+    expect(signInListUrls('sso.example,*.corp.example:8443')).toEqual([
+      '*://sso.example/*', 'ws://sso.example/*', 'wss://sso.example/*',
+      '*://*.corp.example/*', 'ws://*.corp.example/*', 'wss://*.corp.example/*',
+    ]);
     expect(signInListUrls(null)).toEqual([]);
   });
 
@@ -349,6 +495,23 @@ test.describe('the picker', () => {
     expect(certificateRow(ALICE, details, 'en-US', 'win32')).toBe('Alice\nIssued by Test CA, until Mar 17, 2030');
     expect(certificateRow(ALICE, details, 'en-US', 'linux')).toBe('Alice (Issued by Test CA, until Mar 17, 2030)');
     expect(certificateRow({ ...ALICE, subjectName: '' }, details, 'en-US', 'win32')).toContain('sha256/Alice');
+  });
+
+  test('a label can\'t leave out the server', () => {
+    expect(labelKeepsPlaceholders('certificateTitle', 'Trust this')).toBe(false);
+    expect(labelKeepsPlaceholders('certificateRemember', 'Remember')).toBe(false);
+    expect(labelKeepsPlaceholders('certificateIssued', 'Issued by {issuer}')).toBe(false);
+    expect(labelKeepsPlaceholders('certificateTitle', '{host} fragt')).toBe(true);
+    expect(labelKeepsPlaceholders('certificateNone', 'Nothing')).toBe(true);
+    expect(LABEL_KEY.test('pickerServerLine'), 'and the line that names it is no label').toBe(false);
+  });
+
+  test('a session cookie goes back as what it was', () => {
+    const hostOnly = cookieToSetBack({ name: '__Host-a', value: '1', domain: 'mail.example', hostOnly: true, path: '/', secure: true, httpOnly: true, sameSite: 'lax' });
+    expect(hostOnly).toEqual({ name: '__Host-a', value: '1', url: 'https://mail.example/', path: '/', secure: true, httpOnly: true, sameSite: 'lax' });
+    const shared = cookieToSetBack({ name: 'b', value: '2', domain: '.example', hostOnly: false, path: '/x', secure: false });
+    expect(shared).toEqual({ name: 'b', value: '2', url: 'http://example/x', domain: '.example', path: '/x', secure: false });
+    expect(hostOnly, 'no expiry: it stays a session cookie').not.toHaveProperty('expirationDate');
   });
 
   test('its text can come from the webmail', () => {

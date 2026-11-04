@@ -7,21 +7,26 @@
  * sends the first certificate in the store to whoever asks.
  */
 
+import { createHash } from 'node:crypto';
 import { app, BrowserWindow, dialog, type Certificate, type Session, type WebContents } from 'electron';
 import { CHANNEL } from '../../shared/bridge';
 import { certificateRuleMatchesUrl, type PolicySnapshot } from '../../shared/policy-schema';
+import { setPinAgain } from '../app-session';
 import {
   asksForWindowsSignIn,
   CertificateChooser,
   certificateRow,
   classifyRequest,
+  cookieToSetBack,
   displayHost,
+  hostOnSignInList,
   hostPortOf,
   narrowedList,
   NO_INTEGRATED_SIGN_IN,
   pickerPages,
   RequestLedger,
   signInListUrls,
+  targetOrigin,
   type PickAnswer,
   type PickQuestion,
   type RememberedChoices,
@@ -39,21 +44,40 @@ const AUTH_DELEGATE_SWITCH = 'auth-negotiate-delegate-whitelist';
 const MAX_CHOICES = 64;
 /** A sign-out still has requests under way: its token's revocation, for one. */
 const NETWORK_RESET_DELAY_MS = 1500;
-/** Plugins in the page can reach the clearing call. They can't use it to keep cutting off the network. */
-const NETWORK_RESET_GAP_MS = 30_000;
+const NETWORK_BACK_MS = 5000;
+/** A page's factories move over to the new service just after it's there. */
+const FACTORIES_MOVE_MS = 300;
+const COOKIE_BACK_MS = 3000;
+/** However a restart goes, requests aren't refused for longer than this. */
+const REFUSE_LIMIT_MS = 10_000;
 
-function storedChoices(state: StateFile): RememberedChoices {
+function accountTag(account: string): string {
+  return createHash('sha256').update(account).digest('base64url').slice(0, 16);
+}
+
+type StoredChoice = { fingerprint: string; account?: string };
+
+function storedChoices(state: StateFile, account: () => string | null): RememberedChoices {
+  const keep = (entries: [string, StoredChoice][]) => {
+    if (entries.length > 0) state.data.certificateChoices = Object.fromEntries(entries);
+    else delete state.data.certificateChoices;
+    state.save();
+  };
   return {
-    get: (hostPort) => state.data.certificateChoices?.[hostPort],
+    get: (hostPort) => state.data.certificateChoices?.[hostPort]?.fingerprint,
     set: (hostPort, fingerprint) => {
       const entries = Object.entries(state.data.certificateChoices ?? {}).filter(([host]) => host !== hostPort);
-      state.data.certificateChoices = Object.fromEntries([...entries, [hostPort, fingerprint]].slice(-MAX_CHOICES));
-      state.save();
+      const tag = account();
+      const choice: StoredChoice = { fingerprint, ...(tag ? { account: tag } : {}) };
+      keep([...entries, [hostPort, choice] as [string, StoredChoice]].slice(-MAX_CHOICES));
     },
     clear: () => {
-      if (!state.data.certificateChoices) return;
-      delete state.data.certificateChoices;
-      state.save();
+      if (state.data.certificateChoices) keep([]);
+    },
+    clearAccount: (tag) => {
+      const entries = Object.entries(state.data.certificateChoices ?? {});
+      const left = entries.filter(([, choice]) => choice.account !== tag);
+      if (left.length !== entries.length) keep(left);
     },
   };
 }
@@ -64,7 +88,7 @@ function dialogParent(window: unknown, ctx: FeatureContext): BrowserWindow | nul
   return asked ?? ctx.windows.focusedManaged()?.window ?? ctx.windows.mainWindow() ?? null;
 }
 
-async function askInDialog(question: PickQuestion<Certificate>, window: unknown, ctx: FeatureContext): Promise<PickAnswer<Certificate>> {
+async function askInDialog(question: PickQuestion<Certificate>, window: unknown, ctx: FeatureContext, signal: AbortSignal): Promise<PickAnswer<Certificate>> {
   const text = strings();
   const host = displayHost(question.hostPort);
   const details = (issuer: string, date: string) => fill(text.certificateIssued, { issuer, date });
@@ -77,18 +101,20 @@ async function askInDialog(question: PickQuestion<Certificate>, window: unknown,
       type: 'question' as const,
       title: 'Bulwark',
       message: fill(text.certificateTitle, { host }),
-      detail: text.certificateDetail,
+      // The first line isn't a label: a page can reword the rest through shell.setLanguages.
+      detail: `${fill(text.pickerServerLine, { host })}\n\n${text.certificateDetail}`,
       buttons,
       // Enter and Esc send nothing.
       defaultId: none,
       cancelId: none,
       // Windows draws the rows as command links, each with its name and a line below.
       noLink: false,
-      checkboxLabel: fill(text.certificateRemember, { host }),
-      checkboxChecked: false,
+      signal,
+      ...(question.rememberable ? { checkboxLabel: fill(text.certificateRemember, { host }), checkboxChecked: false } : {}),
     };
     const parent = dialogParent(window, ctx);
     const { response, checkboxChecked } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+    if (signal.aborted) return { certificate: null, remember: false };
     if (response < shown.length) return { certificate: shown[response], remember: checkboxChecked };
     if (response === none) return { certificate: null, remember: false };
   }
@@ -98,34 +124,60 @@ function isNetworkService(details: { type: string; serviceName?: string }): bool
   return details.type === 'Utility' && !!details.serviceName?.includes('network');
 }
 
+function networkServicePid(): number | undefined {
+  return app.getAppMetrics().find((metric) => isNetworkService(metric))?.pid;
+}
+
+async function networkServiceBack(gone: number): Promise<void> {
+  const deadline = Date.now() + NETWORK_BACK_MS;
+  while (Date.now() < deadline) {
+    const pid = networkServicePid();
+    if (pid && pid !== gone) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 /**
  * The only thing that ends what Chromium keeps for a host: its certificate, its "none" and its
  * TLS sessions. No session call does it, and a restart of the app would take the windows away.
- * Chromium starts a new one by itself, and pages carry on. A request under way fails, as on any
- * network change. Cookies are on disk first. app-session.ts sets up what doesn't survive it.
+ * Chromium starts a new one by itself. What doesn't survive comes back here: session cookies,
+ * which only ever lived in that process, and the pin. Until then requests fail, so none goes out
+ * without them. After a wipe this comes later than its delete, so what it deleted stays deleted.
  */
 async function restartNetworkService(session: Session): Promise<boolean> {
+  const gate = requestGate(session);
+  const cookies = (await session.cookies.get({})).filter((cookie) => cookie.session);
   await session.cookies.flushStore().catch(() => {});
-  const service = app.getAppMetrics().find((metric) => isNetworkService(metric));
-  if (!service) return false;
+  const pid = networkServicePid();
+  if (!pid) return false;
+  // A page on its way in would stop for good. An image stuck in a frame is no reason to take away a window with work in it.
+  const loading = BrowserWindow.getAllWindows().filter((window) => window.webContents.session === session && window.webContents.isLoadingMainFrame());
+  let finished = () => {};
+  gate.refuseUntil(Promise.race([new Promise<void>((resolve) => { finished = resolve; }), new Promise((resolve) => setTimeout(resolve, REFUSE_LIMIT_MS))]));
   try {
-    const loading = BrowserWindow.getAllWindows().filter((window) => window.webContents.isLoading() && window.webContents.session === session);
-    process.kill(service.pid);
-    // A page on its way in would stop at an error page.
-    setTimeout(() => {
-      for (const window of loading) if (!window.isDestroyed()) window.webContents.reload();
-    }, 500).unref?.();
-    return true;
+    process.kill(pid);
+    await networkServiceBack(pid);
+    setPinAgain(session);
+    for (const cookie of cookies) {
+      const back = session.cookies.set(cookieToSetBack(cookie)).catch((error) => console.warn(`Cookie ${cookie.name} did not come back:`, error));
+      await Promise.race([back, new Promise((resolve) => setTimeout(resolve, COOKIE_BACK_MS))]);
+    }
+    await new Promise((resolve) => setTimeout(resolve, FACTORIES_MOVE_MS));
   } catch (error) {
     console.warn('The network service did not stop:', error);
     return false;
+  } finally {
+    finished();
   }
+  for (const window of loading) if (!window.isDestroyed()) window.webContents.reload();
+  return true;
 }
 
 class ClientAuth {
   private state: StateFile | null = null;
   private answer: ((contents: WebContents | null, hostPort: string, list: Certificate[], callback: (certificate?: Certificate) => void) => void) | null = null;
   private clearAll: (() => void) | null = null;
+  private pageFetchAllowed: ((url: string) => boolean) | null = null;
 
   /** From the top of main. A wipe at the start comes before any feature is set up. */
   start(state: StateFile): void {
@@ -135,32 +187,46 @@ class ClientAuth {
       if (this.answer) this.answer(contents, hostPort, list, callback);
       else callback();
     });
-    addWipeStep(async () => this.clear());
+    addWipeStep(async () => {
+      if (this.state) storedChoices(this.state, () => null).clear();
+      this.clearAll?.();
+    });
   }
 
-  private clear(): void {
-    if (this.state) storedChoices(this.state).clear();
-    this.clearAll?.();
+  /**
+   * Save image: the address is mail's to pick, and a download is out of reach of the request gates,
+   * so to the network it's the window asking. So not to a host that would get a credential.
+   */
+  mayFetchForPage(url: string): boolean {
+    return this.pageFetchAllowed?.(url) ?? true;
   }
 
   setup(ctx: FeatureContext): void {
     const { session, origin } = ctx;
+    let account: string | null = null;
     const ledger = new RequestLedger();
+    const isUserServer = (target: string | null) => !!target && !!ctx.servers?.isKnown(target);
     const chooser = new CertificateChooser<Certificate>({
       rules: () => policies.snapshot.AutoSelectCertificateForUrls.value,
-      choices: storedChoices(ctx.state),
-      ask: (question, window) => askInDialog(question, window, ctx),
+      choices: storedChoices(ctx.state, () => account),
+      ask: (question, window, signal) => askInDialog(question, window, ctx, signal),
+      isUserServer: (hostPort) => isUserServer(targetOrigin(`https://${hostPort}`)),
     });
-    const isListedServer = (target: string) => !!ctx.servers?.isKnown(target) || policies.snapshot.AutoSelectCertificateForUrls.value.some((rule) => certificateRuleMatchesUrl(rule, target));
+    const isListedServer = (target: string) => isUserServer(target) || policies.snapshot.AutoSelectCertificateForUrls.value.some((rule) => certificateRuleMatchesUrl(rule, target));
 
     // Hosts that had this user's Windows sign-in this run: such a connection stays signed in.
     const signedIn = new Set<string>();
+    const inBareWindow = (contents: WebContents | undefined) => {
+      if (!contents) return false;
+      const window = BrowserWindow.fromWebContents(contents);
+      return !window || !ctx.windows.managedFor(window);
+    };
 
     const gate = requestGate(session);
     gate.add((url, details) => {
       const hostPort = hostPortOf(url);
       if (!hostPort) return false;
-      const standing = classifyRequest(details, origin, isListedServer);
+      const standing = classifyRequest(details, origin, isListedServer, () => inBareWindow(details.webContents));
       const trusted = standing === 'first-party' || standing === 'listed-server';
       if (!trusted && chooser.holds(hostPort)) return true;
       if (standing !== 'first-party' && signedIn.has(hostPort)) return true;
@@ -186,6 +252,20 @@ class ClientAuth {
         });
     };
 
+    /**
+     * A request under way when its connection goes never settles: Electron's request proxy doesn't
+     * pass that on. A page can only give up on them if it's told.
+     */
+    const tellPages = () => ctx.windows.broadcast(CHANNEL.certificatesConnectionsReset, null);
+
+    const closeSignedInConnections = async () => {
+      if (signedIn.size === 0) return;
+      tellPages();
+      await session.closeAllConnections().catch(() => {});
+      await session.clearAuthCache().catch(() => {});
+      signedIn.clear();
+    };
+
     const respond = responseGate(session);
     let serverList = app.commandLine.getSwitchValue(AUTH_SERVER_SWITCH);
     let delegateList = app.commandLine.getSwitchValue(AUTH_DELEGATE_SWITCH);
@@ -193,7 +273,7 @@ class ClientAuth {
     const watchResponses = () => {
       const urls = signInListUrls(inForce());
       // Either all can be watched, or everything is.
-      respond.set('windows-sign-in', urls.every((url) => respond.accepts(url)) ? urls : ['*://*/*'], (details) => {
+      respond.set('windows-sign-in', urls.every((url) => respond.accepts(url)) ? urls : ['*://*/*', 'ws://*/*', 'wss://*/*'], (details) => {
         if (!asksForWindowsSignIn(details.statusCode, details.responseHeaders)) return null;
         if (ledger.standingOf(details.id) !== 'first-party') return { cancel: true };
         const hostPort = hostPortOf(details.url);
@@ -202,6 +282,13 @@ class ClientAuth {
       });
     };
     if (inForce()) watchResponses();
+
+    this.pageFetchAllowed = (url) => {
+      if (targetOrigin(url) === origin) return true;
+      const hostPort = hostPortOf(url);
+      if (!hostPort) return true;
+      return !chooser.holds(hostPort) && !signedIn.has(hostPort) && !hostOnSignInList(inForce(), hostPort.replace(/:\d+$/, ''));
+    };
 
     // Taking a server off the list counts at once. A new one waits for the restart the app asks for.
     const narrow = (snapshot: PolicySnapshot, previous: PolicySnapshot) => {
@@ -216,41 +303,59 @@ class ClientAuth {
       else app.commandLine.removeSwitch(AUTH_DELEGATE_SWITCH);
       // Global in spite of its place on Session. It also empties the delegation list until the restart.
       session.allowNTLMCredentialsForDomains(serverList);
-      signedIn.clear();
-      void session.clearAuthCache().catch(() => {});
+      void closeSignedInConnections();
       watchResponses();
     };
     policies.on('changed', narrow);
 
-    let resetTimer: NodeJS.Timeout | null = null;
-    let lastReset = 0;
-    const emptyNetwork = () => {
-      if (resetTimer) return;
-      const wait = Math.max(NETWORK_RESET_DELAY_MS, lastReset + NETWORK_RESET_GAP_MS - Date.now());
-      resetTimer = setTimeout(() => {
-        resetTimer = null;
-        lastReset = Date.now();
-        void restartNetworkService(session).then((done) => {
-          if (done) chooser.networkEmptied();
-          else console.warn('A client certificate stays in use until the app restarts.');
+    let resetting: Promise<void> | null = null;
+    /**
+     * What's under way gets a moment to finish, and a sign-out's own last requests still have to go
+     * out. In that moment the window's requests still use what's about to end. Frames don't: they
+     * stay kept away until it has. Nobody can sign in again that fast.
+     */
+    const resetNetwork = () => {
+      if (resetting) return;
+      resetting = (async () => {
+        await new Promise((resolve) => setTimeout(resolve, NETWORK_RESET_DELAY_MS));
+        await closeSignedInConnections();
+        if (!chooser.holdsAnswers()) return;
+        if (!(await restartNetworkService(session))) console.warn('A client certificate stays in use until the app restarts.');
+      })()
+        .catch((error) => console.error(error))
+        .finally(() => {
+          resetting = null;
         });
-      }, wait);
-      resetTimer.unref?.();
     };
+
+    // Also a crash of it: nothing Chromium held is left, and pages have requests stuck.
+    app.on('child-process-gone', (_event, details) => {
+      if (!isNetworkService(details)) return;
+      tellPages();
+      chooser.networkEmptied();
+      signedIn.clear();
+    });
+
     // A rule that's gone mustn't go on working through what Chromium was given under it.
     policies.on('changed', (snapshot, previous) => {
       const rules = (policy: PolicySnapshot) => JSON.stringify(policy.AutoSelectCertificateForUrls.value);
-      if (rules(snapshot) !== rules(previous) && chooser.holdsAnswers()) emptyNetwork();
+      if (rules(snapshot) !== rules(previous) && chooser.holdsAnswers()) resetNetwork();
     });
+
     this.clearAll = () => {
-      if (chooser.forget()) emptyNetwork();
-      if (signedIn.size > 0) {
-        signedIn.clear();
-        void session.clearAuthCache().catch(() => {});
-      }
+      if (chooser.forget() || signedIn.size > 0) resetNetwork();
     };
-    // At sign-out and account switch, next to the keystore's grants. Only narrows, so any page may.
-    ctx.handle(CHANNEL.certificatesClearChoices, () => this.clear());
+
+    // Only narrows, so any page may. One account's sign-out leaves the network alone: others are
+    // using it, and an account switch or a global search must not sign anyone out or ask again.
+    ctx.handle(CHANNEL.certificatesClearChoices, (_event, _window, scope) => {
+      const { account: gone, last } = (scope ?? {}) as { account?: unknown; last?: unknown };
+      if (last === true) this.clearAll?.();
+      else if (typeof gone === 'string') chooser.forgetAccount(accountTag(gone));
+    });
+    ctx.handle(CHANNEL.certificatesSetAccount, (_event, _window, active) => {
+      account = typeof active === 'string' ? accountTag(active) : null;
+    });
   }
 }
 

@@ -15,6 +15,14 @@ const VERIFY_OK = 0;
 const VERIFY_FAILED = -2;
 const VERIFY_DEFAULT = -3;
 
+const verifyProcs = new WeakMap<Session, Parameters<Session['setCertificateVerifyProc']>[0]>();
+
+/** A new network service doesn't get the pin by itself. Nothing to do where there is none. */
+export function setPinAgain(session: Session): void {
+  const verify = verifyProcs.get(session);
+  if (verify) session.setCertificateVerifyProc(verify);
+}
+
 export function setupAppSession(fingerprint: string, launchSecret: string, onPinFailure: () => void): Session {
   const session = electronSession.fromPartition(APP_PARTITION);
   closeDictionaryDownloads(session);
@@ -30,6 +38,7 @@ export function setupAppSession(fingerprint: string, launchSecret: string, onPin
     onPinFailure();
     callback(VERIFY_FAILED);
   };
+  verifyProcs.set(session, verify);
   session.setCertificateVerifyProc(verify);
   // A new network service doesn't get it back by itself, and then nothing from the app's own
   // server is accepted. It comes after a crash, and after features/client-certificates.ts ends one.

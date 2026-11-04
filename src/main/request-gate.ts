@@ -13,18 +13,19 @@ const EVERY_REQUEST = ['*://*/*', 'ws://*/*', 'wss://*/*'];
 
 export class RequestGate {
   private readonly rules = new Set<RequestRule>();
-  private readonly endListeners = new Set<(id: number) => void>();
+  private readonly endListeners = new Set<(id: number, redirected: boolean) => void>();
+  private refusing = false;
 
   constructor(session: Session) {
     session.webRequest.onBeforeRequest({ urls: EVERY_REQUEST }, (details, callback) => {
-      callback({ cancel: this.refuses(details.url, details) });
+      callback({ cancel: this.refusing || this.refuses(details.url, details) });
     });
-    const ended = (details: { id: number }) => {
-      for (const listener of this.endListeners) listener(details.id);
+    const ended = (redirected: boolean) => (details: { id: number }) => {
+      for (const listener of this.endListeners) listener(details.id, redirected);
     };
-    session.webRequest.onCompleted({ urls: EVERY_REQUEST }, ended);
-    session.webRequest.onErrorOccurred({ urls: EVERY_REQUEST }, ended);
-    session.webRequest.onBeforeRedirect({ urls: EVERY_REQUEST }, ended);
+    session.webRequest.onCompleted({ urls: EVERY_REQUEST }, ended(false));
+    session.webRequest.onErrorOccurred({ urls: EVERY_REQUEST }, ended(false));
+    session.webRequest.onBeforeRedirect({ urls: EVERY_REQUEST }, ended(true));
   }
 
   add(rule: RequestRule): () => void {
@@ -32,8 +33,19 @@ export class RequestGate {
     return () => this.rules.delete(rule);
   }
 
+  /**
+   * Every request fails at once until this settles. Holding them isn't possible while the network
+   * service is replaced: one let through later still goes to the old one, and never settles.
+   */
+  refuseUntil(until: Promise<unknown>): void {
+    this.refusing = true;
+    void until.catch(() => {}).finally(() => {
+      this.refusing = false;
+    });
+  }
+
   /** A request ended, or left for another address. */
-  onEnded(listener: (id: number) => void): () => void {
+  onEnded(listener: (id: number, redirected: boolean) => void): () => void {
     this.endListeners.add(listener);
     return () => this.endListeners.delete(listener);
   }

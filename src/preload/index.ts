@@ -93,7 +93,9 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     platform,
     mode,
     certificates: {
-      clearChoices: (): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices),
+      clearChoices: (scope: { account?: string; last?: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesClearChoices, scope),
+      setAccount: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.certificatesSetAccount, account),
+      onConnectionsReset: (listener: () => void) => subscribe(CHANNEL.certificatesConnectionsReset, listener),
     },
     windows: {
       open: (url: string, options: { name: string; width: number; height: number }) =>

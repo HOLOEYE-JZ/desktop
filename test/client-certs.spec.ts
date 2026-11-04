@@ -77,6 +77,7 @@ interface Hit {
   path: string;
   /** The common name of the certificate on the connection. */
   certificate: string | null;
+  cookie: string;
 }
 
 interface CertServer {
@@ -107,19 +108,25 @@ async function certServer(name: string, options: { required?: boolean; plain?: b
       ...(options.plain ? {} : { ca: [caPem], requestCert: true, rejectUnauthorized: !!options.required }),
     },
     (req, res) => {
-      hits.push({ path: req.url ?? '', certificate: commonName(req.socket) });
+      hits.push({ path: req.url ?? '', certificate: commonName(req.socket), cookie: req.headers.cookie ?? '' });
+      // Never answered: in flight for as long as a test wants.
+      if (req.url?.startsWith('/hang')) {
+        req.resume();
+        return;
+      }
       res.setHeader('access-control-allow-origin', '*');
-      res.setHeader('set-cookie', 'd5=kept; Secure; Path=/; Max-Age=3600');
+      if (req.url === '/set-old') res.setHeader('set-cookie', 'd5old=1; Secure; Path=/');
+      else res.setHeader('set-cookie', ['d5=kept; Secure; Path=/; Max-Age=3600', 'd5session=1; Secure; Path=/; HttpOnly', '__Host-d5session=1; Secure; Path=/', `d5shared=1; Secure; Path=/; Domain=${name}.localhost`]);
       res.setHeader('content-type', 'text/html');
       res.end(`<!doctype html><title>${name}</title><p id="here">${name}</p>`);
     },
   );
   server.on('upgrade', (req, socket) => {
-    hits.push({ path: req.url ?? '', certificate: commonName(socket) });
+    hits.push({ path: req.url ?? '', certificate: commonName(socket), cookie: '' });
     socket.destroy();
   });
   server.on('secureConnection', (socket) => {
-    sockets.push({ path: '', certificate: commonName(socket) });
+    sockets.push({ path: '', certificate: commonName(socket), cookie: '' });
   });
   server.on('tlsClientError', () => {});
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -138,17 +145,24 @@ async function certServer(name: string, options: { required?: boolean; plain?: b
   };
 }
 
-/** Says 401 with the given scheme until it's answered. Never sends a challenge. */
+/**
+ * Says 401 with the given scheme until it's answered, and then counts that connection as signed
+ * in, as IIS does. Never sends a challenge: a first message is all that comes here.
+ */
 interface SignInServer {
   port: number;
   url: (host: string, pathname: string) => string;
+  ws: (host: string, pathname: string) => string;
   answered: (pathname: string) => string | null;
   asked: (pathname: string) => boolean;
+  onSignedInConnection: (pathname: string) => boolean;
 }
 
 async function signInServer(scheme: string): Promise<SignInServer> {
   const asked = new Set<string>();
   const answers = new Map<string, string>();
+  const onSignedIn = new Set<string>();
+  const signedInSockets = new WeakSet<object>();
   const server: HttpServer = createHttpServer((req, res) => {
     const pathname = req.url ?? '';
     asked.add(pathname);
@@ -157,13 +171,25 @@ async function signInServer(scheme: string): Promise<SignInServer> {
     if (auth) {
       // The scheme only. A first message says who and on what machine, so it isn't kept.
       answers.set(pathname, auth.split(' ')[0]);
-      res.statusCode = 403;
-      res.end('stop');
+      signedInSockets.add(req.socket);
+      res.end('in');
+      return;
+    }
+    if (signedInSockets.has(req.socket)) {
+      onSignedIn.add(pathname);
+      res.end('still in');
       return;
     }
     res.statusCode = 401;
     res.setHeader('www-authenticate', scheme);
     res.end('sign in');
+  });
+  server.on('upgrade', (req, socket) => {
+    const pathname = req.url ?? '';
+    asked.add(pathname);
+    const auth = req.headers.authorization;
+    if (auth) answers.set(pathname, auth.split(' ')[0]);
+    socket.end(`HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: ${scheme}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`);
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   closers.push(() => {
@@ -174,8 +200,10 @@ async function signInServer(scheme: string): Promise<SignInServer> {
   return {
     port,
     url: (host, pathname) => `http://${host}:${port}${pathname}`,
+    ws: (host, pathname) => `ws://${host}:${port}${pathname}`,
     answered: (pathname) => answers.get(pathname) ?? null,
     asked: (pathname) => asked.has(pathname),
+    onSignedInConnection: (pathname) => onSignedIn.has(pathname),
   };
 }
 
@@ -235,7 +263,12 @@ async function start(instance: string, options: { profile?: string; policies?: s
 }
 
 async function stop(started: Started, keepProfile = false): Promise<void> {
-  await started.app.close().catch(() => {});
+  const closed = started.app.close().catch(() => {});
+  const late = await Promise.race([closed.then(() => false), new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 30_000))]);
+  if (late) {
+    console.log('the app did not close in 30 s');
+    started.app.process().kill();
+  }
   running.splice(running.indexOf(started), 1);
   if (!keepProfile) removeProfile(started.profile);
 }
@@ -251,12 +284,13 @@ interface Prompt {
   defaultId: number;
   cancelId: number;
   noLink: boolean;
-  checkboxLabel: string;
+  checkboxLabel?: string;
   ticked: boolean;
+  closedBySignal: boolean;
 }
 
 const promptsOf = (app: ElectronApplication) => app.evaluate(() => (globalThis as unknown as { __prompts: Prompt[] }).__prompts);
-const setAnswer = (app: ElectronApplication, answer: { response: number; checkboxChecked?: boolean }) =>
+const setAnswer = (app: ElectronApplication, answer: { response?: number; checkboxChecked?: boolean; hold?: boolean; ignoreSignal?: boolean }) =>
   app.evaluate((_electron, value) => {
     (globalThis as unknown as { __answer: unknown }).__answer = value;
   }, answer);
@@ -269,6 +303,13 @@ const goTo = (app: ElectronApplication, url: string) =>
       () => 'loaded',
       (error: { code?: string }) => error.code ?? 'failed',
     );
+  }, url);
+
+/** The same, for a request that may stay open: nothing waits for it. */
+const startGoing = (app: ElectronApplication, url: string) =>
+  app.evaluate(({ BrowserWindow }, target) => {
+    const window = BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())!;
+    void window.webContents.loadURL(target).catch(() => {});
   }, url);
 
 /** What the webmail renders mail in, and the markers that show it ran. */
@@ -291,10 +332,18 @@ const pluginFrame = (page: Page, script: string) =>
 
 const stateOf = (profile: string) => {
   const file = path.join(profile, 'shell-state.json');
-  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { certificateChoices?: Record<string, string> }) : {};
+  return existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as { certificateChoices?: Record<string, { fingerprint: string; account?: string }> }) : {};
 };
 
 const settled = (ms = 800) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type CertificatesBridge = { clearChoices(scope: { account?: string; last?: boolean }): Promise<void>; setAccount(account: string | null): Promise<void>; onConnectionsReset(listener: () => void): () => void };
+const certificates = () => (window as unknown as { bulwarkDesktop: { certificates: CertificatesBridge } }).bulwarkDesktop.certificates;
+const lastSignOut = (page: Page) => page.evaluate(`(${certificates})().clearChoices({ last: true })`);
+const signOutOf = (page: Page, account: string) => page.evaluate(`(${certificates})().clearChoices({ account: ${JSON.stringify(account)} })`);
+const activeAccount = (page: Page, account: string) => page.evaluate(`(${certificates})().setAccount(${JSON.stringify(account)})`);
+const networkPid = (app: ElectronApplication) => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((metric) => metric.serviceName?.includes('network'))?.pid);
+const shownPageNow = (app: ElectronApplication) => app.windows().filter((candidate) => !candidate.isClosed()).at(-1)!;
 
 test.describe('the picker', () => {
   test('names the server, and Esc sends nothing', async () => {
@@ -304,6 +353,7 @@ test.describe('the picker', () => {
     const [prompt, ...rest] = await promptsOf(app);
     expect(rest, 'one question for all the requests').toEqual([]);
     expect(prompt.message).toBe(`${server.host} asks for a certificate`);
+    expect(prompt.detail.split('\n')[0]).toBe(`Server: ${server.host}`);
     expect(prompt.buttons.at(-1)).toBe("Don't send a certificate");
     expect(prompt.defaultId).toBe(prompt.buttons.length - 1);
     expect(prompt.cancelId).toBe(prompt.buttons.length - 1);
@@ -333,7 +383,7 @@ test.describe('the picker', () => {
     const chosen = again.buttons[1].split('\n')[0];
     expect(server.hits.at(-1)?.certificate).toBe(chosen);
     await expect.poll(() => Object.keys(stateOf(second.profile).certificateChoices ?? {})).toEqual([server.host]);
-    expect(Object.values(stateOf(second.profile).certificateChoices ?? {})[0]).toMatch(/^sha256\//);
+    expect(Object.values(stateOf(second.profile).certificateChoices ?? {})[0].fingerprint).toMatch(/^sha256\//);
     await stop(second, true);
 
     const count = server.hits.length;
@@ -348,6 +398,24 @@ test.describe('the picker', () => {
     await goTo(third.app, `${elsewhere.origin}/`);
     expect((await promptsOf(third.app)).map((asked) => asked.message)).toEqual([`${elsewhere.host} asks for a certificate`]);
     expect(elsewhere.certificates().every((name) => name === null), 'Esc there').toBe(true);
+  });
+
+  test('a page can reword it through its labels, but not take the server out of it', async () => {
+    const own = await certServer('labels', { plain: true });
+    const target = await certServer('labelled');
+    const { app, page } = await start(`${own.origin}/`);
+    await page.evaluate(() => {
+      const shell = (window as unknown as { bulwarkDesktop: { shell: { setLanguages(update: unknown): void } } }).bulwarkDesktop.shell;
+      shell.setLanguages({ ui: 'en', composer: [], labels: { certificateTitle: 'Your bank asks for a certificate', certificateRemember: 'Remember', certificateDetail: 'This is safe.', certificateNone: 'Later' } });
+    });
+    await settled(300);
+    await goTo(app, `${target.origin}/`);
+    const [prompt] = await promptsOf(app);
+    expect(prompt.message, 'no {host}: refused').toBe(`${target.host} asks for a certificate`);
+    expect(prompt.checkboxLabel, 'no {host}: refused').toBe(`Remember this for ${target.host}`);
+    expect(prompt.detail.split('\n')[0], 'main\'s own line').toBe(`Server: ${target.host}`);
+    expect(prompt.detail, 'an ordinary label still counts').toContain('This is safe.');
+    expect(prompt.buttons.at(-1)).toBe('Later');
   });
 
   test('a server that insists: refused, then the choice still works', async () => {
@@ -487,45 +555,305 @@ test.describe('what a mail frame or plugin can trigger', () => {
   });
 });
 
+test.describe('a page reaching other servers by a rule', () => {
+  test('a wildcard rule asks once per host for the page\'s own request, and a window going there stays silent', async () => {
+    const own = await certServer('own6', { plain: true });
+    const first = await certServer('one.wild');
+    const window2 = await certServer('two.wild');
+    const root = freshPolicies();
+    // A rule's port is part of its host, so one per server.
+    setRules(root, [
+      { pattern: `https://[*.]wild.localhost:${first.host.split(':')[1]}`, filter: { SUBJECT: { CN: shortName(alice.subject) } } },
+      { pattern: `https://[*.]wild.localhost:${window2.host.split(':')[1]}`, filter: { SUBJECT: { CN: shortName(alice.subject) } } },
+    ]);
+    const { app, page } = await start(`${own.origin}/`, { policies: root, answer: { response: 0 } });
+    await page.evaluate((url) => fetch(`${url}/from-page`, { mode: 'no-cors' }).catch(() => {}), first.origin);
+    await expect.poll(() => first.of('/from-page').length).toBe(1);
+    const asked = await promptsOf(app);
+    expect(asked.map((prompt) => prompt.message)).toEqual([`${first.host} asks for a certificate`]);
+    expect(asked[0].checkboxLabel, 'nothing to remember: it\'s for this run').toBeUndefined();
+    expect(first.of('/from-page')[0].certificate).toBe(shortName(alice.subject));
+
+    await goTo(app, `${window2.origin}/window`);
+    expect(window2.of('/window')[0].certificate, 'a window going there').toBe(shortName(alice.subject));
+    expect(await promptsOf(app), 'silently').toHaveLength(1);
+  });
+
+  test('a wildcard rule\'s question answered no sends nothing', async () => {
+    const own = await certServer('own7', { plain: true });
+    const target = await certServer('no.wild');
+    const root = freshPolicies();
+    setRules(root, [{ pattern: `https://[*.]wild.localhost:${target.host.split(':')[1]}`, filter: { SUBJECT: { CN: shortName(alice.subject) } } }]);
+    const { app, page } = await start(`${own.origin}/`, { policies: root });
+    await page.evaluate((url) => fetch(`${url}/from-page`, { mode: 'no-cors' }).catch(() => {}), target.origin);
+    await expect.poll(() => target.of('/from-page').length).toBe(1);
+    expect(await promptsOf(app)).toHaveLength(1);
+    expect(target.of('/from-page')[0].certificate).toBeNull();
+  });
+
+  test('a print pop-up holding mail counts as a frame, on a server a rule names', async () => {
+    const own = await certServer('own8', { plain: true });
+    const marker = await certServer('marker8', { plain: true });
+    const named = await certServer('named');
+    const root = freshPolicies();
+    setRules(root, [{ pattern: `https://${named.host}`, filter: { SUBJECT: { CN: shortName(alice.subject) } } }]);
+    const { app, page } = await start(`${own.origin}/`, { policies: root, answer: { response: 0 } });
+    await page.evaluate(([url, mark]) => {
+      const popup = window.open('', '_blank')!;
+      popup.document.write(`<!doctype html><img src="${url}/print.png"><img src="${mark}/print-ran.png">`);
+      popup.document.close();
+    }, [named.origin, marker.origin]);
+    await expect.poll(() => marker.of('/print-ran.png').length).toBe(1);
+    await settled();
+    expect(named.hits.filter((hit) => hit.certificate)).toEqual([]);
+    expect(await promptsOf(app)).toEqual([]);
+  });
+});
+
+test.describe('Save image', () => {
+  /** The real menu item, on what the context menu was given. */
+  const saveImage = (app: ElectronApplication, url: string) =>
+    app.evaluate(({ BrowserWindow, Menu }, srcURL) => {
+      const original = Menu.buildFromTemplate;
+      let template: Electron.MenuItemConstructorOptions[] = [];
+      Menu.buildFromTemplate = ((items: Electron.MenuItemConstructorOptions[]) => {
+        template = items;
+        return { popup() {} } as unknown as Electron.Menu;
+      }) as typeof Menu.buildFromTemplate;
+      const window = BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible())!;
+      window.webContents.emit('context-menu', {}, { mediaType: 'image', hasImageContents: true, srcURL, editFlags: {}, dictionarySuggestions: [], linkURL: '', selectionText: '', isEditable: false, x: 0, y: 0, pageURL: window.webContents.getURL(), frameURL: '' });
+      Menu.buildFromTemplate = original;
+      const item = template.find((entry) => entry.id === 'context.saveImage');
+      if (!item) return false;
+      (item.click as () => void)();
+      return true;
+    }, url);
+
+  test('an address mail picked doesn\'t get the Windows sign-in or a held certificate, and an ordinary one still saves', async () => {
+    const own = await certServer('own9', { plain: true });
+    const signIn = await signInServer('NTLM');
+    const held = await certServer('heldsave');
+    const plain = await certServer('plainsave', { plain: true });
+    const root = freshPolicies({ AuthServerAllowlist: 'sso.localhost' });
+    const { app } = await start(`${own.origin}/`, { policies: root, answer: { response: 0 } });
+    // Chromium's own Save As stays away: nobody could answer it here.
+    await app.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0].webContents.session.on('will-download', (event) => {
+        (globalThis as unknown as { __downloads: number }).__downloads = ((globalThis as unknown as { __downloads?: number }).__downloads ?? 0) + 1;
+        event.preventDefault();
+      });
+    });
+
+    expect(await saveImage(app, signIn.url('sso.localhost', '/saved.png')), 'no such item for it').toBe(false);
+    await settled();
+    expect(signIn.asked('/saved.png')).toBe(false);
+
+    await goTo(app, `${held.origin}/signin`);
+    expect(held.of('/signin')[0]?.certificate).toBeTruthy();
+    await goTo(app, `${own.origin}/back`);
+    expect(await saveImage(app, `${held.origin}/saved.png`)).toBe(false);
+    await settled();
+    expect(held.of('/saved.png')).toEqual([]);
+
+    expect(await saveImage(app, `${plain.origin}/saved.png`)).toBe(true);
+    await expect.poll(() => plain.of('/saved.png').length).toBe(1);
+    await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __downloads?: number }).__downloads ?? 0), 'it became a download').toBe(1);
+  });
+});
+
+test.describe('several accounts', () => {
+  test('one account signing out takes its own choices and nothing else: no restart, no question for the others', async () => {
+    const own = await certServer('accounts');
+    const other = await certServer('accounts2');
+    const { app, page, profile } = await start(`${own.origin}/`, { answer: { response: 0, checkboxChecked: true } });
+    await expect.poll(() => own.hits.length).toBeGreaterThan(0);
+    await activeAccount(page, 'first@example.org');
+    await goTo(app, `${other.origin}/`);
+    await expect.poll(() => Object.keys(stateOf(profile).certificateChoices ?? {}).sort()).toEqual([own.host, other.host].sort());
+    const asked = (await promptsOf(app)).length;
+    const pid = await networkPid(app);
+    await goTo(app, `${own.origin}/back`);
+    const back = shownPageNow(app);
+
+    await activeAccount(back, 'second@example.org');
+    await activeAccount(back, 'first@example.org');
+    await settled(2200);
+    expect(await networkPid(app), 'a switch costs nothing').toBe(pid);
+    expect(Object.keys(stateOf(profile).certificateChoices ?? {}).sort(), 'and takes nothing').toEqual([own.host, other.host].sort());
+
+    await signOutOf(back, 'someone-else@example.org');
+    expect(Object.keys(stateOf(profile).certificateChoices ?? {}).sort()).toEqual([own.host, other.host].sort());
+    await signOutOf(back, 'first@example.org');
+    await expect.poll(() => Object.keys(stateOf(profile).certificateChoices ?? {}), 'chosen before anyone signed in: it stays').toEqual([own.host]);
+    await settled(2200);
+    expect(await networkPid(app), 'still no restart').toBe(pid);
+    expect((await promptsOf(app)).length).toBe(asked);
+    await goTo(app, `${own.origin}/still`);
+    expect(own.of('/still')[0]?.certificate, 'the others carry on').toBeTruthy();
+    expect((await promptsOf(app)).length).toBe(asked);
+
+    await lastSignOut(shownPageNow(app));
+    await expect.poll(() => stateOf(profile).certificateChoices).toBeUndefined();
+    await expect.poll(() => networkPid(app), 'the last one ends it').not.toBe(pid);
+  });
+});
+
+test.describe('a sign-out with the picker open', () => {
+  test('it closes, a pick that comes anyway sends and stores nothing, and the next request asks again', async () => {
+    const own = await certServer('open', { plain: true });
+    const target = await certServer('openpick');
+    // Named by a rule that fits no certificate, so the page's fetch brings up the picker. A
+    // window's navigation would do too, but a page in the middle of one can't be asked to sign out.
+    const root = freshPolicies();
+    setRules(root, [{ pattern: `https://${target.host}`, filter: { ISSUER: { CN: 'Nobody' } } }]);
+    const { app, page, profile } = await start(`${own.origin}/`, { policies: root });
+    const ask = (pathname: string) => page.evaluate((url) => void fetch(url, { mode: 'no-cors' }).catch(() => {}), `${target.origin}${pathname}`);
+    await setAnswer(app, { hold: true, ignoreSignal: true });
+    await ask('/first');
+    await expect.poll(async () => (await promptsOf(app)).length).toBe(1);
+    await lastSignOut(page);
+    await app.evaluate(() => (globalThis as unknown as { __release(answer: unknown): void }).__release({ response: 0, checkboxChecked: true }));
+    await settled(2500);
+    expect(target.hits.filter((hit) => hit.certificate), 'nothing sent').toEqual([]);
+    expect(stateOf(profile).certificateChoices, 'nothing stored').toBeUndefined();
+
+    await setAnswer(app, { hold: true });
+    await ask('/second');
+    await expect.poll(async () => (await promptsOf(app)).length, 'no answer was left behind').toBe(2);
+    await signOutOf(page, 'anyone@example.org');
+    await expect.poll(async () => (await promptsOf(app))[1].closedBySignal, 'a real dialog closes').toBe(true);
+    await settled();
+    expect(target.hits.filter((hit) => hit.certificate)).toEqual([]);
+  });
+});
+
 test.describe('forgetting', () => {
-  test('clearing takes the stored choice and what Chromium kept, and sign-ins and frames stay right', async () => {
+  const cookieNames = (app: ElectronApplication) =>
+    app.evaluate(async ({ BrowserWindow }) => {
+      const cookies = await BrowserWindow.getAllWindows()[0].webContents.session.cookies.get({});
+      return cookies.filter((cookie) => cookie.name.includes('d5')).map((cookie) => `${cookie.name}${cookie.session ? ' (session)' : ''}`).sort();
+    });
+
+  test('the last sign-out takes the stored choice and what Chromium kept, and session cookies come back', async () => {
     const server = await certServer('forget');
     const first = await start(`${server.origin}/`, { answer: { response: 0, checkboxChecked: true } });
     await expect.poll(() => server.hits.length).toBeGreaterThan(0);
     await expect.poll(() => Object.keys(stateOf(first.profile).certificateChoices ?? {})).toEqual([server.host]);
     const asked = (await promptsOf(first.app)).length;
-    const cookiesBefore = await first.page.evaluate(() => document.cookie);
-    expect(cookiesBefore).toContain('d5=kept');
+    const before = await cookieNames(first.app);
+    expect(before).toEqual(['__Host-d5session (session)', 'd5', 'd5session (session)', 'd5shared (session)']);
+    const pid = await networkPid(first.app);
+    await setAnswer(first.app, { response: -1 });
 
-    await first.page.evaluate(() => (window as unknown as { bulwarkDesktop: { certificates: { clearChoices(): Promise<void> } } }).bulwarkDesktop.certificates.clearChoices());
+    await lastSignOut(first.page);
     expect(stateOf(first.profile).certificateChoices, 'gone from disk at once').toBeUndefined();
 
-    // Without this Chromium goes on sending it, with no event, also after a restart of no window.
-    await setAnswer(first.app, { response: -1 });
+    // As soon as a request can go at all, it has to go without the certificate and with the cookies.
+    const page = first.page;
+    let tries = 0;
     await expect
       .poll(
         async () => {
-          await first.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.reload());
-          await settled(500);
-          return (await promptsOf(first.app)).length;
+          tries += 1;
+          await page.evaluate((path) => Promise.race([fetch(path).catch(() => {}), new Promise((resolve) => setTimeout(resolve, 1000))]), `/right-after?${tries}`);
+          return (await networkPid(first.app)) !== pid && server.hits.some((hit) => hit.path.startsWith('/right-after') && !hit.certificate);
         },
-        { timeout: 20_000 },
+        { timeout: 20_000, intervals: [50] },
       )
-      .toBeGreaterThan(asked);
-    await expect.poll(() => server.hits.at(-1)?.certificate, 'the next request goes without').toBeNull();
-    await expect(first.app.windows().at(-1)!.locator('#here')).toHaveText('forget');
-    expect(await first.app.windows().at(-1)!.evaluate(() => document.cookie), 'a sign-in survives it').toContain('d5=kept');
+      .toBe(true);
+    const after = server.hits.find((hit) => hit.path.startsWith('/right-after') && !hit.certificate)!;
+    for (const name of ['d5=kept', 'd5session=1', '__Host-d5session=1', 'd5shared=1']) expect(after.cookie, name).toContain(name);
+    expect(await cookieNames(first.app), 'and still as session cookies').toEqual(before);
+    expect((await promptsOf(first.app)).length).toBeGreaterThan(asked);
+  });
+
+  test('a page is told at a restart, so what was under way can fail, and a stuck mail image doesn\'t cost a window its work', async () => {
+    const server = await certServer('told');
+    const { app, page } = await start(`${server.origin}/`, { answer: { response: 0 } });
+    await expect.poll(() => server.hits.length).toBeGreaterThan(0);
+    await page.evaluate(`
+      window.__told = 0;
+      window.__kept = 'unsaved';
+      (${certificates})().onConnectionsReset(() => { window.__told += 1; });
+      void fetch('/hang-post', { method: 'POST', body: 'x' }).catch(() => {});
+    `);
+    await mailFrame(page, `<img src="${server.origin}/hang.png">`);
+    await expect.poll(() => server.of('/hang-post').length).toBe(1);
+    await expect.poll(() => server.of('/hang.png').length).toBe(1);
+    const pid = await networkPid(app);
+    await lastSignOut(page);
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __told: number }).__told), { timeout: 15_000 }).toBeGreaterThan(0);
+    expect(await networkPid(app)).not.toBe(pid);
+    await settled(1000);
+    expect(await page.evaluate(() => (window as unknown as { __kept?: string }).__kept), 'not reloaded').toBe('unsaved');
+  });
+
+  test('requests sent during a restart fail at once, or go out with the session cookies', async () => {
+    const server = await certServer('during');
+    const { app, page } = await start(`${server.origin}/`, { answer: { response: 0 } });
+    await expect.poll(() => server.hits.length).toBeGreaterThan(0);
+    await setAnswer(app, { response: 0 });
+    const pid = await networkPid(app);
+    await lastSignOut(page);
+    // A steady stream across the whole restart. Each has to settle: none may be left open.
+    const outcomes = await page.evaluate(async () => {
+      const results: string[] = [];
+      for (let at = 0; at < 80; at += 1) {
+        const one = fetch(`/during?${at}`).then((response) => `status ${response.status}`, () => 'failed');
+        results.push(await Promise.race([one, new Promise<string>((resolve) => setTimeout(() => resolve('open'), 4000))]));
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      return results;
+    });
+    expect(await networkPid(app), 'it did restart in that time').not.toBe(pid);
+    expect(outcomes.filter((outcome) => outcome === 'open'), 'hanging').toEqual([]);
+    expect(outcomes.at(-1)).toBe('status 200');
+    const after = server.hits.filter((hit) => hit.path.startsWith('/during'));
+    expect(after.filter((hit) => !hit.cookie.includes('d5session=1')), 'none without its session cookie').toEqual([]);
+  });
+
+  test('a page still loading comes back', async () => {
+    const server = await certServer('stillloading');
+    const { app, page } = await start(`${server.origin}/`, { answer: { response: 0 } });
+    await expect.poll(() => server.hits.length).toBeGreaterThan(0);
+    // In this order: a page in the middle of a navigation can't be asked to sign out.
+    await lastSignOut(page);
+    await startGoing(app, `${server.origin}/hang-page`);
+    await expect.poll(() => server.of('/hang-page').length).toBe(1);
+    // It would never end. A reload gives the window the page it was on.
+    const before = server.of('/').length;
+    await expect.poll(() => server.of('/').length, { message: 'reloaded', timeout: 15_000 }).toBeGreaterThan(before);
+  });
+
+  test('a second last sign-out soon after is as thorough', async () => {
+    const server = await certServer('twice');
+    const { app, page } = await start(`${server.origin}/`, { answer: { response: 0 } });
+    await expect.poll(() => server.hits.length).toBeGreaterThan(0);
+    const first = await networkPid(app);
+    await lastSignOut(page);
+    await expect.poll(() => networkPid(app)).not.toBe(first);
+    await expect
+      .poll(
+        async () => {
+          await page.evaluate(() => Promise.race([fetch('/again').catch(() => {}), new Promise((resolve) => setTimeout(resolve, 500))]));
+          return server.of('/again')[0]?.certificate;
+        },
+        { timeout: 15_000 },
+      )
+      .toBeTruthy();
+    const second = await networkPid(app);
+    await lastSignOut(page);
+    await expect.poll(() => networkPid(app), { timeout: 8000 }).not.toBe(second);
   });
 
   test('clearing costs nobody a network restart when no certificate was involved', async () => {
     const server = await certServer('nothing', { plain: true });
     const { app, page } = await start(`${server.origin}/`);
-    const service = () => app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((metric) => metric.serviceName?.includes('network'))?.pid);
-    const pid = await service();
+    const pid = await networkPid(app);
     expect(pid).toBeTruthy();
-    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { certificates: { clearChoices(): Promise<void> } } }).bulwarkDesktop.certificates.clearChoices());
+    await lastSignOut(page);
     await settled(2500);
-    expect(await service()).toBe(pid);
+    expect(await networkPid(app)).toBe(pid);
   });
 
   test('the wipe nonce takes remembered choices, also at the start before anything is set up', async () => {
@@ -543,9 +871,11 @@ test.describe('forgetting', () => {
   test('a live wipe nonce takes them too', async () => {
     const server = await certServer('wipe-live');
     const root = freshPolicies();
-    const { app, profile } = await start(`${server.origin}/`, { policies: root, answer: { response: 0, checkboxChecked: true } });
+    const { app, page, profile } = await start(`${server.origin}/`, { policies: root, answer: { response: 0, checkboxChecked: true } });
     await expect.poll(() => Object.keys(stateOf(profile).certificateChoices ?? {})).toEqual([server.host]);
     const asked = (await promptsOf(app)).length;
+    await page.evaluate(() => fetch('/set-old'));
+    expect(await cookieNames(app)).toContain('d5old (session)');
     setPolicy(root, 'WipeOfflineData', 'd5-wipe-2');
     await expect.poll(() => stateOf(profile).certificateChoices).toBeUndefined();
     await setAnswer(app, { response: -1 });
@@ -558,6 +888,7 @@ test.describe('forgetting', () => {
         { timeout: 30_000 },
       )
       .toBeGreaterThan(asked);
+    expect(await cookieNames(app), 'what the wipe deleted isn\'t set back with the session cookies').not.toContain('d5old (session)');
   });
 });
 
@@ -600,12 +931,17 @@ test.describe('the Windows sign-in', () => {
 
       // From inside the app first, while nothing has signed in. Chromium would answer each 401.
       await mailFrame(page, `<img src="${signIn.url('sso.localhost', '/mail.png')}"><iframe src="${signIn.url('sso.localhost', '/mail-frame')}"></iframe><img src="${marker.origin}/mail-ran.png">`);
-      await pluginFrame(page, `fetch("${signIn.url('sso.localhost', '/plugin')}",{mode:"no-cors",credentials:"include"}).catch(()=>{});fetch("${marker.origin}/plugin-ran",{mode:"no-cors"}).catch(()=>{});`);
-      await page.evaluate((url) => fetch(url, { credentials: 'include', mode: 'no-cors' }).catch(() => {}), signIn.url('sso.localhost', '/page'));
+      const inWorker = `fetch("${signIn.url('sso.localhost', '/worker')}",{mode:"no-cors",credentials:"include"}).catch(()=>{});try{new WebSocket("${signIn.ws('sso.localhost', '/worker-ws')}")}catch{}`;
+      await pluginFrame(page, `fetch("${signIn.url('sso.localhost', '/plugin')}",{mode:"no-cors",credentials:"include"}).catch(()=>{});try{new WebSocket("${signIn.ws('sso.localhost', '/plugin-ws')}")}catch{};new Worker(URL.createObjectURL(new Blob([${JSON.stringify(inWorker)}])));fetch("${marker.origin}/plugin-ran",{mode:"no-cors"}).catch(()=>{});`);
+      await page.evaluate(([url, ws]) => {
+        void fetch(url, { credentials: 'include', mode: 'no-cors' }).catch(() => {});
+        void new WebSocket(ws);
+      }, [signIn.url('sso.localhost', '/page'), signIn.ws('sso.localhost', '/page-ws')]);
       await expect.poll(() => marker.hits.map((hit) => hit.path).sort()).toEqual(['/mail-ran.png', '/plugin-ran']);
-      await expect.poll(() => ['/mail.png', '/mail-frame', '/plugin', '/page'].every((pathname) => signIn.asked(pathname)), 'each got as far as the 401').toBe(true);
+      const inside = ['/mail.png', '/mail-frame', '/plugin', '/plugin-ws', '/worker', '/worker-ws', '/page', '/page-ws'];
+      await expect.poll(() => inside.filter((pathname) => !signIn.asked(pathname)), 'each got as far as the 401').toEqual([]);
       await settled();
-      for (const pathname of ['/mail.png', '/mail-frame', '/plugin', '/page']) expect(signIn.answered(pathname), pathname).toBeNull();
+      for (const pathname of inside) expect(signIn.answered(pathname), pathname).toBeNull();
 
       // Not listed: not from the window either.
       await goTo(app, signIn.url('other.localhost', '/not-listed'));
@@ -629,6 +965,51 @@ test.describe('the Windows sign-in', () => {
       expect(signIn.asked('/after.png')).toBe(false);
     });
   }
+
+  test('a connection that signed in goes at the last sign-out: frames don\'t reach it', async () => {
+    const own = await certServer('own10', { plain: true });
+    const marker = await certServer('marker10', { plain: true });
+    const signIn = await signInServer('NTLM');
+    const root = freshPolicies({ AuthServerAllowlist: 'sso.localhost' });
+    const { app } = await start(`${own.origin}/`, { policies: root });
+    await goTo(app, signIn.url('sso.localhost', '/window'));
+    await expect.poll(() => signIn.answered('/window')).toBe('NTLM');
+    await goTo(app, `${own.origin}/back`);
+    const page = shownPageNow(app);
+    await lastSignOut(page);
+    await settled(2500);
+    await mailFrame(page, `<img src="${signIn.url('sso.localhost', '/after.png')}"><img src="${marker.origin}/ran.png">`);
+    await pluginFrame(page, `fetch("${signIn.url('sso.localhost', '/after-plugin')}",{mode:"no-cors",credentials:"include"}).catch(()=>{});fetch("${marker.origin}/ran-plugin",{mode:"no-cors"}).catch(()=>{});`);
+    await expect.poll(() => marker.hits.length).toBe(2);
+    await settled();
+    for (const pathname of ['/after.png', '/after-plugin']) {
+      expect(signIn.onSignedInConnection(pathname), pathname).toBe(false);
+      expect(signIn.answered(pathname), pathname).toBeNull();
+    }
+  });
+
+  test('so does one on a server taken off the list', async () => {
+    const own = await certServer('own11', { plain: true });
+    const marker = await certServer('marker11', { plain: true });
+    const signIn = await signInServer('NTLM');
+    const root = freshPolicies({ AuthServerAllowlist: 'sso.localhost,spare.localhost' });
+    const { app } = await start(`${own.origin}/`, { policies: root });
+    await goTo(app, signIn.url('sso.localhost', '/window'));
+    await expect.poll(() => signIn.answered('/window')).toBe('NTLM');
+    await goTo(app, `${own.origin}/back`);
+    const page = shownPageNow(app);
+    setPolicy(root, 'AuthServerAllowlist', 'spare.localhost');
+    await expect.poll(() => app.evaluate(({ app: electronApp }) => electronApp.commandLine.getSwitchValue('auth-server-whitelist'))).toBe('spare.localhost');
+    await settled(500);
+    await mailFrame(page, `<img src="${signIn.url('sso.localhost', '/off.png')}"><img src="${marker.origin}/ran.png">`);
+    await expect.poll(() => marker.hits.length).toBe(1);
+    await settled();
+    expect(signIn.onSignedInConnection('/off.png')).toBe(false);
+    await goTo(app, signIn.url('sso.localhost', '/off-window'));
+    await settled(300);
+    expect(signIn.onSignedInConnection('/off-window'), 'nor does the window keep it').toBe(false);
+    expect(signIn.answered('/off-window')).toBeNull();
+  });
 
   test('a server taken off the list stops getting it at once, and a new one waits for the restart', async () => {
     const own = await certServer('own5', { plain: true });

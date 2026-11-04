@@ -63,10 +63,14 @@ export function hostPortOf(url: string): string | null {
   return `${parsed.hostname}:${parsed.port || (parsed.protocol === 'https:' ? '443' : '80')}`;
 }
 
-export function classifyRequest(facts: RequestFacts, ownOrigin: string, isListedServer: (origin: string) => boolean): Standing {
+const FETCHES = new Set(['xhr', 'webSocket', 'other']);
+
+/** `inBareWindow`: a blob preview or print pop-up with a document of its own, outside the window manager. */
+export function classifyRequest(facts: RequestFacts, ownOrigin: string, isListedServer: (origin: string) => boolean, inBareWindow: () => boolean = () => false): Standing {
   const target = targetOrigin(facts.url);
   if (!target) return 'frame';
   if (target === ownOrigin) return 'first-party';
+  if (inBareWindow()) return 'frame';
   // navigation.ts has already said yes to where a window goes.
   if (facts.resourceType === 'mainFrame') return 'first-party';
   if (facts.resourceType === 'subFrame') return 'frame';
@@ -74,6 +78,10 @@ export function classifyRequest(facts: RequestFacts, ownOrigin: string, isListed
   if (facts.frame.parent) return 'frame';
   const from = facts.initiatorOrigin ?? facts.frame.origin;
   if (from === target) return 'first-party';
+  // What the app itself sends a mail server is a fetch or a WebSocket. An image or a stylesheet
+  // on the page's account can be mail: a print pop-up written with `document.write` loads through
+  // its opener, so to main it's the main window's top frame asking.
+  if (!FETCHES.has(facts.resourceType)) return 'frame';
   return from === ownOrigin && isListedServer(target) ? 'listed-server' : 'other-page';
 }
 
@@ -133,6 +141,8 @@ export interface ChoosableCertificate extends CertificateFacts {
 export interface PickQuestion<C> {
   hostPort: string;
   certificates: C[];
+  /** False where only this run's consent is being asked for. */
+  rememberable: boolean;
 }
 
 export interface PickAnswer<C> {
@@ -140,18 +150,21 @@ export interface PickAnswer<C> {
   remember: boolean;
 }
 
-/** Choices that were remembered, per `host:port`. Backed by the state file. */
+/** Choices that were remembered, per `host:port`, each under the account it was made in. Backed by the state file. */
 export interface RememberedChoices {
   get(hostPort: string): string | undefined;
   set(hostPort: string, fingerprint: string): void;
   clear(): void;
+  clearAccount(account: string): void;
 }
 
 export interface ChooserOptions<C> {
   rules: () => readonly CertificateRule[];
   choices: RememberedChoices;
-  /** The native picker. A failure to ask is a no. */
-  ask: (question: PickQuestion<C>, window: unknown) => Promise<PickAnswer<C>>;
+  /** The native picker. A failure to ask is a no. It closes when the signal goes. */
+  ask: (question: PickQuestion<C>, window: unknown, signal: AbortSignal) => Promise<PickAnswer<C>>;
+  /** A mail server the user added: their picker answer or tick is the grant. */
+  isUserServer: (hostPort: string) => boolean;
 }
 
 export type CertificateDecision<C> = { kind: 'send'; certificate: C } | { kind: 'none' } | { kind: 'leave' };
@@ -164,9 +177,13 @@ export class CertificateChooser<C extends ChoosableCertificate> {
   private readonly holding = new Set<string>();
   private readonly declined = new Set<string>();
   private readonly open = new Map<string, Promise<PickAnswer<C>>>();
+  /** Hosts a wildcard rule named, and the user agreed to, for this run. */
+  private readonly consented = new Set<string>();
   private dialogs: Promise<unknown> = Promise.resolve();
   /** Chromium was given an answer it now keeps. */
   private answered = false;
+  /** Goes at a sign-out: a question still open then is about someone who has left. */
+  private openQuestions = new AbortController();
 
   constructor(private readonly options: ChooserOptions<C>) {}
 
@@ -174,9 +191,9 @@ export class CertificateChooser<C extends ChoosableCertificate> {
     return this.holding.has(hostPort);
   }
 
-  private show(question: PickQuestion<C>, window: unknown): Promise<PickAnswer<C>> {
+  private show(question: PickQuestion<C>, window: unknown, signal: AbortSignal): Promise<PickAnswer<C>> {
     const none: PickAnswer<C> = { certificate: null, remember: false };
-    const shown = this.dialogs.then(() => this.options.ask(question, window)).catch(() => none);
+    const shown = this.dialogs.then(() => (signal.aborted ? none : this.options.ask(question, window, signal))).catch(() => none);
     this.dialogs = shown;
     return shown;
   }
@@ -206,7 +223,15 @@ export class CertificateChooser<C extends ChoosableCertificate> {
     const url = `https://${hostPort}`;
     const rules = this.options.rules().filter((rule) => certificateRuleMatchesUrl(rule, url));
     const ruled = list.filter((certificate) => rules.some((rule) => certificateMatchesRule(rule, certificate)));
-    if (ruled.length === 1) return this.send(ruled[0]);
+    // The page's own request, for a host no rule spells out and the user never added: a rule for
+    // `[*.]corp.example` shouldn't let script reach every host under it unasked.
+    const host = new URL(url).host;
+    const needsConsent = standing === 'listed-server' && !this.options.isUserServer(hostPort) && !rules.some((rule) => rule.host === host);
+    if (needsConsent && ruled.length === 0 && !this.options.choices.get(hostPort)) return this.refuse(hostPort);
+    if (ruled.length === 1 && (!needsConsent || this.consented.has(hostPort))) return this.send(ruled[0]);
+
+    const questions = this.openQuestions;
+    const cancelled = new Promise<null>((resolve) => questions.signal.addEventListener('abort', () => resolve(null), { once: true }));
 
     const stored = this.options.choices.get(hostPort);
     const remembered = stored ? list.find((certificate) => certificate.fingerprint === stored) : undefined;
@@ -217,17 +242,23 @@ export class CertificateChooser<C extends ChoosableCertificate> {
     if (!asked) {
       if (this.open.size >= MAX_WAITING_HOSTS) return this.refuse(hostPort);
       // Several rules can fit and policy can't say which: the user picks among those.
-      asked = this.show({ hostPort, certificates: ruled.length > 1 ? ruled : list }, window).finally(() => this.open.delete(hostPort));
+      const certificates = ruled.length > 1 || needsConsent ? ruled : list;
+      asked = this.show({ hostPort, certificates, rememberable: !needsConsent }, window, questions.signal).finally(() => {
+        if (this.open.get(hostPort) === asked) this.open.delete(hostPort);
+      });
       this.open.set(hostPort, asked);
     }
-    const answer = await asked;
+    const answer = await Promise.race([asked, cancelled]);
+    // A sign-out came first. No answer goes to Chromium either: it would stay for the next person.
+    if (questions.signal.aborted || !answer) return { kind: 'leave' };
     // Requests that waited on the same dialog each hold their own copy of the list.
     const picked = answer.certificate ? list.find((certificate) => certificate.fingerprint === answer.certificate!.fingerprint) : undefined;
     if (!picked) {
       this.declined.add(hostPort);
       return this.refuse(hostPort);
     }
-    if (answer.remember) this.options.choices.set(hostPort, picked.fingerprint);
+    if (needsConsent) this.consented.add(hostPort);
+    else if (answer.remember) this.options.choices.set(hostPort, picked.fingerprint);
     return this.send(picked);
   }
 
@@ -236,13 +267,28 @@ export class CertificateChooser<C extends ChoosableCertificate> {
     return this.answered;
   }
 
+  private closeQuestions(): void {
+    this.openQuestions.abort();
+    this.openQuestions = new AbortController();
+    this.open.clear();
+    this.dialogs = Promise.resolve();
+  }
+
+  /** One account's sign-out, with others still here. What's in Chromium stays: it costs them nothing. */
+  forgetAccount(account: string): void {
+    this.closeQuestions();
+    this.options.choices.clearAccount(account);
+  }
+
   /**
-   * Sign-out, account switch, wipe. Says whether Chromium still holds answers, which only
-   * ends with its network service. Until `networkEmptied`, frames stay kept away.
+   * The last sign-out, or a wipe. Says whether Chromium still holds answers, which only ends
+   * with its network service. Until `networkEmptied`, frames stay kept away.
    */
   forget(): boolean {
+    this.closeQuestions();
     this.options.choices.clear();
     this.declined.clear();
+    this.consented.clear();
     if (!this.answered) this.holding.clear();
     return this.answered;
   }
@@ -272,10 +318,45 @@ export function narrowedList(inForce: string | null, now: string | null): string
  * parseHostList: a host, `*.domain`, maybe with a port, which a filter treats as any port.
  */
 export function signInListUrls(list: string | null): string[] {
-  return listEntries(list).map((entry) => {
+  return listEntries(list).flatMap((entry) => {
     const host = entry.replace(/:\d+$/, '').toLowerCase();
-    return `*://${host}/*`;
+    // `*://` doesn't take in WebSockets, and their handshake answers a 401 too.
+    return [`*://${host}/*`, `ws://${host}/*`, `wss://${host}/*`];
   });
+}
+
+/** As wide as Chromium's own reading of the list, or wider. */
+export function hostOnSignInList(list: string | null, host: string): boolean {
+  const wanted = host.toLowerCase();
+  return listEntries(list).some((entry) => {
+    const name = entry.replace(/:\d+$/, '').toLowerCase();
+    return name.startsWith('*.') ? wanted === name.slice(2) || wanted.endsWith(name.slice(1)) : wanted === name;
+  });
+}
+
+/** What's needed of Electron's Cookie. */
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  hostOnly?: boolean;
+  path?: string;
+  secure?: boolean;
+  httpOnly?: boolean;
+  sameSite?: 'unspecified' | 'no_restriction' | 'lax' | 'strict';
+}
+
+/**
+ * How to set a cookie back after the network service ended, which takes the ones that live only
+ * in its memory. No expiry, so it stays a session cookie. No domain for a host-only one, or it
+ * would start covering subdomains and a `__Host-` name would be refused.
+ */
+export function cookieToSetBack(cookie: SessionCookie): SessionCookie & { url: string } {
+  const host = (cookie.domain ?? '').replace(/^\./, '');
+  const { hostOnly: _hostOnly, ...rest } = cookie;
+  const details: SessionCookie & { url: string } = { ...rest, url: `${cookie.secure ? 'https' : 'http'}://${host}${cookie.path ?? '/'}` };
+  if (cookie.hostOnly) delete details.domain;
+  return details;
 }
 
 /** A 401 that Chromium would answer with the user's Windows sign-in. */

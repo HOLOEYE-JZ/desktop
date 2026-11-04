@@ -5,7 +5,7 @@
  */
 
 import { app } from 'electron';
-import { LABEL_KEY } from './label-keys';
+import { LABEL_KEY, labelKeepsPlaceholders } from './label-keys';
 
 const en = {
   unsavedTitle: 'A draft could not be saved',
@@ -222,6 +222,7 @@ const en = {
   keystoreCertificate: (subject: string) => `Certificate: ${subject}`,
   keystoreOverRate: 'It has used this very often in the last minute.',
   keystorePerOperation: 'This certificate can also sign you in elsewhere, so you are asked each time.',
+  pickerServerLine: 'Server: {host}',
   certificateTitle: '{host} asks for a certificate',
   certificateDetail: "The server wants to know who you are. A certificate you choose goes to this server only. If you don't know this server, don't send one.",
   certificateIssued: 'Issued by {issuer}, valid until {date}',
@@ -344,6 +345,7 @@ const de: typeof en = {
   keystoreCertificate: (subject) => `Zertifikat: ${subject}`,
   keystoreOverRate: 'Es hat das in der letzten Minute sehr oft verwendet.',
   keystorePerOperation: 'Mit diesem Zertifikat können Sie sich auch anderswo anmelden. Deshalb werden Sie jedes Mal gefragt.',
+  pickerServerLine: 'Server: {host}',
   certificateTitle: '{host} fragt nach einem Zertifikat',
   certificateDetail: 'Der Server möchte wissen, wer Sie sind. Ein Zertifikat, das Sie wählen, geht nur an diesen Server. Wenn Sie den Server nicht kennen, senden Sie keines.',
   certificateIssued: 'Ausgestellt von {issuer}, gültig bis {date}',
@@ -486,7 +488,7 @@ export function cleanLabels(raw: unknown): Record<string, string> {
   if (!raw || typeof raw !== 'object') return out;
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!LABEL_KEY.test(key) || typeof value !== 'string' || !value.trim() || value.length > 300) continue;
-    if (typeof (en as Record<string, unknown>)[key] === 'string') out[key] = value;
+    if (typeof (en as Record<string, unknown>)[key] === 'string' && labelKeepsPlaceholders(key, value)) out[key] = value;
   }
   return out;
 }
