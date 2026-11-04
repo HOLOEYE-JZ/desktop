@@ -246,21 +246,6 @@ const en = {
   appLockOrphanCancel: 'Keep it',
   appLockOsUnlockReason: 'Unlock Bulwark',
   appLockOsEnrollReason: 'Use this to unlock Bulwark',
-  keystoreAllowSession: 'Allow for this session',
-  keystoreAllowOnce: 'Allow once',
-  keystoreDeny: 'Deny',
-  keystoreFirstUseTitle: (host: string) => `Let ${host} use certificates on this computer?`,
-  keystoreFirstUseDetail: (host: string) =>
-    `The server ${host} and the plugins it provides could then ask to sign and decrypt mail with your certificates and smart cards. You are asked again before a certificate is used. You can take this back in the settings.`,
-  keystoreListTitle: (host: string) => `Let ${host} see your certificates?`,
-  keystoreListDetail: 'It gets the names and details of the certificates on this computer that can be used for mail, not the private keys. A plugin may be asking.',
-  keystoreSignTitle: (host: string) => `Let ${host} sign with your certificate?`,
-  keystoreSignDetail: 'It could sign anything in your name with this certificate. A plugin may be asking. Only allow this if you just sent signed mail or expect it.',
-  keystoreUnwrapTitle: (host: string) => `Let ${host} decrypt with your certificate?`,
-  keystoreUnwrapDetail: 'It could read mail encrypted to this certificate. A plugin may be asking. Only allow this if you are opening encrypted mail.',
-  keystoreCertificate: (subject: string) => `Certificate: ${subject}`,
-  keystoreOverRate: 'It has used this very often in the last minute.',
-  keystorePerOperation: 'This certificate can also sign you in elsewhere, so you are asked each time.',
   pickerServerLine: 'Server: {host}',
   certificateTitle: '{host} asks for a certificate',
   certificateDetail: "The server wants to know who you are. A certificate you choose goes to this server only. If you don't know this server, don't send one.",
@@ -370,21 +355,6 @@ const de: typeof en = {
   contextCopyAddress: 'Adresse kopieren',
   contextSaveImage: 'Bild speichern…',
   contextCopyImage: 'Bild kopieren',
-  keystoreAllowSession: 'Für diese Sitzung zulassen',
-  keystoreAllowOnce: 'Einmal zulassen',
-  keystoreDeny: 'Ablehnen',
-  keystoreFirstUseTitle: (host) => `${host} Zertifikate auf diesem Computer verwenden lassen?`,
-  keystoreFirstUseDetail: (host) =>
-    `Der Server ${host} und seine Plugins könnten dann darum bitten, E-Mails mit Ihren Zertifikaten und Smartcards zu signieren und zu entschlüsseln. Bevor ein Zertifikat verwendet wird, werden Sie erneut gefragt. Sie können das in den Einstellungen zurücknehmen.`,
-  keystoreListTitle: (host) => `${host} Ihre Zertifikate sehen lassen?`,
-  keystoreListDetail: 'Es erhält die Namen und Angaben der Zertifikate auf diesem Computer, die für E-Mails verwendet werden können, aber nicht die privaten Schlüssel. Möglicherweise fragt ein Plugin.',
-  keystoreSignTitle: (host) => `${host} mit Ihrem Zertifikat signieren lassen?`,
-  keystoreSignDetail: 'Es könnte mit diesem Zertifikat beliebige Inhalte in Ihrem Namen signieren. Möglicherweise fragt ein Plugin. Lassen Sie das nur zu, wenn Sie gerade eine signierte E-Mail senden oder damit rechnen.',
-  keystoreUnwrapTitle: (host) => `${host} mit Ihrem Zertifikat entschlüsseln lassen?`,
-  keystoreUnwrapDetail: 'Es könnte E-Mails lesen, die an dieses Zertifikat verschlüsselt sind. Möglicherweise fragt ein Plugin. Lassen Sie das nur zu, wenn Sie gerade eine verschlüsselte E-Mail öffnen.',
-  keystoreCertificate: (subject) => `Zertifikat: ${subject}`,
-  keystoreOverRate: 'Es hat das in der letzten Minute sehr oft verwendet.',
-  keystorePerOperation: 'Mit diesem Zertifikat können Sie sich auch anderswo anmelden. Deshalb werden Sie jedes Mal gefragt.',
   pickerServerLine: 'Server: {host}',
   certificateTitle: '{host} fragt nach einem Zertifikat',
   certificateDetail: 'Der Server möchte wissen, wer Sie sind. Ein Zertifikat, das Sie wählen, geht nur an diesen Server. Wenn Sie den Server nicht kennen, senden Sie keines.',
@@ -589,6 +559,11 @@ export function unsentDetail(text: Pick<typeof en, 'unsentOne' | 'unsentMany'>, 
 /** Plain text with {name} placeholders, so the webmail can translate it (labels). */
 export function fill(text: string, values: Record<string, string>): string {
   return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
+}
+
+/** The language the keystore's questions go by (keystore-strings.ts). */
+export function uiLanguageNow(): string {
+  return uiLanguage ?? app.getLocale();
 }
 
 export function strings(): typeof en {

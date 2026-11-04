@@ -56,6 +56,7 @@ import {
 import { standaloneAllowed, type PolicySourceProblem } from '../policy-start';
 import { requestGate } from '../request-gate';
 import type { StateFile } from '../state';
+import { keystorePolicyChanged, setKeystoreOffPolicy } from '../keystore-policy';
 import { setKeystoreAllowedOrigins } from './keystore';
 import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
@@ -388,6 +389,8 @@ export const policiesFeature: Feature = {
   modes: ['standalone', 'instance'],
   setup(ctx) {
     setKeystoreAllowedOrigins(() => policies.snapshot.KeystoreAllowedOrigins.value);
+    setKeystoreOffPolicy(() => !policies.snapshot.KeystoreEnabled.value || policies.snapshot.PluginsMode.value === 'off');
+    policies.on('changed', () => keystorePolicyChanged());
     policies.attachState(ctx.state);
     // Sent while the preload runs, so the page never sees a moment without values. A
     // sync message always needs an answer, also for a sender that gets nothing.
