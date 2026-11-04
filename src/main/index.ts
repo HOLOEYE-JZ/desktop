@@ -233,7 +233,8 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
   });
   zoom.attach(windowManager);
   menu!.attach(windowManager);
-  addWipeStep(async () => windowManager?.forgetSession());
+  // Windows to bring back can't be told apart by account, and bringing them back costs little.
+  addWipeStep(async () => windowManager?.forgetSession(), { perAccount: true });
   windowManager.on('sessionReady', onSessionReady);
   // A development switch for the test of the tray's hook, until the tray exists.
   if (DEV && process.argv.includes('--bulwark-test-close-to-background')) windowManager.setCloseToBackground(() => true);
