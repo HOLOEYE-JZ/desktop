@@ -149,7 +149,8 @@ export interface WindowManagerOptions {
   origin: string;
   mode: Mode;
   preloadPath: string;
-  devTools: boolean;
+  /** Asked at each new window: the DeveloperToolsAvailability policy can change while the app runs. */
+  devTools: () => boolean;
   /** Keep a warm spare. Off in tests that count windows. */
   spare?: boolean;
   /** How long an unused spare stays. For a test: the real wait is half an hour. */
@@ -225,7 +226,7 @@ export class WindowManager extends EventEmitter<{
       allowRunningInsecureContent: false,
       webviewTag: false,
       spellcheck: true,
-      devTools,
+      devTools: devTools(),
       additionalArguments: [
         `${PRELOAD_ARG.allowedOrigin}${origin}`,
         `${PRELOAD_ARG.mode}${mode}`,

@@ -431,6 +431,13 @@ export type CrashSendResult =
   | { ok: true }
   | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
 
+/** `forcedOff`: the DeveloperToolsAvailability policy says no. `locked`: the app lock is on, so nothing changes. */
+export interface DevToolsState {
+  on: boolean;
+  forcedOff: boolean;
+  locked: boolean;
+}
+
 /** An attachment copied to a private folder and open in its default program. */
 export interface EditSession {
   id: string;
@@ -614,6 +621,9 @@ export const CHANNEL = {
   localImportResume: 'bulwark:localImport.resume',
   localImportRelease: 'bulwark:localImport.release',
   localImportReleaseAll: 'bulwark:localImport.releaseAll',
+  devToolsGet: 'bulwark:devTools.get',
+  devToolsSet: 'bulwark:devTools.set',
+  devToolsChanged: 'bulwark:devTools.changed',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */
