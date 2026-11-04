@@ -48,6 +48,9 @@ function runsInMain(id: string): boolean {
 /** New items of the other apps, importing and settings: what the main window shows. */
 const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import']);
 
+/** The hidden line that takes Ctrl+F off a Mac. */
+const FIND_KEY_ID = 'edit.forwardOrSearch';
+
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
 const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
 
@@ -169,6 +172,10 @@ export class MenuController {
         }
         const id = item.id;
         if (!id) continue;
+        if (id === FIND_KEY_ID) {
+          item.enabled = this.ctrlFTarget() !== null;
+          continue;
+        }
         if (id.startsWith('window.focus.')) {
           item.checked = this.windows?.focusedManaged()?.window.id === Number(id.slice('window.focus.'.length));
           continue;
@@ -183,6 +190,16 @@ export class MenuController {
       }
     };
     walk(menu.items);
+  }
+
+  /**
+   * Ctrl+F on Windows and Linux: Forward while a message is selected in Mail, as in Outlook
+   * beside Ctrl+R, and the view's search everywhere else. Null when neither can run.
+   */
+  private ctrlFTarget(): 'message.forward' | 'edit.search' | null {
+    if (this.stateOf('message.forward').enabled) return 'message.forward';
+    if (this.stateOf('edit.search').enabled) return 'edit.search';
+    return null;
   }
 
   /** Items whose state comes from the page or the policy. */
@@ -362,6 +379,19 @@ export class MenuController {
         { role: 'selectAll', label: text.menuSelectAll },
         { type: 'separator' },
         this.command('edit.search', section === 'calendar' ? text.menuSearchEvents : text.menuSearch, mac ? {} : { accelerator: 'Ctrl+E' }),
+        // Ctrl+F: Forward or search, whichever the window can do (ctrlFTarget). Hidden: Forward shows the key.
+        ...(mac ? [] : [{
+          id: FIND_KEY_ID,
+          label: text.menuForward,
+          accelerator: 'Ctrl+F',
+          visible: false,
+          acceleratorWorksWhenHidden: true,
+          enabled: this.ctrlFTarget() !== null,
+          click: () => {
+            const target = this.ctrlFTarget();
+            if (target) this.dispatch(target);
+          },
+        } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -423,7 +453,11 @@ export class MenuController {
         // Outlook's and Apple Mail's keys; the single ones still work beside them.
         this.command('message.reply', text.menuReply, { accelerator: 'CmdOrCtrl+R' }),
         this.command('message.replyAll', text.menuReplyAll, { accelerator: 'CmdOrCtrl+Shift+R' }),
-        this.command('message.forward', text.menuForward, { accelerator: 'CmdOrCtrl+Shift+F' }),
+        // Ctrl+F as in Outlook (the hidden FIND_KEY_ID runs it); Ctrl+Shift+F still works. A Mac keeps Apple Mail's.
+        ...(mac ? [this.command('message.forward', text.menuForward, { accelerator: 'CmdOrCtrl+Shift+F' })] : [
+          this.command('message.forward', text.menuForward, { accelerator: 'Ctrl+F', registerAccelerator: false }),
+          this.command('message.forward', text.menuForward, { id: 'message.forwardAlt', accelerator: 'Ctrl+Shift+F', visible: false, acceleratorWorksWhenHidden: true }),
+        ]),
         { type: 'separator' },
         this.command('message.markRead', text.menuMarkRead, win ? { accelerator: 'Ctrl+Q' } : this.pageKey('Shift+I')),
         this.command('message.markUnread', text.menuMarkUnread, mac ? {} : { accelerator: 'Ctrl+U' }),

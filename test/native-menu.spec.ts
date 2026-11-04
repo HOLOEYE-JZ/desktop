@@ -344,6 +344,26 @@ test.describe('the app menu and windows', () => {
     expect((await menuItem(app, 'view.menuBar'))?.type).toBe('checkbox');
   });
 
+  test('Ctrl+F forwards with a message selected, and searches without one', async () => {
+    test.skip(process.platform === 'darwin', 'a Mac keeps Cmd+F for finding');
+    const seen: string[] = [];
+    await page.exposeFunction('__menuSeen', (id: string) => { seen.push(id); });
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { onCommand(l: (id: string) => void): void } } }).bulwarkDesktop.menu.onCommand((id) => (window as unknown as { __menuSeen(id: string): void }).__menuSeen(id)));
+    const enabled = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('edit.forwardOrSearch')?.enabled ?? null);
+    await setState({ 'message.forward': true, 'edit.search': true });
+    await expect.poll(enabled).toBe(true);
+    await clickMenuItem(app, 'edit.forwardOrSearch');
+    await expect.poll(() => seen.at(-1)).toBe('message.forward');
+    await setState({ 'message.forward': false, 'edit.search': true });
+    await expect.poll(async () => (await menuItem(app, 'message.forward'))?.enabled).toBe(false);
+    await clickMenuItem(app, 'edit.forwardOrSearch');
+    await expect.poll(() => seen.at(-1)).toBe('edit.search');
+    // A composer: neither, so the key is the editor's.
+    await setState({ 'message.forward': false, 'edit.search': false });
+    await expect.poll(enabled).toBe(false);
+    await setState({});
+  });
+
   test('single keys only show: the page has them, and knows when someone types', async () => {
     const star = await menuItem(app, 'message.star');
     expect(star).toMatchObject({ accelerator: 'S', registerAccelerator: false });
@@ -365,7 +385,10 @@ test.describe('the app menu and windows', () => {
     };
     await registered('message.reply', 'CmdOrCtrl+R');
     await registered('message.replyAll', 'CmdOrCtrl+Shift+R');
-    await registered('message.forward', 'CmdOrCtrl+Shift+F');
+    await registered('message.forwardAlt', 'Ctrl+Shift+F');
+    // Ctrl+F shows on Forward and runs through a hidden line: Forward, or search where there's nothing to forward.
+    expect(await menuItem(app, 'message.forward')).toMatchObject({ accelerator: 'Ctrl+F', registerAccelerator: false });
+    await registered('edit.forwardOrSearch', 'Ctrl+F');
     await registered('message.markUnread', 'Ctrl+U');
     await registered('edit.search', 'Ctrl+E');
     await registered('view.refresh', 'F9');
