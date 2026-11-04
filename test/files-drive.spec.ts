@@ -50,6 +50,9 @@ test.beforeAll(async () => {
   profile = tempProfile('files-drive');
   ({ app, page } = await launchStandalone(profile, `--bulwark-test-files-provider=${PROVIDER}`, `--bulwark-test-files-drive-dir=${path.join(BASE, 'drive')}`, '--bulwark-test-files-letters=off', '--bulwark-test-files-fetch-timeout=5000', `--bulwark-test-policy-root=${POLICY_ROOT}`, '--bulwark-test-policy-poll=250'));
   await waitForLogin(page);
+  // A webmail with the sync engine claims the files bridge in its first render, as it should.
+  // These tests play the engine, so they take it in a same-origin document that doesn't.
+  await page.goto(new URL('/pst-worker.js', page.url()).toString());
   expect(await page.evaluate(CLAIM)).toBe(true);
 });
 

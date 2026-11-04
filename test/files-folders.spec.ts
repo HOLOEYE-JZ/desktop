@@ -30,7 +30,7 @@ function files<T>(target: Page, member: string, ...args: unknown[]): Promise<T> 
     const w = window as unknown as { __files?: Record<string, (...a: unknown[]) => unknown> | null; bulwarkDesktop: { files: { claim: () => Record<string, (...a: unknown[]) => unknown> | null } } };
     if (w.__files === undefined) w.__files = w.bulwarkDesktop.files.claim();
     if (!w.__files) throw new Error('claimed already');
-    return w.__files[name as string](...(values as unknown[]));
+    return w.__files[name as string](...(values as unknown as unknown[]));
   }, [member, args] as const) as Promise<T>;
 }
 
@@ -86,6 +86,9 @@ test.beforeAll(async () => {
   base = realpathSync(mkdtempSync(path.join(tmpdir(), 'bw-files-')));
   ({ app, page } = await launchStandalone(profile, `--bulwark-test-policy-root=${POLICY_ROOT}`, '--bulwark-test-policy-poll=250'));
   await standIns(app);
+  // A webmail with the sync engine claims the files bridge in its first render, as it should.
+  // These tests play the engine, so they take it in a same-origin document that doesn't.
+  await page.goto(new URL('/pst-worker.js', page.url()).toString());
 });
 
 test.afterAll(async () => {
@@ -103,9 +106,21 @@ test('only the main window\'s page is answered', async () => {
   await expect.poll(() => app.windows().length, { timeout: 60_000 }).toBeGreaterThan(before);
   const second = app.windows().at(-1)!;
   await second.waitForLoadState('domcontentloaded');
-  await expect.poll(() => second.evaluate(() => typeof (window as unknown as { bulwarkDesktop?: unknown }).bulwarkDesktop), { timeout: 60_000 }).toBe('object');
-  for (const [member, args] of [['roots', []], ['scan', ['any-root-id', '']], ['loadState', ['any-root-id']], ['addFolder', [{ account: 'a', remoteId: null, remoteLabel: 'x' }]]] as const) {
-    const answer = await files(second, member, ...args).then(() => 'answered', (error: Error) => error.message);
+  // The webmail in that window claims the bridge itself, as it should, so its calls are made
+  // here as Electron delivers them: from that window's own main frame, through ipc.ts.
+  const contentsId = await (await app.browserWindow(second)).evaluate((window) => window.webContents.id);
+  const channels: Record<string, string> = { roots: 'bulwark:files.roots', scan: 'bulwark:files.scan', loadState: 'bulwark:files.loadState', addFolder: 'bulwark:files.addFolder' };
+  for (const [member, args] of [['roots', []], ['scan', ['any-root-id', '']], ['loadState', ['any-root-id']], ['addFolder', [{ account: 'a', remoteId: null, remoteLabel: 'x' }, true]]] as const) {
+    const answer = await app.evaluate(async ({ ipcMain, webContents }, [id, channel, values]) => {
+      const contents = webContents.fromId(id as number)!;
+      const handler = (ipcMain as unknown as { _invokeHandlers: Map<string, (event: unknown, ...a: unknown[]) => unknown> })._invokeHandlers.get(channel as string)!;
+      try {
+        await handler({ senderFrame: contents.mainFrame, sender: contents }, ...(values as unknown as unknown[]));
+        return 'answered';
+      } catch (error) {
+        return (error as Error).message;
+      }
+    }, [contentsId, channels[member], args] as const);
     // Main's own word, not ipc.ts's frame check: the second window is the app's, on its origin.
     expect(answer, member).toContain('files calls come from the main window');
   }
