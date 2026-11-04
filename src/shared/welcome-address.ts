@@ -54,13 +54,24 @@ export function parseWelcomeAddress(raw: unknown, allowInsecure: boolean): { ok:
 export type WelcomeEmailError = 'email_invalid' | 'no_jmap';
 
 /**
- * The first screen's email address. It isn't kept: the sign-in page asks for it again, as
- * nothing carries it there. What it does here is catch Gmail, Outlook.com and iCloud, and
- * something that isn't an email address, before the app is set up for them.
+ * The first screen's email address. It catches Gmail, Outlook.com and iCloud, and
+ * something that isn't an email address, before the app is set up for them. The address
+ * goes on to the sign-in page (firstPageUrl), so nobody types it twice.
  */
-export function parseWelcomeEmail(raw: unknown): { ok: true } | { ok: false; error: WelcomeEmailError } {
+export function parseWelcomeEmail(raw: unknown): { ok: true; email: string } | { ok: false; error: WelcomeEmailError } {
   if (typeof raw !== 'string') return { ok: false, error: 'email_invalid' };
-  const email = /^[^\s@/]+@([^\s@/]+\.[^\s@/.]+)$/.exec(raw.trim());
+  const text = raw.trim();
+  const email = /^[^\s@/]+@([^\s@/]+\.[^\s@/.]+)$/.exec(text);
   if (!email) return { ok: false, error: 'email_invalid' };
-  return isNoJmapDomain(email[1]) ? { ok: false, error: 'no_jmap' } : { ok: true };
+  return isNoJmapDomain(email[1]) ? { ok: false, error: 'no_jmap' } : { ok: true, email: text };
+}
+
+/**
+ * Where the first window of a standalone start goes. With the first screen's address it's
+ * the sign-in page with that address filled in (the webmail reads login_hint, puts the
+ * caret in the next field and passes it on to a browser sign-in).
+ */
+export function firstPageUrl(origin: string, email: string | null | undefined): string {
+  if (!email) return `${origin}/`;
+  return `${origin}/login?login_hint=${encodeURIComponent(email)}`;
 }

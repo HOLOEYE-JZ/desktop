@@ -17,7 +17,7 @@ import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { parseWelcomeAddress, parseWelcomeEmail } from '../shared/welcome-address';
+import { firstPageUrl, parseWelcomeAddress, parseWelcomeEmail } from '../shared/welcome-address';
 import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
@@ -503,7 +503,10 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
 
   windows.on('created', ({ window }) => watchForReplacedCertificate(window));
   mainWindowAllowed = true;
-  windows.open({ type: 'main', url: `${APP_ORIGIN}/` });
+  // Once: the first screen's address fills the sign-in page, and only on this start.
+  const email = welcomeEmail;
+  welcomeEmail = null;
+  windows.open({ type: 'main', url: firstPageUrl(APP_ORIGIN, email) });
 }
 
 async function bootInstance(instanceUrl: string, theme: ThemeController): Promise<void> {
@@ -522,6 +525,9 @@ async function bootInstance(instanceUrl: string, theme: ThemeController): Promis
   mainWindowAllowed = true;
   windows.open({ type: 'main', url: instanceUrl });
 }
+
+/** The address typed on the first screen, for the sign-in page. Kept in memory only. */
+let welcomeEmail: string | null = null;
 
 /** The first run asks which of the two the user wants. A forced InstanceUrl skips this. */
 function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { kind: 'welcome' }>): void {
@@ -560,6 +566,7 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
       if (!decision.allowStandalone) return { ok: false, error: 'invalid_choice' };
       const email = parseWelcomeEmail(choice.email);
       if (!email.ok) return { ok: false, error: email.error };
+      welcomeEmail = email.email;
     } else if (choice?.mode === 'instance') {
       const allowInsecure = policies.snapshot.AllowInsecureInstance.value;
       // A locked address is the admin's, already full. A typed one may be a bare host.

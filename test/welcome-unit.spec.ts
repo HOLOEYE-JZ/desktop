@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { isNoJmapDomain, parseWelcomeAddress, parseWelcomeEmail } from '../src/shared/welcome-address';
+import { firstPageUrl, isNoJmapDomain, parseWelcomeAddress, parseWelcomeEmail } from '../src/shared/welcome-address';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STRINGS = JSON.parse(readFileSync(path.join(ROOT, 'src/pages/welcome-strings.json'), 'utf8')) as Record<string, Record<string, string>>;
@@ -38,14 +38,26 @@ test.describe('the first-run address field', () => {
 
 test.describe('the first-run email field', () => {
   test('takes an email address, and catches Gmail, Outlook.com and iCloud', () => {
-    expect(parseWelcomeEmail('sam@example.org')).toEqual({ ok: true });
-    expect(parseWelcomeEmail('  sam.lee@mail.example.co.uk ')).toEqual({ ok: true });
+    expect(parseWelcomeEmail('sam@example.org')).toEqual({ ok: true, email: 'sam@example.org' });
+    expect(parseWelcomeEmail('  sam.lee@mail.example.co.uk ')).toEqual({ ok: true, email: 'sam.lee@mail.example.co.uk' });
     for (const typed of ['sam@gmail.com', 'sam@outlook.de', 'sam@icloud.com']) expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'no_jmap' });
   });
 
   test('anything else asks for an email address', () => {
     for (const typed of ['', 'sam', 'mail.example.com', 'https://mail.example.com', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 42])
       expect(parseWelcomeEmail(typed), String(typed)).toEqual({ ok: false, error: 'email_invalid' });
+  });
+});
+
+test.describe('the first window after the first run', () => {
+  test('opens the sign-in page with the address typed on the first screen', () => {
+    expect(firstPageUrl('https://127.0.0.1:4100', 'sam+news@example.org')).toBe('https://127.0.0.1:4100/login?login_hint=sam%2Bnews%40example.org');
+    expect(new URL(firstPageUrl('https://127.0.0.1:4100', 'sam+news@example.org')).searchParams.get('login_hint')).toBe('sam+news@example.org');
+  });
+
+  test('without one, opens the app as before', () => {
+    expect(firstPageUrl('https://127.0.0.1:4100', null)).toBe('https://127.0.0.1:4100/');
+    expect(firstPageUrl('https://127.0.0.1:4100', '')).toBe('https://127.0.0.1:4100/');
   });
 });
 
