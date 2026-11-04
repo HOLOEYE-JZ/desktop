@@ -462,8 +462,7 @@ test.describe('OS integration', () => {
       await expect.poll(() => again.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
       expect(JSON.stringify(await trayItems(again))).not.toContain('Lunch');
     } finally {
-      // The parents too: test/policies.spec.ts starts by checking nothing of this is there.
-      reg('delete', 'HKCU\Software\BulwarkTest', '/f');
+      reg('delete', root, '/f');
     }
   });
 
