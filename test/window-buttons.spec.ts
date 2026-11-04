@@ -205,6 +205,8 @@ test.describe('the app\'s buttons and the window\'s', () => {
   test('Mountain View: a message and a new message', async () => {
     await setSize(1366, 768);
     await setStored('settings-storage', { interfaceLayout: 'mountain-view' });
+    // Its inbox lists unread mail in a section of its own, first: the earlier tests read this one.
+    await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Email/set', { update: { [id]: { 'keywords/$seen': null } } }, 'u']]);
     try {
       await openMessage();
       await expectClear(page, 'mountain-view-reader');
