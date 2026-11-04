@@ -238,6 +238,11 @@ test('a wipe of one account forgets its folder and record, and keeps its files',
   await expect.poll(async () => (await clicked<Answer<Root>>('addFolder', { account: 'acct-9', remoteId: null, remoteLabel: 'Files' })).ok, { timeout: 30_000 }).toBe(true);
   const [root] = await files<Root[]>(page, 'roots');
   await files(page, 'saveState', root.id, 'record');
+  // Another account's folder stays: the wipe is for one account only.
+  const other = path.join(base, 'OtherAccount');
+  mkdirSync(other, { recursive: true });
+  await pick(other);
+  await expect.poll(async () => (await clicked<Answer<Root>>('addFolder', { account: 'acct-8', remoteId: null, remoteLabel: 'Files' })).ok, { timeout: 30_000 }).toBe(true);
   // The webmail's page took the wipe call already; a same-origin document without it can take it.
   await page.goto(new URL('/pst-worker.js', page.url()).toString());
   const failed = await page.evaluate(async (account) => {
@@ -246,7 +251,7 @@ test('a wipe of one account forgets its folder and record, and keeps its files',
     return (await lock.localWipe({ reason: 'settings', account })).failed;
   }, 'acct-9');
   expect(failed).toEqual([]);
-  expect(await files<Root[]>(page, 'roots')).toEqual([]);
+  expect((await files<Root[]>(page, 'roots')).map((entry) => entry.account)).toEqual(['acct-8']);
   expect(existsSync(path.join(profile, 'files-sync', 'state', `${root.id}.json`))).toBe(false);
   expect(existsSync(path.join(sync, 'already-here.txt'))).toBe(true);
 });
