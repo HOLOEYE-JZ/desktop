@@ -21,6 +21,8 @@ interface Seen {
   closeBeside: string[];
   /** In a pop-out: the app's own close and pop-out buttons that show. */
   extraButtons: string[];
+  /** Text the controls cover, which can't be read there. */
+  textUnder: string[];
   controlsWidth: number;
 }
 
@@ -54,7 +56,18 @@ function read(page: Page): Promise<Seen> {
       if (inBand && isClose && box.right > controlsLeft - 100) closeBeside.push(describe(el));
       if (/\/popout\//.test(location.pathname) && inBand && (isClose || /open in (a )?new window|pop out/i.test(label))) extraButtons.push(describe(el));
     }
-    return { under, closeBeside, extraButtons, controlsWidth: innerWidth - controlsLeft };
+    const textUnder: string[] = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!node.textContent?.trim()) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const hit = Array.from(range.getClientRects()).find((r) => r.width > 0 && r.top < area.height && r.right > controlsLeft + 1 && r.left < innerWidth);
+      if (!hit) continue;
+      const seen = document.elementFromPoint(Math.min(innerWidth - 1, Math.max(hit.left, controlsLeft) + 1), hit.top + hit.height / 2);
+      if (seen && node.parentElement && (seen === node.parentElement || node.parentElement.contains(seen) || seen.contains(node.parentElement))) textUnder.push(node.textContent.trim().slice(0, 40));
+    }
+    return { under, closeBeside, extraButtons, textUnder, controlsWidth: innerWidth - controlsLeft };
   });
 }
 
@@ -84,6 +97,7 @@ async function expectClear(page: Page, name: string, popout = false): Promise<vo
   const seen = await read(page);
   expect(seen.controlsWidth, name).toBeGreaterThan(0);
   expect(seen.under, `${name}: under the window's controls`).toEqual([]);
+  expect(seen.textUnder, `${name}: text under the window's controls`).toEqual([]);
   expect(seen.closeBeside, `${name}: a close button right beside the window's`).toEqual([]);
   if (popout) expect(seen.extraButtons, `${name}: a pop-out window closes with its own button`).toEqual([]);
 }
@@ -156,43 +170,6 @@ test.describe('the app\'s buttons and the window\'s', () => {
       await page.keyboard.press('Escape');
     });
   }
-
-  test('800 px with the offline bar and the notices: nothing under the controls, and a way to close each', async () => {
-    await setSize(800, 600);
-    await page.goto(new URL('/', page.url()).toString());
-    await expectMailShown(page);
-    // Each page load starts online again: the bar comes back with the event.
-    const goOffline = () => page.evaluate(() => window.dispatchEvent(new Event('offline')));
-    await goOffline();
-    const bar = page.getByTestId('offline-banner');
-    await expect(bar).toBeVisible({ timeout: 30_000 });
-    try {
-      await expectClear(page, 'offline-800');
-      // The bar has its own close, and it isn't the one beside the window's.
-      await expect(bar.getByTestId('offline-banner-hide')).toBeVisible();
-      // A notice either goes by itself (its countdown shows) or shows its close button.
-      const stuck = await page.locator('[data-toast-container] .toast-item').evaluateAll((items) => items
-        .filter((item) => !item.querySelector('[style*="toast-progress"]') && !item.querySelector('[data-toast-close]')?.classList.contains('opacity-100'))
-        .map((item) => item.textContent?.trim().slice(0, 60)));
-      expect(stuck, 'a notice that stays with no visible close').toEqual([]);
-      await openComposer();
-      await goOffline();
-      await expect(bar).toBeVisible();
-      await expectClear(page, 'offline-800-composer');
-      await page.keyboard.press('Escape');
-      for (let n = 0; n < 2; n += 1) await clickMenuItem(app, 'view.zoomIn');
-      await openMessage();
-      await goOffline();
-      await expect(bar).toBeVisible();
-      await expectClear(page, 'offline-800-zoom2-reader');
-      await clickMenuItem(app, 'view.zoomReset');
-      await bar.getByTestId('offline-banner-hide').click();
-      await expect(bar).toBeHidden();
-    } finally {
-      await clickMenuItem(app, 'view.zoomReset');
-      await page.evaluate(() => window.dispatchEvent(new Event('online')));
-    }
-  });
 
   test('maximised: a message and a new message', async () => {
     await setSize(1366, 768);
@@ -302,5 +279,43 @@ test.describe('the app\'s buttons and the window\'s', () => {
         if (window.webContents.getURL().includes('/popout/')) window.destroy();
       }
     });
+  });
+
+  // Last: a page that went offline here leaves the local copy thinking so for a while.
+  test('800 px with the offline bar and the notices: nothing under the controls, and a way to close each', async () => {
+    await setSize(800, 600);
+    await page.goto(new URL('/', page.url()).toString());
+    await expectMailShown(page);
+    // Each page load starts online again: the bar comes back with the event.
+    const goOffline = () => page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await goOffline();
+    const bar = page.getByTestId('offline-banner');
+    await expect(bar).toBeVisible({ timeout: 30_000 });
+    try {
+      await expectClear(page, 'offline-800');
+      // The bar has its own close, and it isn't the one beside the window's.
+      await expect(bar.getByTestId('offline-banner-hide')).toBeVisible();
+      // A notice either goes by itself (its countdown shows) or shows its close button.
+      const stuck = await page.locator('[data-toast-container] .toast-item').evaluateAll((items) => items
+        .filter((item) => !item.querySelector('[style*="toast-progress"]') && !item.querySelector('[data-toast-close]')?.classList.contains('opacity-100'))
+        .map((item) => item.textContent?.trim().slice(0, 60)));
+      expect(stuck, 'a notice that stays with no visible close').toEqual([]);
+      await openComposer();
+      await goOffline();
+      await expect(bar).toBeVisible();
+      await expectClear(page, 'offline-800-composer');
+      await page.keyboard.press('Escape');
+      for (let n = 0; n < 2; n += 1) await clickMenuItem(app, 'view.zoomIn');
+      await openMessage();
+      await goOffline();
+      await expect(bar).toBeVisible();
+      await expectClear(page, 'offline-800-zoom2-reader');
+      await clickMenuItem(app, 'view.zoomReset');
+      await bar.getByTestId('offline-banner-hide').click();
+      await expect(bar).toBeHidden();
+    } finally {
+      await clickMenuItem(app, 'view.zoomReset');
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    }
   });
 });
