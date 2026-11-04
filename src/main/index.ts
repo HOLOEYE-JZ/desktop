@@ -23,6 +23,7 @@ import { CorsInjector } from './cors';
 import { setupFeatures, type FeatureContext } from './features';
 import { registerImportScheme } from './features/import';
 import { holdEarlyLaunches } from './features/os-launch';
+import { electronRegistersScheme } from './features/os-rules';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
@@ -721,12 +722,17 @@ if (gotLock) {
   // Nothing may attach a webview or open a window behind the window manager's back.
   app.on('web-contents-created', (_event, contents) => {
     contents.on('will-attach-webview', (event) => event.preventDefault());
+    // With no handler Electron picks the first device. Nothing in the app uses Bluetooth.
+    contents.on('select-bluetooth-device', (event, _devices, choose) => {
+      event.preventDefault();
+      choose('');
+    });
   });
 
   // Registered here: macOS sends a launch's file or link before `ready`.
   holdEarlyLaunches();
-  // Unpackaged, the shell isn't what the OS should start for these.
-  if (app.isPackaged) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  // Unpackaged, the shell isn't what the OS should start for these. Windows: os-default-app.ts.
+  if (electronRegistersScheme(process.platform, app.isPackaged)) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   app.on('window-all-closed', () => {
     // Closing to the tray hides the main window, so this means there's nothing left.

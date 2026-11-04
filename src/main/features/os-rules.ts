@@ -408,6 +408,19 @@ export interface RegistryValue {
 
 const CLASSES = 'Software\\Classes';
 
+/** `--` ends Chromium's switches, so nothing in a link or a file name can pass for one. */
+function windowsOpenCommand(exe: string): string {
+  return `"${exe}" -- "%1"`;
+}
+
+/**
+ * Electron's own call writes `"exe" "%1"`, with no terminator. On Windows the registration in
+ * os-default-app.ts writes the scheme, along with everything else it offers.
+ */
+export function electronRegistersScheme(platform: NodeJS.Platform, packaged: boolean): boolean {
+  return packaged && platform !== 'win32';
+}
+
 /** A handled URL scheme or file type, in the class it's registered as. */
 function progId(id: string, description: string, exe: string, url: boolean): RegistryValue[] {
   const key = `${CLASSES}\\${id}`;
@@ -415,7 +428,7 @@ function progId(id: string, description: string, exe: string, url: boolean): Reg
     { key, data: description },
     ...(url ? [{ key, name: 'URL Protocol', data: '' }] : []),
     { key: `${key}\\DefaultIcon`, data: `${exe},0` },
-    { key: `${key}\\shell\\open\\command`, data: `"${exe}" -- "%1"` },
+    { key: `${key}\\shell\\open\\command`, data: windowsOpenCommand(exe) },
   ];
 }
 
@@ -446,9 +459,15 @@ export function windowsRegistration(exe: string): RegistryValue[] {
   ];
 }
 
-/** An uninstall takes the keys, and a reinstall to the same path must still put them back. */
+/**
+ * An uninstall takes the keys, and a reinstall to the same path must still put them back. Only the
+ * exact command counts: the right exe with another command line is something else's registration,
+ * and the rest of what the app offers may never have been written.
+ */
 export function needsRegistration(handlerQuery: { ok: boolean; stdout: string }, exe: string): boolean {
-  return !handlerQuery.ok || !handlerQuery.stdout.toLowerCase().includes(`"${exe.toLowerCase()}"`);
+  if (!handlerQuery.ok) return true;
+  const command = /REG_(?:EXPAND_)?SZ\s+(.*)/.exec(handlerQuery.stdout)?.[1]?.trim();
+  return command?.toLowerCase() !== windowsOpenCommand(exe).toLowerCase();
 }
 
 /** How long a failed main window waits before it tries again. */
