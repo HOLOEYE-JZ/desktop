@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { createServer, type Server } from 'node:http';
+import { createServer, get as httpGet, type Server } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { connect, type AddressInfo } from 'node:net';
 import path from 'node:path';
@@ -7,6 +7,15 @@ import { expect, test } from '@playwright/test';
 import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, launchStandalone, opened, prompts, removeProfile, requireAccount, SCREENSHOTS, serverPort, shownPage, signIn, STALWARTS, tempProfile, waitForLogin } from './helpers';
 
 test.beforeAll(requireAccount);
+
+/** As a browser arrives on a redirect. Node's fetch says it's a CORS request, which the listener refuses. */
+const navigate = (url: URL) =>
+  new Promise<{ status: number }>((resolve, reject) => {
+    httpGet(url, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+    }).on('error', reject);
+  });
 
 for (const { label, url } of STALWARTS) {
   test.describe(`standalone Basic sign-in on Stalwart ${label}`, () => {
@@ -82,7 +91,7 @@ for (const { label, url } of STALWARTS) {
       const landed = new URL(redirectUri);
       landed.searchParams.set('code', code!);
       landed.searchParams.set('state', state);
-      const callback = await fetch(landed);
+      const callback = await navigate(landed);
       expect(callback.status).toBe(200);
 
       await expectMailShown(page);
@@ -98,7 +107,7 @@ for (const { label, url } of STALWARTS) {
       expect(cookies).toContain('jmap_rtu');
 
       // And the listener is gone.
-      const again = await fetch(landed).then((r) => r.status).catch(() => 'closed');
+      const again = await navigate(landed).then((r) => r.status).catch(() => 'closed');
       expect(again).toBe('closed');
       await app.close();
       removeProfile(profile);

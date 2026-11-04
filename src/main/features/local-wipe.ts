@@ -117,6 +117,8 @@ export async function runLocalWipe(reason: WipeReason, userData: string, state: 
   // The windows to bring back name drafts and messages. A wipe at the start comes before any window manager.
   delete state.data.session;
   delete state.data.restoreAttempts;
+  // Which servers this device signed in to through the browser.
+  delete state.data.signInPorts;
   const partitions = knownPartitions(state);
   const failed: string[] = [];
   // No session has these open, and none may: see knownPartitions.
