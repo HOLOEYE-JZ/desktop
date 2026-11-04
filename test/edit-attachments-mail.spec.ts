@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, launchStandalone, removeProfile, requireAccount, SCREENSHOTS, signIn, STALWARTS, tempProfile } from './helpers';
-import { destroyMessages, jmap, lastMenu, mailboxIdOf, menuCount, pageWith, pickNext, recordMenus, seedMessage } from './native-helpers';
+import { destroyMessages, jmap, mailboxIdOf, pageWith, recordMenus, seedMessage } from './native-helpers';
 
 /**
  * Edit on a real message, on a real server, in the webmail build of this branch. Nothing
@@ -42,7 +42,9 @@ async function fakeOpener(app: ElectronApplication): Promise<void> {
 const openedFiles = (app: ElectronApplication): Promise<string[]> =>
   app.evaluate(() => (globalThis as unknown as { __openedFiles: string[] }).__openedFiles);
 
-const menuLabels = async (app: ElectronApplication) => ((await lastMenu(app)) ?? []).flatMap((item) => (item.label ? [item.label] : []));
+/** The rows of the menu on screen: the page's own menu, as in a browser. */
+const menuLabels = async (page: Page) =>
+  page.locator('[role="menu"] [role="menuitem"] [data-menu-label]').allInnerTexts();
 
 async function openMessage(page: Page, subject: string): Promise<void> {
   const row = page.getByText(subject).first();
@@ -51,27 +53,15 @@ async function openMessage(page: Page, subject: string): Promise<void> {
   await expect(page.locator('[data-testid="attachment"]').first()).toBeVisible({ timeout: 30_000 });
 }
 
-async function rightClickAttachment(app: ElectronApplication, page: Page, pick?: string): Promise<void> {
-  const before = await menuCount(app);
-  if (pick) await pickNext(app, pick);
+async function rightClickAttachment(page: Page, pick?: string): Promise<void> {
   await page.locator('[data-testid="attachment"]').first().click({ button: 'right' });
-  await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
+  await expect(page.locator('[role="menu"]').first()).toBeVisible({ timeout: 10_000 });
+  if (pick) await pickRow(page, pick);
 }
 
-/** Someone who takes their time over the menu: the right-click is long past when the pick comes. */
-async function pickSlowly(app: ElectronApplication, label: string, afterMs: number): Promise<void> {
-  await app.evaluate(({ Menu }, [wanted, wait]) => {
-    type Item = { label: string; submenu?: { items: Item[] }; click: () => void };
-    const before = Menu.prototype.popup;
-    Menu.prototype.popup = function popup(this: { items: Item[] }, options?: { callback?: () => void }) {
-      Menu.prototype.popup = before;
-      before.call(this as never, {} as never);
-      setTimeout(() => {
-        this.items.find((item) => item.label === wanted)?.click();
-        options?.callback?.();
-      }, wait as number);
-    } as never;
-  }, [label, afterMs] as const);
+/** Picks a row of the menu on screen by its words. */
+async function pickRow(page: Page, label: string): Promise<void> {
+  await page.locator('[role="menu"] [role="menuitem"]').filter({ has: page.locator('[data-menu-label]', { hasText: new RegExp(`^${label}$`) }) }).first().click();
 }
 
 async function sentAttachmentSize(server: string, subject: string): Promise<number | null> {
@@ -132,10 +122,11 @@ for (const server of STALWARTS) {
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
       await openMessage(page, subject);
 
-      // Longer than a click's activation lasts: main's own record of the pick is what counts.
-      await pickSlowly(app, 'Edit', 6_000);
-      await rightClickAttachment(app, page);
-      expect(await menuLabels(app)).toEqual(expect.arrayContaining(['Open', 'Save as…', 'Edit']));
+      // Longer than a click's activation lasts: main's own record of the click is what counts.
+      await rightClickAttachment(page);
+      expect(await menuLabels(page)).toEqual(expect.arrayContaining(['Open', 'Save as…', 'Edit']));
+      await page.waitForTimeout(6_000);
+      await pickRow(page, 'Edit');
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(1);
       const file = (await openedFiles(app))[0];
       expect(file.startsWith(path.join(profile, 'edit-files'))).toBe(true);
@@ -186,7 +177,7 @@ for (const server of STALWARTS) {
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
       await openMessage(page, subject);
       const seen = (await openedFiles(app)).length;
-      await rightClickAttachment(app, page, 'Edit');
+      await rightClickAttachment(page, 'Edit');
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(seen + 1);
       const file = (await openedFiles(app)).at(-1)!;
       const taken = 'The edit in the message.';
@@ -222,7 +213,7 @@ for (const server of STALWARTS) {
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
       await openMessage(page, subject);
       const seen = (await openedFiles(app)).length;
-      await rightClickAttachment(app, page, 'Edit');
+      await rightClickAttachment(page, 'Edit');
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(seen + 1);
       const file = (await openedFiles(app)).at(-1)!;
       writeFileSync(file, 'First version in the draft.');
@@ -264,8 +255,8 @@ for (const server of STALWARTS) {
       const subject = `Edit exe ${server.label} ${RUN}`;
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('setup.bat')));
       await openMessage(page, subject);
-      await rightClickAttachment(app, page);
-      const labels = await menuLabels(app);
+      await rightClickAttachment(page);
+      const labels = await menuLabels(page);
       expect(labels).toEqual(expect.arrayContaining(['Open', 'Save as…']));
       expect(labels).not.toContain('Edit');
     });
@@ -275,7 +266,7 @@ for (const server of STALWARTS) {
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
       await openMessage(page, subject);
       const seen = (await openedFiles(app)).length;
-      await rightClickAttachment(app, page, 'Edit');
+      await rightClickAttachment(page, 'Edit');
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(seen + 1);
       const file = (await openedFiles(app)).at(-1)!;
       writeFileSync(file, 'Edits the organisation then forbids keeping.');
@@ -289,8 +280,8 @@ for (const server of STALWARTS) {
         await expect(page.locator('[data-testid="edited-file"]')).toHaveCount(0);
 
         await openMessage(page, subject);
-        await rightClickAttachment(app, page);
-        expect(await menuLabels(app)).not.toContain('Edit');
+        await rightClickAttachment(page);
+        expect(await menuLabels(page)).not.toContain('Edit');
       } finally {
         await page.unroute('**/api/admin/policy*');
       }
@@ -303,7 +294,7 @@ for (const server of STALWARTS) {
       await expectMailShown(page);
       await openMessage(page, subject);
       const seen = (await openedFiles(app)).length;
-      await rightClickAttachment(app, page, 'Edit');
+      await rightClickAttachment(page, 'Edit');
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(seen + 1);
       const file = (await openedFiles(app)).at(-1)!;
       writeFileSync(file, 'Edits nobody took.');

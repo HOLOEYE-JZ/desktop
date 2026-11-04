@@ -173,6 +173,8 @@ export interface MenuBarEvent {
 export interface MenuBarItem {
   /** Its place in the app menu: handed back with its text when it's picked. */
   key: string;
+  /** The line's command id (`message.reply`), or `role.<role>`: the page draws its icon by it. */
+  id?: string;
   label: string;
   type: 'normal' | 'checkbox' | 'radio' | 'separator' | 'submenu';
   enabled: boolean;
