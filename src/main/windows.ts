@@ -390,8 +390,8 @@ export class WindowManager extends EventEmitter<{
     // The page that said it has something to save is gone, and the next says so itself. Nothing
     // can answer now, and nothing may wait for it or ask about it: a question with no page
     // behind it holds up a close for good.
+    // A crashed page gets here too: it's reloaded.
     webContents.on('did-navigate', () => this.noPageLeft(managed));
-    webContents.on('render-process-gone', () => this.noPageLeft(managed));
     // The OS is ending the session: there's no time for questions, only for saving.
     window.on('session-end', () => this.saveForSessionEnd());
     webContents.on('did-start-navigation', (details) => {
