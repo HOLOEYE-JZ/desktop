@@ -142,7 +142,7 @@ test.describe('the app\'s buttons and the window\'s', () => {
     await destroyMessages(SERVER, ACCOUNT, ENT_PASSWORD, [id]).catch(() => {});
   });
 
-  for (const [width, height] of [[1366, 768], [1000, 700]] as const) {
+  for (const [width, height] of [[1920, 1000], [1366, 768], [1000, 700], [800, 600], [640, 560]] as const) {
     test(`standard at ${width}: a message open`, async () => {
       await setSize(width, height);
       await openMessage();
@@ -156,6 +156,43 @@ test.describe('the app\'s buttons and the window\'s', () => {
       await page.keyboard.press('Escape');
     });
   }
+
+  test('800 px with the offline bar and the notices: nothing under the controls, and a way to close each', async () => {
+    await setSize(800, 600);
+    await page.goto(new URL('/', page.url()).toString());
+    await expectMailShown(page);
+    // Each page load starts online again: the bar comes back with the event.
+    const goOffline = () => page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await goOffline();
+    const bar = page.getByTestId('offline-banner');
+    await expect(bar).toBeVisible({ timeout: 30_000 });
+    try {
+      await expectClear(page, 'offline-800');
+      // The bar has its own close, and it isn't the one beside the window's.
+      await expect(bar.getByTestId('offline-banner-hide')).toBeVisible();
+      // A notice either goes by itself (its countdown shows) or shows its close button.
+      const stuck = await page.locator('[data-toast-container] .toast-item').evaluateAll((items) => items
+        .filter((item) => !item.querySelector('[style*="toast-progress"]') && !item.querySelector('[data-toast-close]')?.classList.contains('opacity-100'))
+        .map((item) => item.textContent?.trim().slice(0, 60)));
+      expect(stuck, 'a notice that stays with no visible close').toEqual([]);
+      await openComposer();
+      await goOffline();
+      await expect(bar).toBeVisible();
+      await expectClear(page, 'offline-800-composer');
+      await page.keyboard.press('Escape');
+      for (let n = 0; n < 2; n += 1) await clickMenuItem(app, 'view.zoomIn');
+      await openMessage();
+      await goOffline();
+      await expect(bar).toBeVisible();
+      await expectClear(page, 'offline-800-zoom2-reader');
+      await clickMenuItem(app, 'view.zoomReset');
+      await bar.getByTestId('offline-banner-hide').click();
+      await expect(bar).toBeHidden();
+    } finally {
+      await clickMenuItem(app, 'view.zoomReset');
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    }
+  });
 
   test('maximised: a message and a new message', async () => {
     await setSize(1366, 768);
