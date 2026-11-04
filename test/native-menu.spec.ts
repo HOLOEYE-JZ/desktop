@@ -96,7 +96,7 @@ test.describe('the pure parts', () => {
   test('the drawn bar gets each menu line with its key, state, shortcut and Alt letter', () => {
     const line = (label: string, extra: Partial<BarSourceItem> = {}): BarSourceItem => ({ label, type: 'normal', enabled: true, visible: true, checked: false, ...extra });
     const items = barItemsOf([
-      line('New message', { accelerator: 'CmdOrCtrl+N' }),
+      line('New message', { accelerator: 'CmdOrCtrl+N', id: 'file.newMessage' }),
       line('', { type: 'separator' }),
       line('', { type: 'separator' }),
       line('Hidden', { visible: false }),
@@ -117,6 +117,8 @@ test.describe('the pure parts', () => {
       ['2/8', 'Always show the menu bar', 'checkbox'],
     ]);
     expect(items[0].accelerator).toBe('CmdOrCtrl+N');
+    expect(items[0].id, 'the page draws its icon by it').toBe('file.newMessage');
+    expect(items[3].id, 'a role line is named by its role').toBe('role.undo');
     expect(items[3].accelerator, 'a role shows its own key').toBe('CommandOrControl+Z');
     expect(items[2].enabled).toBe(false);
     expect(items[6].checked).toBe(true);
