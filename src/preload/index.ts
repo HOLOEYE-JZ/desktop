@@ -57,6 +57,7 @@ import {
   type OsSummary,
   type NativeMenuItem,
   type PrivacyState,
+  type DevToolsState,
   type SessionUrls,
   type SystemTheme,
   type ThemeColours,
@@ -277,6 +278,12 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       sendCrash: (id: string) => ipcRenderer.invoke(CHANNEL.privacySendCrash, id),
       deleteCrashes: () => ipcRenderer.invoke(CHANNEL.privacyDeleteCrashes),
       onChange: (listener: (state: PrivacyState) => void) => subscribe(CHANNEL.privacyChanged, listener),
+    },
+    devTools: {
+      get: (): Promise<DevToolsState> => ipcRenderer.invoke(CHANNEL.devToolsGet),
+      // Main also needs its own record of a click to turn them on, and asks natively.
+      set: (on: boolean): Promise<DevToolsState> => ipcRenderer.invoke(CHANNEL.devToolsSet, on),
+      onChange: (listener: (state: DevToolsState) => void) => subscribe(CHANNEL.devToolsChanged, listener),
     },
     os: {
       /**

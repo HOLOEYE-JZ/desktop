@@ -234,12 +234,63 @@ export interface LaunchRequest {
   fromLogin: boolean;
   /** A toast's button or click, as handed to us. Checked before anything is done with it. */
   toastUrls: string[];
+  /** Explorer's "Send to": every file goes on a new message, with no question. */
+  sendTo: boolean;
 }
 
 const OPENABLE = new Set(['.eml', '.ics', '.vcf']);
 
 export function fileReason(file: string): 'open' | 'attach' {
   return OPENABLE.has(path.extname(file).toLowerCase()) ? 'open' : 'attach';
+}
+
+/** What becomes of the files of one launch. Send to attaches whatever it is; "Open with" asks. */
+export function launchFileCommand(reason: 'open' | 'attach', sendTo: boolean): { reason: 'open' | 'attach'; ask?: boolean } {
+  if (sendTo) return { reason: 'attach' };
+  return reason === 'attach' ? { reason, ask: true } : { reason };
+}
+
+/** At most this many files go on one message from the OS, and this much together. The rest are named as not opened. */
+export const MAX_LAUNCH_FILES = 100;
+export const MAX_LAUNCH_TOTAL_BYTES = 500 * 1024 * 1024;
+
+/**
+ * Files that arrive one launch at a time but were picked together: "Open with" on several files
+ * in Explorer starts the app once per file, and macOS sends `open-file` once per file. Within a
+ * short quiet time they make one message. Each new file waits a little longer, up to a cap, so
+ * a slow Explorer can't hold the first file for ever.
+ */
+export class LaunchFileBatch<T extends { files: unknown[]; failed: string[] }> {
+  private held: T | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private startedAt = 0;
+
+  constructor(
+    private readonly deliver: (batch: T) => void,
+    private readonly quietMs = 600,
+    private readonly maxWaitMs = 3000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  add(batch: T): void {
+    if (this.held) {
+      this.held = { ...this.held, files: [...this.held.files, ...batch.files], failed: [...this.held.failed, ...batch.failed] };
+    } else {
+      this.held = batch;
+      this.startedAt = this.now();
+    }
+    if (this.timer) clearTimeout(this.timer);
+    const left = Math.max(0, this.maxWaitMs - (this.now() - this.startedAt));
+    this.timer = setTimeout(() => this.flush(), Math.min(this.quietMs, left));
+  }
+
+  flush(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    const batch = this.held;
+    this.held = null;
+    if (batch) this.deliver(batch);
+  }
 }
 
 /** Only a development run has its script on the command line. There, argv[1] may be a user's file. */
@@ -260,7 +311,7 @@ export function parseArgv(
   argv: readonly string[],
   options: { cwd: string; skip: readonly string[]; platform?: NodeJS.Platform },
 ): LaunchRequest {
-  const request: LaunchRequest = { commands: [], links: [], files: [], fromLogin: false, toastUrls: [] };
+  const request: LaunchRequest = { commands: [], links: [], files: [], fromLogin: false, toastUrls: [], sendTo: false };
   const skipped = new Set(options.skip.map((entry) => path.resolve(options.cwd, entry).toLowerCase()));
   const platform = options.platform ?? process.platform;
   let positional = false;
@@ -273,6 +324,10 @@ export function parseArgv(
     }
     if (!positional && arg === LOGIN_FLAG) {
       request.fromLogin = true;
+      continue;
+    }
+    if (!positional && arg === SEND_TO_FLAG) {
+      request.sendTo = true;
       continue;
     }
     if (!positional && arg.startsWith('-')) continue;
@@ -306,6 +361,8 @@ export function parseArgv(
 }
 
 export const LOGIN_FLAG = '--bulwark-from-login';
+/** On the "Send to" shortcut's command line, ahead of the files Explorer adds. */
+export const SEND_TO_FLAG = '--bulwark-send-to';
 
 // Windows reserves these with any extension, and with spaces before it: "con .txt".
 const RESERVED_NAME = /^(con|prn|aux|nul|conin\$|conout\$|com[0-9\u00b9\u00b2\u00b3]|lpt[0-9\u00b9\u00b2\u00b3])\s*(\..*)?$/i;
@@ -522,14 +579,74 @@ export function isRetryableLoadError(code: number): boolean {
 }
 
 /** Keys taken away again, deepest first. The `.eml` keys belong to everyone: only our value goes. */
-export function windowsRegistrationKeys(): { keys: string[]; values: { key: string; name: string }[] } {
+export function windowsRegistrationKeys(exeName = 'Bulwark.exe'): { keys: string[]; values: { key: string; name: string }[] } {
+  const openWith = windowsOpenWithKeys(exeName);
   return {
-    keys: [...new Set(Object.values(WINDOWS_URLS)), ...Object.values(WINDOWS_FILES), 'bulwark'].map((id) => `${CLASSES}\\${id}`).concat('Software\\Bulwark'),
+    keys: [...new Set(Object.values(WINDOWS_URLS)), ...Object.values(WINDOWS_FILES), 'bulwark'].map((id) => `${CLASSES}\\${id}`).concat('Software\\Bulwark', ...openWith.keys),
     values: [
       { key: 'Software\\RegisteredApplications', name: WINDOWS_APP_NAME },
       ...Object.entries(WINDOWS_FILES).map(([ext, id]) => ({ key: `${CLASSES}\\${ext}\\OpenWithProgids`, name: id })),
+      ...openWith.values,
     ],
   };
+}
+
+/** The class "Open with" names for documents and pictures. Never anyone's default: only listed. */
+export const WINDOWS_ATTACH_PROGID = 'Bulwark.File.attach';
+
+/**
+ * Where Bulwark shows up in Explorer's "Open with" by itself. Common documents and pictures:
+ * what people send. Any other file reaches it through "Choose another app", by the
+ * Applications key. build/installer.nsh lists the same extensions to remove them again.
+ */
+export const OPEN_WITH_EXTENSIONS = [
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx', '.odt', '.ods', '.odp', '.rtf', '.txt', '.csv',
+  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.bmp', '.tif', '.tiff', '.svg', '.zip',
+] as const;
+
+/** The name the "Send to" entry has in Explorer, and of its shortcut in the SendTo folder. */
+export const SEND_TO_NAME = 'Bulwark (as attachment)';
+
+/**
+ * "Open with" for documents and pictures, and Bulwark in "Choose another app" for any file.
+ * Under HKCU, no elevation, and nothing here makes Bulwark the default for a type: a class in
+ * OpenWithProgids is only offered. The OpenWithEnabled policy takes all of it away.
+ */
+export function windowsOpenWithRegistration(exe: string): RegistryValue[] {
+  const exeName = path.win32.basename(exe);
+  const app = `${CLASSES}\\Applications\\${exeName}`;
+  return [
+    ...progId(WINDOWS_ATTACH_PROGID, 'File to send with Bulwark', exe, false),
+    { key: `${CLASSES}\\${WINDOWS_ATTACH_PROGID}`, name: 'FriendlyTypeName', data: 'File to send with Bulwark' },
+    ...OPEN_WITH_EXTENSIONS.map((ext) => ({ key: `${CLASSES}\\${ext}\\OpenWithProgids`, name: WINDOWS_ATTACH_PROGID, data: '' })),
+    { key: app, name: 'FriendlyAppName', data: WINDOWS_APP_NAME },
+    { key: `${app}\\DefaultIcon`, data: `${exe},0` },
+    { key: `${app}\\shell\\open\\command`, data: windowsOpenCommand(exe) },
+  ];
+}
+
+export function windowsOpenWithKeys(exeName: string): { keys: string[]; values: { key: string; name: string }[] } {
+  return {
+    keys: [`${CLASSES}\\${WINDOWS_ATTACH_PROGID}`, `${CLASSES}\\Applications\\${exeName}`],
+    values: OPEN_WITH_EXTENSIONS.map((ext) => ({ key: `${CLASSES}\\${ext}\\OpenWithProgids`, name: WINDOWS_ATTACH_PROGID })),
+  };
+}
+
+/** Whether the Open with keys are this exe's, by the attach class's command. */
+export function needsOpenWithRegistration(attachQuery: { ok: boolean; stdout: string }, exe: string): boolean {
+  return needsRegistration(attachQuery, exe);
+}
+
+/** The Send to shortcut: the app, then the marker, then `--`. Explorer adds the files after it. */
+export function sendToShortcut(exe: string): { target: string; args: string; description: string; icon: string; iconIndex: number } {
+  return { target: exe, args: `${SEND_TO_FLAG} --`, description: 'Attach to a new message in Bulwark', icon: exe, iconIndex: 0 };
+}
+
+/** A shortcut that's ours and points at this exe with these arguments needs no writing. */
+export function sendToShortcutCurrent(found: { target?: string; args?: string } | null, exe: string): boolean {
+  if (!found) return false;
+  const wanted = sendToShortcut(exe);
+  return (found.target ?? '').toLowerCase() === wanted.target.toLowerCase() && (found.args ?? '').trim() === wanted.args;
 }
 
 /** The autostart entry where the OS has no login item API. */

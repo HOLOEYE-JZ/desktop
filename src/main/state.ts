@@ -89,6 +89,8 @@ export interface ShellState {
   menuBarPinned?: boolean;
   menuBarHeight?: number;
   privacy?: PrivacyChoices;
+  /** Developer tools on Ctrl+Shift+I and F12: the user turned them on (features/dev-tools.ts). */
+  devTools?: boolean;
   /** "Change Connection" was chosen: ask once, also over a recommended server. */
   askConnection?: boolean;
   /** WipeOfflineData values already acted on, so each deletes once, across restarts. */

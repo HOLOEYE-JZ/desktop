@@ -27,6 +27,7 @@ import { electronRegistersScheme } from './features/os-rules';
 import { setToastActivator } from './features/os-toasts';
 import { holdUpdateInstall } from './features/updater';
 import { addRestartTimers, askToRestart, policies } from './features/policies';
+import { devToolsForcedOff } from './features/dev-tools';
 import { privacy } from './features/privacy';
 import { clientAuth } from './features/client-certificates';
 import { createChannels, registerBridge } from './ipc';
@@ -229,7 +230,8 @@ function createWindowManager(mode: Mode, origin: string, session: Electron.Sessi
     origin,
     mode,
     preloadPath: PRELOAD,
-    devTools,
+    // Opening them is up to features/dev-tools.ts; only the policy keeps them out of a window altogether.
+    devTools: () => devTools || !devToolsForcedOff(),
     spare: !(__BULWARK_TEST_BUILD__ && DEV && process.argv.includes('--bulwark-no-spare')),
     spareIdleMs: __BULWARK_TEST_BUILD__ && DEV && argValue('bulwark-test-spare-idle') ? Number(argValue('bulwark-test-spare-idle')) : undefined,
     attachGuards: (window) => attachWindowGuards(window, guard),

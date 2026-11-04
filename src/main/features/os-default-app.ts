@@ -4,16 +4,39 @@
  * so they follow an update's path. The choice stays with the user in Settings. macOS
  * and Linux can set the default directly.
  *
+ * Also on Windows: "Open with" for documents and pictures, Bulwark under "Choose another
+ * app" for any file, and "Bulwark (as attachment)" in Explorer's "Send to". Never the
+ * default for those types. The OpenWithEnabled policy takes them away again. macOS and
+ * Linux declare the same types in their packages (electron-builder.yml).
+ *
  * Values go through reg.exe: Electron has no registry call and this is no reason for a
  * native module. The installer's uninstall step removes the same keys.
  */
 
 import { execFile } from 'node:child_process';
+import { mkdirSync, rmSync } from 'node:fs';
+import path from 'node:path';
 import { app, shell } from 'electron';
 import type { OsDefaultAppStatus } from '../../shared/bridge';
 import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
-import { needsRegistration, WINDOWS_APP_NAME, WINDOWS_URLS, windowsRegistration, windowsRegistrationKeys, type RegistryValue } from './os-rules';
+import { effectivePolicyValue } from '../../shared/policy-schema';
+import { policies } from './policies';
+import {
+  needsOpenWithRegistration,
+  needsRegistration,
+  SEND_TO_NAME,
+  sendToShortcut,
+  sendToShortcutCurrent,
+  WINDOWS_APP_NAME,
+  WINDOWS_ATTACH_PROGID,
+  WINDOWS_URLS,
+  windowsOpenWithKeys,
+  windowsOpenWithRegistration,
+  windowsRegistration,
+  windowsRegistrationKeys,
+  type RegistryValue,
+} from './os-rules';
 import { isInstalledBuild } from '../installed';
 
 // Set by build.mjs.
@@ -28,6 +51,22 @@ function testRegistryRoot(): string | undefined {
 }
 
 const REGISTRY_ROOT = testRegistryRoot() ?? 'HKCU';
+
+/** A test's own folder in place of the user's SendTo folder, so no test touches the real menu. */
+function sendToFolder(): string | null {
+  if (__BULWARK_TEST_BUILD__) {
+    const own = process.argv.find((arg) => arg.startsWith('--bulwark-test-sendto-dir='))?.slice('--bulwark-test-sendto-dir='.length);
+    if (own) return own;
+    if (REGISTRY_ROOT !== 'HKCU') return null;
+  }
+  const roaming = process.env.APPDATA;
+  return roaming ? path.join(roaming, 'Microsoft', 'Windows', 'SendTo') : null;
+}
+
+/** "Open with", "Choose another app" and "Send to": on unless a policy forces them off. */
+export function openWithAllowed(): boolean {
+  return effectivePolicyValue(policies.snapshot.OpenWithEnabled, undefined) !== false;
+}
 
 function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
@@ -48,8 +87,38 @@ export async function registerOnWindows(exe: string): Promise<boolean> {
   return results.every(Boolean);
 }
 
+/** "Open with", "Choose another app" and the Send to shortcut, for this exe. */
+export async function registerOpenWithOnWindows(exe: string): Promise<boolean> {
+  const results = await Promise.all(windowsOpenWithRegistration(exe).map(writeValue));
+  const folder = sendToFolder();
+  let shortcut = true;
+  if (folder) {
+    const link = path.join(folder, `${SEND_TO_NAME}.lnk`);
+    let found: Electron.ShortcutDetails | null = null;
+    try {
+      found = shell.readShortcutLink(link);
+    } catch {
+      // None yet.
+    }
+    if (!sendToShortcutCurrent(found, exe)) {
+      mkdirSync(folder, { recursive: true });
+      shortcut = shell.writeShortcutLink(link, found ? 'replace' : 'create', sendToShortcut(exe));
+    }
+  }
+  return results.every(Boolean) && shortcut;
+}
+
+/** Only what's ours: our class in each type's list, our own keys, our shortcut. */
+export async function unregisterOpenWithOnWindows(exe: string): Promise<void> {
+  const { keys, values } = windowsOpenWithKeys(path.win32.basename(exe));
+  await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
+  await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
+  const folder = sendToFolder();
+  if (folder) rmSync(path.join(folder, `${SEND_TO_NAME}.lnk`), { force: true });
+}
+
 export async function unregisterOnWindows(): Promise<void> {
-  const { keys, values } = windowsRegistrationKeys();
+  const { keys, values } = windowsRegistrationKeys(path.win32.basename(process.execPath));
   await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
   await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
 }
@@ -109,6 +178,29 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
   if (win32 && (isInstalledBuild() || REGISTRY_ROOT !== 'HKCU')) {
     void reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']).then((query) => {
       if (needsRegistration(query, process.execPath)) void register();
+    });
+    // Its own check, so an update that brings it writes it, and the policy can take it back.
+    const applyOpenWith = async () => {
+      const query = await reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\${WINDOWS_ATTACH_PROGID}\\shell\\open\\command`, '/ve']);
+      if (!openWithAllowed()) {
+        if (query.ok) await unregisterOpenWithOnWindows(process.execPath);
+        else {
+          const folder = sendToFolder();
+          if (folder) rmSync(path.join(folder, `${SEND_TO_NAME}.lnk`), { force: true });
+        }
+        return;
+      }
+      // Written when the keys are missing or name another exe: a first start, an update to a new
+      // path. A Send to entry the user deleted while the keys stayed isn't put back.
+      if (needsOpenWithRegistration(query, process.execPath)) await registerOpenWithOnWindows(process.execPath);
+    };
+    let applying = Promise.resolve();
+    const reapply = () => {
+      applying = applying.then(applyOpenWith, applyOpenWith).catch(() => {});
+    };
+    reapply();
+    policies.on('changed', (now, before) => {
+      if (now.OpenWithEnabled.value !== before.OpenWithEnabled.value) reapply();
     });
   }
   if (isInstalledBuild() && !win32) app.setAsDefaultProtocolClient('bulwark');
