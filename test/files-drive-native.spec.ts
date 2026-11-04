@@ -6,6 +6,7 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import type { FilesDriveState, FilesFetchRequest, FilesPlaceholder } from '../src/shared/bridge';
 import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
+import { FilesDisk } from '../src/main/files/disk';
 import { substLetters } from '../src/main/files/drive-letter';
 import { fileIdOf, mtimeMsOf } from '../src/main/files/drive-places';
 import type { RegisteredRoot } from '../src/main/files/registry';
@@ -362,6 +363,16 @@ test.describe('the drive controller', () => {
 
       const report = path.join(root.path, 'Projekte', 'Größe und Weite', 'Bericht 2026.pdf');
       const registered = registry.get(root.id)!;
+      // The folders feature's disk serves the drive's root too: its scan lists the placeholders,
+      // which Windows marks as reparse points like a link, without fetching anything.
+      const disk = new FilesDisk({ rootOf: (id) => (id === root.id ? registered : null) });
+      const scanned = await disk.scan(registered);
+      expect(scanned.ok && scanned.value.map((entry) => [entry.path, entry.placeholder?.identity, entry.placeholder?.hydrated])).toEqual([
+        ['Notiz.txt', 'f2', false],
+        ['Projekte', 'd1', true],
+        ['Projekte/Größe und Weite', 'd2', true],
+        ['Projekte/Größe und Weite/Bericht 2026.pdf', 'f1', false],
+      ]);
       expect(registered.contentAbsent!(report)).toBe(true);
       expect(registered.placeholderState!(report)).toEqual({ identity: 'f1', inSync: true, hydrated: false, pin: 'unspecified' });
 

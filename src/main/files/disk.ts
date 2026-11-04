@@ -241,10 +241,8 @@ export class FilesDisk {
           if (options.temps && !dirent.isDirectory()) await options.temps(absolute);
           continue;
         }
-        if (dirent.isSymbolicLink()) {
-          options.links?.();
-          continue;
-        }
+        // Not the entry's type: on Windows it calls every reparse point a link, the drive's
+        // placeholders too. lstat below reads the tag and knows a link from a placeholder.
         let stats: BigIntStats;
         try {
           stats = await lstat(absolute, { bigint: true });
