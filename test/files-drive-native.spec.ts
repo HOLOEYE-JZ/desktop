@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, rmSync, writeFileSync, lstatSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, lstatSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -279,9 +279,10 @@ interface FakePage {
   answering: boolean;
 }
 
-function controllerWith(native: NativeFilesModule, page: FakePage, store: { value: StoredDrive }, options: { forcedOff?: () => boolean; letter?: () => string | null; letters?: boolean; timeoutMs?: number; watchPins?: boolean; icon?: string } = {}) {
+function controllerWith(native: NativeFilesModule, page: FakePage, store: { value: StoredDrive }, options: { forcedOff?: () => boolean; letter?: () => string | null; letters?: boolean; timeoutMs?: number; watchPins?: boolean; icon?: string; flush?: (accounts: string[]) => Promise<void> } = {}) {
   const registry = new Map<string, RegisteredRoot>();
   const forgotten: string[] = [];
+  const rescued: { folder: string; count: number; reason: string }[] = [];
   let drive: DriveController;
   drive = new DriveController({
     native,
@@ -310,7 +311,10 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
       },
       fetchCancelled: (fetchId) => page.cancelled.push(fetchId),
       stateChanged: (state) => page.states.push(state),
+      flush: options.flush,
     },
+    documents: DOCUMENTS,
+    rescued: (result, reason) => rescued.push({ folder: result.folder, count: result.count, reason }),
     registry: { add: (entry) => registry.set(entry.root.id, entry), remove: (rootId) => registry.delete(rootId) },
     forgetState: async (rootId) => {
       forgotten.push(rootId);
@@ -322,7 +326,40 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
     fetchIdleMs: options.timeoutMs,
     watchPins: options.watchPins,
   });
-  return { drive, registry, forgotten };
+  return { drive, registry, forgotten, rescued };
+}
+
+/** Where a test's "Documents" is: files that weren't uploaded go to `Bulwark – not uploaded` in it. */
+const DOCUMENTS = path.join(BASE, 'Documents');
+
+/** Every file under a folder, `/` between parts. */
+function filesUnder(dir: string, prefix = ''): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory() ? filesUnder(path.join(dir, entry.name), `${prefix}${entry.name}/`) : [`${prefix}${entry.name}`],
+  );
+}
+
+/** A drive with a placed file the page has in sync, one edited here, and one made here; the server unreachable. */
+async function driveWithUnsynced(drive: DriveController, page: FakePage, native: NativeFilesModule) {
+  const on = await drive.enable('acct-1', 'alice@example.org', yes);
+  if (!on.ok) throw new Error(on.error);
+  const root = on.value;
+  await drive.place(root.id, [
+    { path: 'Notes', kind: 'directory', size: 0, mtimeMs: Date.now(), identity: 'd1' },
+    { path: 'Notes/notes.txt', kind: 'file', size: 10, mtimeMs: Date.now(), identity: 'n1' },
+    { path: 'Notes/synced.txt', kind: 'file', size: 10, mtimeMs: Date.now(), identity: 's1' },
+  ]);
+  page.serve.set('n1', Buffer.from('first line'));
+  page.serve.set('s1', Buffer.from('in sync ok'));
+  const notes = path.join(root.path, 'Notes', 'notes.txt');
+  expect(await readElsewhere(path.join(root.path, 'Notes', 'synced.txt'))).toMatchObject({ ok: true });
+  expect(await readElsewhere(notes)).toMatchObject({ ok: true });
+  // Edited here (as Notepad saves) and made here: neither reached Files.
+  writeFileSync(notes, 'first line, and an edit');
+  writeFileSync(path.join(root.path, 'Notes', 'unsynced new.txt'), 'made while offline');
+  writeFileSync(path.join(root.path, 'desktop.ini'), '[.ShellClassInfo]');
+  return root;
 }
 
 const newPage = (): FakePage => ({ requests: [], cancelled: [], states: [], serve: new Map(), answering: true });
@@ -526,6 +563,144 @@ test.describe('the drive controller', () => {
       expect(await drive.markInSync(root.id, '../x', 'n1', expectNow)).toEqual({ ok: false, error: 'outside' });
     } finally {
       await drive.wipe();
+    }
+  });
+
+  test("turning it off keeps what wasn't uploaded in Documents, and deletes only the rest", async () => {
+    rmSync(DOCUMENTS, { recursive: true, force: true });
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    const { drive, rescued } = controllerWith(native, page, store);
+    try {
+      const root = await driveWithUnsynced(drive, page, native);
+      const result = await drive.disable('acct-1', 'user');
+      expect(existsSync(root.path)).toBe(false);
+      expect(result.rescued).toMatchObject({ count: 2, failed: 0 });
+      const folder = result.rescued!.folder;
+      expect(path.dirname(folder)).toBe(path.join(DOCUMENTS, 'Bulwark – not uploaded'));
+      expect(path.basename(folder)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(filesUnder(folder).sort()).toEqual(['Notes/notes.txt', 'Notes/unsynced new.txt']);
+      expect(readFileSync(path.join(folder, 'Notes', 'notes.txt'), 'utf8')).toBe('first line, and an edit');
+      // Copies are plain files, not placeholders that would need this provider.
+      expect(native.filesDriveInfo(path.join(folder, 'Notes', 'notes.txt')).placeholder).toBe(false);
+      expect(rescued).toEqual([{ folder, count: 2, reason: 'user' }]);
+    } finally {
+      await drive.wipe();
+      rmSync(DOCUMENTS, { recursive: true, force: true });
+    }
+  });
+
+  test('a sign-out nobody chose keeps the folder, its edits and its pins, and the next sign-in connects it again', async () => {
+    rmSync(DOCUMENTS, { recursive: true, force: true });
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    const { drive, registry, forgotten, rescued } = controllerWith(native, page, store);
+    try {
+      const root = await driveWithUnsynced(drive, page, native);
+      const synced = path.join(root.path, 'Notes', 'synced.txt');
+      execFileSync('attrib', ['+P', synced]);
+      expect((await drive.disable('acct-1', 'suspended')).rescued).toBeNull();
+      expect(readFileSync(path.join(root.path, 'Notes', 'notes.txt'), 'utf8')).toBe('first line, and an edit');
+      expect(existsSync(path.join(root.path, 'Notes', 'unsynced new.txt'))).toBe(true);
+      expect(native.filesDriveInfo(synced).pin).toBe('pinned');
+      // Still in Explorer, not connected: nothing is deleted or forgotten.
+      expect(await ourRoots(native)).toHaveLength(1);
+      expect(registry.size).toBe(0);
+      expect(forgotten).toEqual([]);
+      expect(rescued).toEqual([]);
+      expect(drive.state().wanted).toEqual(['acct-1']);
+      // A start meanwhile leaves it alone.
+      await drive.startUp();
+      expect(await ourRoots(native)).toHaveLength(1);
+      expect(existsSync(path.join(root.path, 'Notes', 'unsynced new.txt'))).toBe(true);
+
+      const back = await drive.enable('acct-1', 'alice@example.org', no);
+      expect(back.ok && back.value.id).toBe(root.id);
+      expect(registry.size).toBe(1);
+      expect(store.value.accounts?.['acct-1']?.suspended).toBeUndefined();
+    } finally {
+      await drive.wipe();
+      rmSync(DOCUMENTS, { recursive: true, force: true });
+    }
+  });
+
+  test('a sign-out keeps the pins: placed again after the next sign-in, they are pinned and fetched', async () => {
+    rmSync(DOCUMENTS, { recursive: true, force: true });
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    const { drive } = controllerWith(native, page, store);
+    try {
+      const on = await drive.enable('acct-1', 'alice@example.org', yes);
+      if (!on.ok) throw new Error(on.error);
+      const tree: FilesPlaceholder[] = [
+        { path: 'Keep', kind: 'directory', size: 0, mtimeMs: Date.now(), identity: 'd1' },
+        { path: 'Keep/a.bin', kind: 'file', size: 50_000, mtimeMs: Date.now(), identity: 'k1' },
+        { path: 'Loose.bin', kind: 'file', size: 40_000, mtimeMs: Date.now(), identity: 'k2' },
+        { path: 'Online.bin', kind: 'file', size: 30_000, mtimeMs: Date.now(), identity: 'k3' },
+      ];
+      page.serve.set('k1', content('k1', 50_000));
+      page.serve.set('k2', content('k2', 40_000));
+      page.serve.set('k3', content('k3', 30_000));
+      await drive.place(on.value.id, tree);
+      execFileSync('attrib', ['+P', path.join(on.value.path, 'Keep')]);
+      execFileSync('attrib', ['+P', path.join(on.value.path, 'Loose.bin')]);
+      await expect.poll(() => native.filesDriveInfo(path.join(on.value.path, 'Loose.bin')).hydrated, { timeout: 20_000 }).toBe(true);
+
+      await drive.disable('acct-1', 'signed-out');
+      expect(existsSync(on.value.path)).toBe(false);
+      expect(store.value.accounts?.['acct-1']?.pins?.sort()).toEqual(['Keep', 'Loose.bin']);
+
+      const back = await drive.enable('acct-1', 'alice@example.org', no);
+      if (!back.ok) throw new Error(back.error);
+      // The page places the tree anew, a folder's file in a later batch.
+      await drive.place(back.value.id, tree.filter((entry) => entry.path !== 'Keep/a.bin'));
+      await drive.place(back.value.id, tree.filter((entry) => entry.path === 'Keep/a.bin'));
+      const info = (relative: string) => native.filesDriveInfo(path.join(back.value.path, ...relative.split('/')));
+      await expect.poll(() => info('Loose.bin').hydrated, { timeout: 20_000 }).toBe(true);
+      await expect.poll(() => info('Keep/a.bin').hydrated, { timeout: 20_000 }).toBe(true);
+      expect(info('Keep').pin).toBe('pinned');
+      expect(info('Online.bin')).toMatchObject({ hydrated: false, pin: 'unspecified' });
+      // All put back: nothing left to remember.
+      expect(store.value.accounts?.['acct-1']?.pins).toBeUndefined();
+    } finally {
+      await drive.wipe();
+      rmSync(DOCUMENTS, { recursive: true, force: true });
+    }
+  });
+
+  test('the policy turning it off lets the page upload first, then keeps what still waits; a wipe keeps nothing', async () => {
+    rmSync(DOCUMENTS, { recursive: true, force: true });
+    const page = newPage();
+    const store = { value: {} as StoredDrive };
+    let forcedOff = false;
+    const flushed: string[][] = [];
+    const { drive, rescued } = controllerWith(native, page, store, {
+      forcedOff: () => forcedOff,
+      flush: async (accounts) => {
+        flushed.push(accounts);
+      },
+    });
+    try {
+      const root = await driveWithUnsynced(drive, page, native);
+      forcedOff = true;
+      await drive.policyChanged();
+      expect(flushed).toEqual([['acct-1']]);
+      expect(existsSync(root.path)).toBe(false);
+      expect(rescued).toHaveLength(1);
+      expect(rescued[0]).toMatchObject({ count: 2, reason: 'policy' });
+      expect(filesUnder(rescued[0].folder).sort()).toEqual(['Notes/notes.txt', 'Notes/unsynced new.txt']);
+
+      forcedOff = false;
+      rmSync(DOCUMENTS, { recursive: true, force: true });
+      rescued.length = 0;
+      const again = await driveWithUnsynced(drive, page, native);
+      await drive.disable('acct-1', 'wipe');
+      expect(existsSync(again.path)).toBe(false);
+      expect(rescued).toEqual([]);
+      expect(existsSync(DOCUMENTS)).toBe(false);
+    } finally {
+      await drive.wipe();
+      rmSync(DOCUMENTS, { recursive: true, force: true });
     }
   });
 

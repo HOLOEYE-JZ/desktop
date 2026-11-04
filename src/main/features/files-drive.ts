@@ -11,18 +11,20 @@
  * tools skip that.
  */
 
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { homedir, release } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { app, BrowserWindow, type WebContents } from 'electron';
+import { app, BrowserWindow, shell, type WebContents } from 'electron';
 import { CHANNEL, type FilesDriveState, type FilesFetchRequest, type OsCommand } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
 import { substLetters } from '../files/drive-letter';
 import { registryLetterLabels } from '../files/drive-letter-label';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
-import { setDriveHooks } from '../files/drive-hooks';
+import { driveNotice, setDriveHooks } from '../files/drive-hooks';
+import type { Rescued } from '../files/drive-rescue';
 import { filesRegistry } from '../files/registry';
 import { native } from '../native';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
@@ -30,6 +32,7 @@ import { forgetRootState } from './files-folders';
 import { addWipeStep } from './local-wipe';
 import { appIconResource, taskIconsDir } from './os-tasks';
 import { policies } from './policies';
+import { strings } from '../strings';
 import type { Feature, FeatureContext } from '.';
 
 // Set by build.mjs.
@@ -40,6 +43,8 @@ const BUILD_ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-
 
 /** Windows 10 1809: where StorageProviderSyncRootManager and the placeholder calls are complete. */
 const FIRST_BUILD = 17763;
+/** How long the policy turning the drive off waits for the page to upload what waits. */
+const FLUSH_MS = 120_000;
 
 function testArgument(name: string): string | null {
   if (!__BULWARK_TEST_BUILD__) return null;
@@ -80,6 +85,19 @@ export function drivePolicy(): DrivePolicy {
 }
 
 let controller: DriveController | null = null;
+/** The last folder files that weren't uploaded went to, for the page's "Open folder". */
+let lastRescue: Rescued | null = null;
+const flushWaiters = new Map<string, () => void>();
+
+function rescuedNotice(rescued: Rescued, reason: string): void {
+  lastRescue = rescued;
+  // Turned off on the settings page: the page says it there.
+  if (reason === 'user') return;
+  const text = strings();
+  driveNotice()?.(text.filesRescuedTitle, text.filesRescuedBody(rescued.count, rescued.folder), () => {
+    void shell.openPath(rescued.folder);
+  });
+}
 
 /** The drive's controller, made once: the wipe can come before the feature starts. */
 function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showMain'>): DriveController | null {
@@ -125,7 +143,26 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showM
       },
       fetchCancelled: (fetchId) => mainContents()?.send(CHANNEL.filesDriveFetchCancel, fetchId),
       stateChanged: (next: FilesDriveState) => mainContents()?.send(CHANNEL.filesDriveStateChanged, next),
+      // The page uploads what waits, then answers; no page or no answer in time: on without it.
+      flush: (accounts) => new Promise<void>((resolve) => {
+        const contents = mainContents();
+        if (!contents || contents.isLoading() || contents.isCrashed()) {
+          resolve();
+          return;
+        }
+        const requestId = randomUUID();
+        const done = () => {
+          clearTimeout(timer);
+          flushWaiters.delete(requestId);
+          resolve();
+        };
+        const timer = setTimeout(done, Number(testArgument('flush-timeout')) || FLUSH_MS);
+        flushWaiters.set(requestId, done);
+        contents.send(CHANNEL.filesDriveFlush, { requestId, accounts });
+      }),
     },
+    documents: testArgument('documents-dir') ?? app.getPath('documents'),
+    rescued: rescuedNotice,
     status: {
       icon: statusIcon,
       // The status line in Explorer: Settings > Files on this computer, in the main window.
@@ -223,6 +260,15 @@ export const filesDriveFeature: Feature = {
     });
     ctx.on(CHANNEL.filesDriveStatus, (_event, window, account, status) => {
       if (isMain(window)) drive.setStatus(account, status);
+    });
+    ctx.on(CHANNEL.filesDriveFlushed, (_event, window, requestId) => {
+      if (isMain(window) && typeof requestId === 'string') flushWaiters.get(requestId)?.();
+    });
+    // Only the folder main itself made: the page can't name one.
+    ctx.handle(CHANNEL.filesDriveOpenRescue, async (_event, window) => {
+      fromMain(window);
+      if (!lastRescue?.folder) return false;
+      return (await shell.openPath(lastRescue.folder)) === '';
     });
 
     let before = drivePolicy();

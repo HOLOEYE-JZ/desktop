@@ -198,6 +198,10 @@ const en = {
   trayPausedForever: 'Paused until you turn them back on',
   trayResume: 'Turn notifications back on',
   trayOpen: 'Open Bulwark',
+  trayOpenFiles: 'Open Bulwark Files',
+  filesRescuedTitle: "Some files weren't uploaded to Files",
+  filesRescuedBody: (count: number, folder: string) =>
+    `${count === 1 ? 'One file is' : `${count} files are`} in ${folder} now. Click to open the folder.`,
   trayQuit: 'Quit Bulwark',
   trayExit: 'Exit Bulwark',
   menuExit: 'Exit',
@@ -514,6 +518,10 @@ const de: typeof en = {
   trayPausedForever: 'Pausiert, bis Sie sie wieder einschalten',
   trayResume: 'Benachrichtigungen wieder einschalten',
   trayOpen: 'Bulwark öffnen',
+  trayOpenFiles: 'Bulwark Files öffnen',
+  filesRescuedTitle: 'Einige Dateien wurden nicht in Dateien hochgeladen',
+  filesRescuedBody: (count: number, folder: string) =>
+    `${count === 1 ? 'Eine Datei liegt' : `${count} Dateien liegen`} jetzt in ${folder}. Klicken Sie, um den Ordner zu öffnen.`,
   trayQuit: 'Bulwark beenden',
   trayExit: 'Bulwark beenden',
   menuExit: 'Beenden',

@@ -389,7 +389,10 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         state: (): Promise<FilesDriveState> => ipcRenderer.invoke(CHANNEL.filesDriveState),
         onStateChange: (listener: (state: FilesDriveState) => void) => subscribe(CHANNEL.filesDriveStateChanged, listener),
         enable: (account: string, label: string) => ipcRenderer.invoke(CHANNEL.filesDriveEnable, account, label, clicked()),
-        disable: (account: string, reason: 'user' | 'signed-out' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
+        disable: (account: string, reason: 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
+        onFlush: (listener: (request: { requestId: string; accounts: string[] }) => void) => subscribe(CHANNEL.filesDriveFlush, listener),
+        flushed: (requestId: string) => ipcRenderer.send(CHANNEL.filesDriveFlushed, requestId),
+        openRescue: () => ipcRenderer.invoke(CHANNEL.filesDriveOpenRescue),
         place: (rootId: string, entries: FilesPlaceholder[]) => ipcRenderer.invoke(CHANNEL.filesDrivePlace, rootId, entries),
         update: (rootId: string, path: string, meta: { size: number; mtimeMs: number; identity: string; dehydrate: boolean }, expect: FilesExpect | null) =>
           ipcRenderer.invoke(CHANNEL.filesDriveUpdate, rootId, path, meta, expect),

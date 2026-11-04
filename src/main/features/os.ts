@@ -27,6 +27,7 @@ import { setupToasts } from './os-toasts';
 import { pageSetPause, settingsAllowedWithoutClick } from './os-rules';
 import { taskIconsDir } from './os-tasks';
 import { setupTray } from './os-tray';
+import { setDriveNotice } from '../files/drive-hooks';
 
 // Bundled into dist/main.mjs, so this is dist/.
 // Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
@@ -99,6 +100,7 @@ function setup(ctx: FeatureContext): void {
   const toasts = setupToasts(hub, taskbar.attention);
   const tray = setupTray(hub, ICONS, taskIcons);
   setupResilience(hub, toasts.showNotice);
+  setDriveNotice(toasts.showNotice);
   // With no tray to come back from, closing to it would be hiding into nothing. The Dock stays.
   windows.setCloseToBackground(() => hub.settings().closeToTray && (!!tray || process.platform === 'darwin'));
   const launch = setupLaunch(hub);

@@ -14,6 +14,19 @@ export interface DriveHooks {
   parentFolders?: () => string[];
 }
 
+/** A notice from the OS feature's toasts (os-toasts.ts showNotice), for the drive to say where rescued files went. */
+export type DriveNotice = (title: string, body: string, onClick?: () => void) => void;
+
+let notice: DriveNotice | null = null;
+
+export function setDriveNotice(next: DriveNotice | null): void {
+  notice = next;
+}
+
+export function driveNotice(): DriveNotice | null {
+  return notice;
+}
+
 let hooks: DriveHooks = {};
 
 export function setDriveHooks(next: DriveHooks): void {
