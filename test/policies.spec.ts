@@ -24,8 +24,7 @@ function each<const Row>(rows: readonly Row[]) {
   };
 }
 
-const BASE = 'HKCU\\Software\\BulwarkTest';
-const ROOT = `${BASE}\\Policies`;
+const ROOT = `HKCU\\Software\\BulwarkTest\\Policies\\spec${process.pid}`;
 const POLL = '--bulwark-test-policy-poll=250';
 let run = 0;
 
@@ -46,7 +45,7 @@ function setNumber(where: string, name: string, value: number): void {
 
 function freshRoot(): string {
   run += 1;
-  return `${ROOT}\\run${process.pid}-${run}`;
+  return `${ROOT}\\run${run}`;
 }
 
 const rootArg = (root: string) => `--bulwark-test-policy-root=${root}`;
@@ -71,8 +70,6 @@ async function serve(secure: boolean): Promise<string> {
 }
 
 test.beforeAll(async () => {
-  // Nothing of ours may be there before, and nothing is left after.
-  expect(spawnSync('reg.exe', ['query', BASE], { windowsHide: true }).status).toBe(1);
   instanceA = await serve(true);
   instanceB = await serve(true);
   insecure = await serve(false);
@@ -81,8 +78,9 @@ test.beforeAll(async () => {
 test.afterAll(async () => {
   for (const server of servers) server.close();
   servers = [];
-  spawnSync('reg.exe', ['delete', BASE, '/f'], { windowsHide: true });
-  expect(spawnSync('reg.exe', ['query', BASE], { windowsHide: true }).status).toBe(1);
+  // Only this run's: other runs may be using their own at the same time.
+  spawnSync('reg.exe', ['delete', ROOT, '/f'], { windowsHide: true });
+  expect(spawnSync('reg.exe', ['query', ROOT], { windowsHide: true }).status).toBe(1);
 });
 
 interface Started {
@@ -132,16 +130,14 @@ test.describe('precedence, on the real registry', () => {
     const root = freshRoot();
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     // Forced machine over forced user.
-    setString(key(root, 'Machine'), 'UpdateChannel', 'beta');
-    setString(key(root, 'User'), 'UpdateChannel', 'stable');
+    setString(key(root, 'Machine'), 'PluginsMode', 'allowlist');
+    setString(key(root, 'User'), 'PluginsMode', 'off');
     // Forced user over recommended machine.
-    setNumber(key(root, 'User'), 'AutoUpdate', 0);
-    setNumber(key(root, 'Machine', 'Recommended'), 'AutoUpdate', 1);
+    setNumber(key(root, 'User'), 'OfflineEnabled', 1);
+    setNumber(key(root, 'Machine', 'Recommended'), 'OfflineEnabled', 0);
     // Recommended machine over recommended user.
     setNumber(key(root, 'Machine', 'Recommended'), 'AppLockTimeoutMinutes', 5);
     setNumber(key(root, 'User', 'Recommended'), 'AppLockTimeoutMinutes', 9);
-    // Only recommended user.
-    setString(key(root, 'User', 'Recommended'), 'QuickComposeShortcut', 'Ctrl+Alt+M');
     // A list: the stronger level's as a whole.
     setString(key(root, 'Machine', 'PluginAllowlist'), '1', 'machine-plugin');
     setString(key(root, 'User', 'PluginAllowlist'), '1', 'user-plugin');
@@ -149,12 +145,33 @@ test.describe('precedence, on the real registry', () => {
 
     const started = await start(root);
     const policy = await bridgePolicy(started.page);
-    expect(policy.UpdateChannel).toMatchObject({ value: 'beta', source: 'forced-machine', locked: true });
-    expect(policy.AutoUpdate).toMatchObject({ value: false, source: 'forced-user', locked: true });
+    expect(policy.PluginsMode).toMatchObject({ value: 'allowlist', source: 'forced-machine', locked: true });
+    expect(policy.OfflineEnabled).toMatchObject({ value: true, source: 'forced-user', locked: true });
     expect(policy.AppLockTimeoutMinutes).toMatchObject({ value: 5, source: 'recommended-machine', locked: false });
-    expect(policy.QuickComposeShortcut).toMatchObject({ value: 'Ctrl+Alt+M', source: 'recommended-user', locked: false });
     expect(policy.PluginAllowlist).toMatchObject({ value: ['machine-plugin'], source: 'forced-machine' });
-    expect(policy.TelemetryAllowed).toMatchObject({ value: true, source: 'default', locked: false });
+    expect(policy.CrashReportsAllowed).toMatchObject({ value: true, source: 'default', locked: false });
+
+    // Recommended user, once nothing is above it.
+    reg('delete', key(root, 'Machine', 'Recommended'), '/v', 'AppLockTimeoutMinutes', '/f');
+    await expect.poll(() => bridgePolicy(started.page).then((now) => now.AppLockTimeoutMinutes)).toMatchObject({ value: 9, source: 'recommended-user', locked: false });
+  });
+
+  test('a page gets only what it reads: no internal hosts, whichever server it is', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    setString(key(root, 'Machine'), 'AuthServerAllowlist', '*.corp.example.com');
+    setString(key(root, 'Machine', 'AutoSelectCertificateForUrls'), '1', JSON.stringify({ pattern: 'https://sso.corp.example.com' }));
+    setString(key(root, 'Machine'), 'PluginsMode', 'OFF');
+    const started = await start(root);
+    const seen = async () => JSON.stringify(await bridgePolicy(started.page));
+    expect(await seen()).not.toContain('corp.example.com');
+    expect(await seen()).not.toContain('"raw"');
+    expect((await bridgePolicy(started.page)).PluginsMode).toMatchObject({ value: 'off', locked: true });
+
+    // A live change comes through the same door.
+    setString(key(root, 'Machine'), 'PluginsMode', 'allowlist');
+    await expect.poll(() => bridgePolicy(started.page).then((now) => now.PluginsMode.value)).toBe('allowlist');
+    expect(await seen()).not.toContain('corp.example.com');
   });
 
   test('the user\'s choice beats a recommended server and loses to a forced one', async () => {
@@ -556,14 +573,56 @@ test.describe('the wipe nonce', () => {
     setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
     setNumber(key(root, 'Machine'), 'OfflineEnabled', 0);
     started = await start(root, { profile });
-    expect(stateOf(profile).offlineClearedForPolicy).toBe(true);
     await stop(started, true);
 
     reg('delete', key(root, 'Machine'), '/v', 'OfflineEnabled', '/f');
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
     started = await start(root, { profile });
     expect(await markers(started.page)).toEqual({ local: true, opfs: false, idb: true });
-    expect(stateOf(profile).offlineClearedForPolicy).toBeUndefined();
+    await stop(started, true);
+    removeProfile(profile);
+  });
+
+  test('nothing in the user\'s own profile can say that clearing is done', async () => {
+    const root = freshRoot();
+    const profile = tempProfile('policy');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    let started = await start(root, { profile });
+    await plant(started.page);
+    await stop(started, true);
+
+    const state = stateOf(profile);
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ ...state, offlineClearedForPolicy: true }));
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    setNumber(key(root, 'Machine'), 'OfflineEnabled', 0);
+    started = await start(root, { profile });
+    await stop(started, true);
+
+    reg('delete', key(root, 'Machine'), '/v', 'OfflineEnabled', '/f');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    started = await start(root, { profile });
+    expect((await markers(started.page)).opfs).toBe(false);
+    await stop(started, true);
+    removeProfile(profile);
+  });
+
+  test('a typo in OfflineEnabled deletes nothing, and the page sees it as invalid', async () => {
+    const root = freshRoot();
+    const profile = tempProfile('policy');
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    let started = await start(root, { profile });
+    await plant(started.page);
+    await stop(started, true);
+
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    setString(key(root, 'Machine'), 'OfflineEnabled', 'yes');
+    started = await start(root, { profile });
+    expect((await bridgePolicy(started.page)).OfflineEnabled).toMatchObject({ value: false, locked: true, invalid: 'not_a_switch' });
+    await stop(started, true);
+
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    started = await start(root, { profile });
+    expect((await markers(started.page)).opfs).toBe(true);
     await stop(started, true);
     removeProfile(profile);
   });
@@ -594,6 +653,50 @@ test.describe('KeystoreAllowedOrigins', () => {
   });
 });
 
+test.describe('values that make no sense', () => {
+  test('are in the log and in About, and leave when they\'re put right', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root);
+    const { app } = started;
+    await app.evaluate(({ app: electronApp }) => {
+      const seen: string[] = [];
+      (globalThis as unknown as { aboutSeen: string[] }).aboutSeen = seen;
+      const real = electronApp.setAboutPanelOptions.bind(electronApp);
+      electronApp.setAboutPanelOptions = (options) => {
+        seen.push(options.copyright ?? '');
+        real(options);
+      };
+    });
+    const about = () => app.evaluate(() => (globalThis as unknown as { aboutSeen: string[] }).aboutSeen.at(-1) ?? '');
+    let log = '';
+    app.process().stderr?.on('data', (chunk) => (log += String(chunk)));
+    app.process().stdout?.on('data', (chunk) => (log += String(chunk)));
+
+    setString(key(root, 'Machine'), 'PluginsMode', 'OFF');
+    await expect.poll(about).toContain('PluginsMode');
+    await expect.poll(() => log).toContain('PluginsMode');
+    expect(log).toContain('OFF');
+
+    setString(key(root, 'Machine'), 'PluginsMode', 'off');
+    await expect.poll(about).toBe('AGPL-3.0-only');
+    await stop(started);
+  });
+
+  test('an unreadable list stops the app, and the error page names it and the others', async () => {
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'AllowedJmapServers', 'https://a.example.com');
+    setString(key(root, 'Machine'), 'AllowStandalone', 'no');
+    const started = await start(root);
+    const [url] = await windowUrls(started.app);
+    const page = decodeURIComponent(url);
+    expect(page).toContain('AllowedJmapServers');
+    expect(page).toContain('https://a.example.com');
+    expect(page).toContain('AllowStandalone');
+    await stop(started);
+  });
+});
+
 test.describe('"Later" on a forced change', () => {
   test('asks again and then restarts by itself, saving first', async () => {
     const root = freshRoot();
@@ -609,6 +712,24 @@ test.describe('"Later" on a forced change', () => {
     const closed = new Promise((resolve) => app.process().once('exit', resolve));
     await fakeOsIntegration(app, 1);
     setString(key(root, 'Machine'), 'InstanceUrl', instanceB);
+    await expect.poll(() => prompts(app).then((p) => p.length), { timeout: 5500 }).toBeGreaterThan(1);
+    await closed;
+    expect(readFileSync(marker, 'utf8')).toBe('yes');
+  });
+
+  test('a chosen server taken off the list runs out too', async () => {
+    const root = freshRoot();
+    const started = await start(root, { state: { mode: 'instance', instanceUrl: instanceA }, args: ['--bulwark-test-policy-restart=300,6000'] });
+    const { app } = started;
+    const marker = path.join(started.profile, 'relaunched');
+    await app.evaluate(({ app: electronApp }, file) => {
+      electronApp.relaunch = (() => {
+        process.getBuiltinModule('node:fs').writeFileSync(file, 'yes');
+      }) as typeof electronApp.relaunch;
+    }, marker);
+    const closed = new Promise((resolve) => app.process().once('exit', resolve));
+    await fakeOsIntegration(app, 1);
+    setString(key(root, 'Machine', 'AllowedJmapServers'), '1', instanceB);
     await expect.poll(() => prompts(app).then((p) => p.length), { timeout: 5500 }).toBeGreaterThan(1);
     await closed;
     expect(readFileSync(marker, 'utf8')).toBe('yes');

@@ -25,6 +25,9 @@ import { setupToasts } from './os-toasts';
 import { setupTray } from './os-tray';
 
 // Bundled into dist/main.mjs, so this is dist/.
+// Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
+declare const __BULWARK_TEST_BUILD__: boolean;
+
 const ICONS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'os-icons');
 const MAX_SUMMARY_ROWS = 10;
 
@@ -138,7 +141,7 @@ function setup(ctx: FeatureContext): void {
   ctx.handle(CHANNEL.osDefaultAppOpen, () => defaultApp.open());
 
   // The checks in test/ read these back. An installed app has none of it.
-  if (!app.isPackaged) {
+  if (__BULWARK_TEST_BUILD__) {
     (globalThis as unknown as { __bulwarkOs: unknown }).__bulwarkOs = {
       hub,
       gate: appLockGate,

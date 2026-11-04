@@ -36,15 +36,33 @@ export interface PolicySourceProblem {
   reason: string;
 }
 
+/** A server's address as the app would use it, if a server nobody forced may be used at all. */
+function usableServer(snapshot: PolicySnapshot, url: unknown): string | null {
+  const parsed = parseInstanceUrl(url, snapshot.AllowInsecureInstance.value);
+  return parsed.ok && jmapServerAllowed(snapshot.AllowedJmapServers.value, parsed.value) ? parsed.value : null;
+}
+
 export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProblem | null, choice: StartChoice): StartDecision {
   if (problem) return { kind: 'policy-error', policy: problem.policy, reason: problem.reason, canSwitch: false };
-  const { InstanceUrl, AllowInsecureInstance, AllowedJmapServers } = snapshot;
+  const { InstanceUrl, AllowedJmapServers } = snapshot;
   if (InstanceUrl.locked && InstanceUrl.invalid) {
     return { kind: 'policy-error', policy: 'InstanceUrl', reason: InstanceUrl.invalid, raw: InstanceUrl.raw, canSwitch: false };
   }
 
   const allowStandalone = standaloneAllowed(snapshot);
   const forcedUrl = InstanceUrl.locked ? InstanceUrl.value : null;
+
+  // A list nobody can read allows nothing, so without a forced server there's nowhere to
+  // go. An empty welcome page would explain nothing: this says which value is the problem.
+  if (!forcedUrl && AllowedJmapServers.locked && AllowedJmapServers.value?.length === 0 && (AllowedJmapServers.invalid || AllowedJmapServers.dropped)) {
+    return {
+      kind: 'policy-error',
+      policy: 'AllowedJmapServers',
+      reason: AllowedJmapServers.invalid ?? 'no_usable_entries',
+      ...(AllowedJmapServers.raw ? { raw: AllowedJmapServers.raw } : {}),
+      canSwitch: false,
+    };
+  }
 
   if (forcedUrl) {
     if (allowStandalone) {
@@ -55,10 +73,7 @@ export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProbl
   }
 
   // A server anyone chose has to be on the list. A forced one is the admin's own word.
-  const valid = (url: unknown) => {
-    const parsed = parseInstanceUrl(url, AllowInsecureInstance.value);
-    return parsed.ok && jmapServerAllowed(AllowedJmapServers.value, parsed.value) ? parsed.value : null;
-  };
+  const valid = (url: unknown) => usableServer(snapshot, url);
   const devUrl = choice.devInstance ? valid(choice.devInstance) : null;
   if (devUrl) return { kind: 'instance', url: devUrl, forced: false, canSwitch: true };
   if (allowStandalone && (choice.devStandalone || choice.mode === 'standalone')) return { kind: 'standalone', canSwitch: true };
@@ -73,12 +88,14 @@ export function decideStart(snapshot: PolicySnapshot, problem: PolicySourceProbl
 
 /**
  * The app is somewhere a forced value no longer lets it be, so "Later" can't be the end of
- * it: a new forced server, a bad forced value, or direct connections taken away. What a
- * policy no longer asks for can wait for as long as the user likes.
+ * it: a new forced server, a bad forced value, direct connections taken away, or a server
+ * that's now off the list or, with AllowInsecureInstance gone, on plain http. What a policy
+ * no longer asks for can wait for as long as the user likes.
  */
-export function connectionMustChange(booted: StartDecision, next: StartDecision): boolean {
+export function connectionMustChange(booted: StartDecision, next: StartDecision, snapshot: PolicySnapshot): boolean {
   if (next.kind === 'policy-error') return booted.kind !== 'policy-error';
   if (next.kind === 'instance' && next.forced) return booted.kind !== 'instance' || booted.url !== next.url;
+  if (booted.kind === 'instance') return usableServer(snapshot, booted.url) === null;
   return booted.kind === 'standalone' && next.kind !== 'standalone';
 }
 

@@ -21,9 +21,10 @@ import {
   POLICY_LINUX_FILE,
   POLICY_MAX_FILE_BYTES,
   POLICY_RECOMMENDED_SUBKEY,
-  POLICY_REGISTRY_ROOT,
   jmapServerAllowed,
+  pagePolicySnapshot,
   pluginAllowedByPolicy,
+  policyProblems,
   resolvePolicies,
   serverPolicyOf,
   type PolicySnapshot,
@@ -36,10 +37,9 @@ import {
   REAL_REGISTRY_TARGETS,
   managedPlistPaths,
   managedPlistProblem,
+  policySourceName,
   readMacPolicies,
   readPolicyFile,
-  regPathIsStandard,
-  registryAgrees,
   type ReadManagedPlist,
   readRegistry,
   readThroughWatcher,
@@ -78,8 +78,11 @@ function parseUrl(url: string): URL | null {
 
 function loadWatcher(): CreateWatcher | null {
   try {
+    // The addon itself: that's all the package's index.js hands on, through `bindings`, and
+    // electron-builder doesn't always package that. Without it the app hears nothing from
+    // Group Policy, and has no way around a blocked reg.exe.
     const require = createRequire(import.meta.url);
-    return (require('@vscode/policy-watcher') as { createWatcher: CreateWatcher }).createWatcher;
+    return require('@vscode/policy-watcher/build/Release/vscode-policy-watcher.node') as CreateWatcher;
   } catch (error) {
     console.warn('The policy watcher is not available:', error);
     return null;
@@ -156,29 +159,14 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
   private async read(): Promise<PolicyReadResult> {
     if (process.platform === 'win32') {
       const read = await readRegistry(this.targets);
-      if (!this.watcher) return read.ok && regPathIsStandard() ? read : read.ok ? { ok: false, reason: 'reg_mismatch' } : read;
-      if (!read.ok) {
-        console.warn(`Reading policies with reg.exe failed (${read.reason}). Using the watcher's merged values.`);
-        return readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
-      }
-      // Windows not on C: reg.exe's path came from the environment, so check its answer.
-      if (!regPathIsStandard()) {
-        const native = await readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
-        if (!native.ok || !registryAgrees(read.layers, native.layers)) {
-          console.warn('reg.exe and the watcher disagree. Using the watcher.');
-          return native.ok ? native : { ok: false, reason: 'reg_mismatch' };
-        }
-      }
-      return read;
+      if (read.ok || !this.watcher) return read;
+      console.warn(`Reading policies with reg.exe failed (${read.reason}). Using the watcher's merged values.`);
+      return readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
     }
     if (process.platform === 'darwin') {
       return readMacPolicies(systemPreferences, this.forcedCheck, managedPlistPaths(POLICY_BUNDLE_ID, userInfo().username), readManagedPlistFile);
     }
     return readPolicyFile(POLICY_LINUX_FILE, { lstat: (file) => lstatSync(file), read: (file) => readFileSync(file, 'utf8') });
-  }
-
-  private policyName(): string {
-    return process.platform === 'linux' ? POLICY_LINUX_FILE : POLICY_REGISTRY_ROOT;
   }
 
   async refresh(first = false): Promise<void> {
@@ -190,7 +178,7 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
         // A later failure on Windows is a busy machine, not a change: what was read stands.
         if (first || process.platform === 'linux') {
           const changed = this.problem?.reason !== read.reason;
-          this.problem = { policy: this.policyName(), reason: read.reason };
+          this.problem = { policy: policySourceName(process.platform), reason: read.reason };
           if (changed && !first) this.emit('changed', this.snapshot, previous);
         }
         return;
@@ -199,7 +187,12 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       this.problem = null;
       const next = resolvePolicies(read.layers);
       const same = JSON.stringify(next) === JSON.stringify(previous);
-      if (!same) this.snapshot = next;
+      if (!same) {
+        this.snapshot = next;
+        for (const { key, reason, raw } of policyProblems(next)) {
+          console.warn(`The policy ${key} can't be used as set (${reason}${raw ? `: ${raw}` : ''}). The stricter setting applies.`);
+        }
+      }
       if (first) return;
       if (!same || hadProblem) this.emit('changed', this.snapshot, previous);
     })().finally(() => {
@@ -317,17 +310,12 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       if (failed.length === 0) this.markWipeDone(nonce);
       if (inUse.length > 0) this.emit('wiped');
     }
+    // Checked each time and not remembered: nothing else fills these while it's forced off,
+    // and a note in the user's own profile could say it's done. A value that makes no sense
+    // keeps offline off (the webmail reads it that way) but a typo deletes nothing.
     const { OfflineEnabled } = this.snapshot;
-    const forcedOff = OfflineEnabled.locked && OfflineEnabled.value === false;
-    if (forcedOff && !state.data.offlineClearedForPolicy) {
-      const failed = await clearStoreFiles(userData, state, inUse);
-      if (failed.length === 0) {
-        state.data.offlineClearedForPolicy = true;
-        state.save();
-      }
-    } else if (!forcedOff && state.data.offlineClearedForPolicy) {
-      state.data.offlineClearedForPolicy = undefined;
-      state.save();
+    if (OfflineEnabled.locked && OfflineEnabled.value === false && !OfflineEnabled.invalid) {
+      await clearStoreFiles(userData, state, inUse);
     }
   }
 }
@@ -387,9 +375,9 @@ export const policiesFeature: Feature = {
     // Sent while the preload runs, so the page never sees a moment without values. A
     // sync message always needs an answer, also for a sender that gets nothing.
     ipcMain.on(CHANNEL.policyGet, (event) => {
-      event.returnValue = senderAllowed(event.senderFrame, ctx.origin) ? policies.snapshot : null;
+      event.returnValue = senderAllowed(event.senderFrame, ctx.origin) ? pagePolicySnapshot(policies.snapshot) : null;
     });
-    policies.on('changed', (snapshot) => ctx.windows.broadcast(CHANNEL.policyChanged, snapshot));
+    policies.on('changed', (snapshot) => ctx.windows.broadcast(CHANNEL.policyChanged, pagePolicySnapshot(snapshot)));
     policies.on('changed', () => void policies.settleLocalData([ctx.session]).catch((error) => console.error(error)));
     if (ctx.mode === 'instance') blockPluginsOnInstance(ctx);
     policies.watch();

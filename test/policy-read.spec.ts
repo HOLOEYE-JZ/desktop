@@ -12,11 +12,12 @@ import {
   managedPlistProblem,
   readMacPolicies,
   regCommandLine,
-  registryAgrees,
   runRegExe,
   readPolicyFile,
   readRegistry,
   readThroughWatcher,
+  policySourceName,
+  realSystemRoot,
   regPath,
   REAL_REGISTRY_TARGETS,
   testPolicyRoot,
@@ -27,8 +28,9 @@ import {
 } from '../src/main/policy-read';
 import { FORCED_SSO_LIMIT_MS, SsoChain } from '../src/main/navigation-rules';
 import { connectionMustChange, decideStart, restartKey, standaloneAllowed } from '../src/main/policy-start';
-import { deniedSwitches, withoutDeniedSwitches } from '../src/main/switch-guard';
-import { EMPTY_POLICY_LAYERS, POLICY_CONSUMERS, POLICY_KEYS, resolvePolicies, type PolicyLayer } from '../src/shared/policy-schema';
+import { deniedEnvironment, deniedSwitches, withoutDeniedSwitches } from '../src/main/switch-guard';
+import { updatePolicyFrom } from '../src/main/update-rules';
+import { EMPTY_POLICY_LAYERS, POLICY_CONSUMERS, POLICY_KEYS, pagePolicySnapshot, parseCertificateRule, policyProblems, resolvePolicies, type PolicyLayer } from '../src/shared/policy-schema';
 
 /** A row per test. Playwright has no test.each. */
 function each<const Row>(rows: readonly Row[]) {
@@ -111,6 +113,35 @@ test.describe('reading reg.exe', () => {
     expect(layersFromRegistry(parseRegOutput(elsewhere, TARGETS.machine), new Map()).forcedMachine).toEqual({});
   });
 
+  test('a value with a line break is a bad value, and can\'t blank what comes after it', () => {
+    const output = [
+      '',
+      ROOT_LONG,
+      '    AllowStandalone    REG_DWORD    0x0',
+      '    InstanceUrl    REG_SZ    https://mail.example.com',
+      'HKEY_LOCAL_MACHINE\\Software\\Somewhere\\Else',
+      '    PluginsMode    REG_SZ    off',
+      '    UpdateChannel    REG_SZ    beta',
+      `${ROOT_LONG}\\Recommended`,
+      '    OfflineEnabled    REG_SZ    1',
+      '',
+      `${ROOT_LONG}\\PluginAllowlist`,
+      '    1    REG_SZ    good-plugin',
+      '',
+      'End of search: 3 match(es) found.',
+      '',
+    ].join('\r\n');
+    const { forcedMachine, recommendedMachine } = layersFromRegistry(parseRegOutput(output, TARGETS.machine), new Map());
+    expect(forcedMachine.AllowStandalone).toBe(0);
+    expect(forcedMachine.InstanceUrl).toEqual({ invalid: 'line_break' });
+    expect(forcedMachine.PluginsMode).toBe('off');
+    expect(forcedMachine.PluginAllowlist).toEqual(['good-plugin']);
+    // Not after an empty line, so not a key: this is still the value above it.
+    expect(forcedMachine.UpdateChannel).toEqual({ invalid: 'line_break' });
+    expect(recommendedMachine.OfflineEnabled).toBeUndefined();
+    expect(resolvePolicies({ ...EMPTY_POLICY_LAYERS, forcedMachine }).InstanceUrl).toMatchObject({ value: null, invalid: 'not_text' });
+  });
+
   test('machine and user stay separate levels', async () => {
     const run: RunReg = async ([, key]) => ({
       code: 0,
@@ -166,22 +197,48 @@ test.describe('when reg.exe gives no answer', () => {
     expect(regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'k']).slice(0, 3)).toEqual(['/d', '/s', '/c']);
   });
 
-  test('a planted reg.exe that hides a value disagrees with the watcher', () => {
-    const empty = { ...EMPTY_POLICY_LAYERS };
-    const watcher = { ...EMPTY_POLICY_LAYERS, forcedMachine: { InstanceUrl: 'https://mail.example.com' } };
-    expect(registryAgrees(empty, watcher)).toBe(false);
-    expect(registryAgrees({ ...empty, forcedUser: { InstanceUrl: 'https://mail.example.com' } }, watcher)).toBe(true);
-    expect(registryAgrees({ ...empty, forcedMachine: { InstanceUrl: 'https://other.example' } }, watcher)).toBe(false);
-    // The watcher's narrow strings aren't compared when they aren't plain ASCII.
-    expect(registryAgrees({ ...empty, forcedMachine: { InstanceUrl: 'https://m\u00fcller.de' } }, { ...empty, forcedMachine: { InstanceUrl: 'https://m\u00e4ller.de' } })).toBe(true);
+  test('its path comes from Windows: not the environment, and not a folder someone made on C:', () => {
+    const planted = (file: string) => file === 'C:\\Windows\\System32\\reg.exe' || file.startsWith('D:\\');
+    expect(regPath('D:\\Windows', planted)).toBe('D:\\Windows\\System32\\reg.exe');
+    expect(regPath('D:\\Windows', (file) => file === 'C:\\Windows\\System32\\reg.exe')).toBeNull();
+    expect(regPath(null, () => true)).toBeNull();
+    expect(realSystemRoot(() => { throw new Error('no'); })).toBeNull();
+    expect(realSystemRoot(() => '\\\\server\\share')).toBeNull();
   });
 
-  test('its path can\'t be redirected by the environment', () => {
-    const planted = { SystemRoot: 'C:\\Users\\me\\fake' };
-    expect(regPath((file) => file.startsWith('C:\\Users') || file === 'C:\\Windows\\System32\\reg.exe', planted)).toBe('C:\\Windows\\System32\\reg.exe');
-    expect(regPath((file) => file.startsWith('C:\\Users'), planted)).toBeNull();
-    // Windows on another drive still works.
-    expect(regPath((file) => file.startsWith('D:\\'), { SystemRoot: 'D:\\Windows' })).toBe('D:\\Windows\\System32\\reg.exe');
+  test('the real lookup ignores %SystemRoot%', () => {
+    test.skip(process.platform !== 'win32', 'Windows');
+    const real = realSystemRoot();
+    expect(real).toMatch(/^[A-Z]:\\Windows$/i);
+    const before = process.env.SystemRoot;
+    process.env.SystemRoot = 'C:\\Users\\me\\fake';
+    try {
+      expect(realSystemRoot()).toBe(real);
+      expect(regPath()).toBe(`${real}\\System32\\reg.exe`);
+    } finally {
+      process.env.SystemRoot = before;
+    }
+  });
+
+  test('an error page names where policies come from on this OS', () => {
+    expect(policySourceName('darwin')).toContain('Managed Preferences');
+    expect(policySourceName('darwin')).not.toContain('Software\\');
+    expect(policySourceName('linux')).toBe('/etc/bulwark/policies.json');
+    expect(policySourceName('win32')).toContain('Software\\Policies');
+  });
+
+  test('a single value where a list belongs fails closed through the watcher too', async () => {
+    const root = 'Software\\Policies\\Bulwark\\Desktop';
+    const create: CreateWatcher = (_name, _policies, onChange, options) => {
+      setTimeout(() => onChange(options?.registryPath === root ? { AllowedJmapServers: 'https://a.example' } : {}), 1);
+      return { dispose: () => {} };
+    };
+    const read = await readThroughWatcher(create, root);
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(resolvePolicies(read.layers).AllowedJmapServers).toMatchObject({ value: [], invalid: 'not_a_list' });
+    const throughReg = layersFromRegistry(parseRegOutput(`${ROOT_LONG}\r\n    AllowedJmapServers    REG_SZ    https://a.example\r\n`, TARGETS.machine), new Map());
+    expect(read.layers.forcedMachine.AllowedJmapServers).toEqual(throughReg.forcedMachine.AllowedJmapServers);
   });
 
   test('the watcher takes over, lists included', async () => {
@@ -219,7 +276,7 @@ test.describe('the real watcher module', () => {
   const watcher = () => createRequire(import.meta.url)('@vscode/policy-watcher').createWatcher as CreateWatcher;
 
   test.afterAll(() => {
-    reg('delete', 'HKCU\\Software\\BulwarkTest', '/f');
+    reg('delete', KEY, '/f');
   });
 
   test('takes a registry path and reads strings, numbers and numbered lists', async () => {
@@ -425,6 +482,11 @@ test.describe('the test root', () => {
     expect(withHooks).toContain('BulwarkTest');
     expect(production).not.toContain('--bulwark-test-policy');
     expect(production).not.toContain('BulwarkTest');
+    // A renamed exe mustn't be able to answer the app lock's question, or hand out what the tests read.
+    for (const hook of ['BULWARK_TEST_OS_VERIFY', '__bulwarkAppLock', '__bulwarkOs', 'bulwark-test-no-native']) {
+      expect(withHooks, hook).toContain(hook);
+      expect(production, hook).not.toContain(hook);
+    }
     // Nothing in a real build can move the quick compose keys, or hold none.
     expect(withHooks).toContain('--bulwark-test-quick-compose-default=');
     expect(production).not.toContain('--bulwark-test-quick-compose-default=');
@@ -520,14 +582,38 @@ test.describe('what the app opens with', () => {
     const standalone = { kind: 'standalone' as const, canSwitch: true };
     const welcome = { kind: 'welcome' as const, allowStandalone: false, instanceUrl: null, urlLocked: false, canSwitch: false as const };
     const error = { kind: 'policy-error' as const, policy: 'InstanceUrl', reason: 'scheme', canSwitch: false as const };
-    expect(connectionMustChange(on('https://a.example/'), on('https://b.example/'))).toBe(true);
-    expect(connectionMustChange(chosen, on('https://b.example/'))).toBe(true);
-    expect(connectionMustChange(on('https://a.example/'), error)).toBe(true);
-    expect(connectionMustChange(standalone, welcome)).toBe(true);
+    const none = snapshot();
+    expect(connectionMustChange(on('https://a.example/'), on('https://b.example/'), none)).toBe(true);
+    expect(connectionMustChange(chosen, on('https://b.example/'), none)).toBe(true);
+    expect(connectionMustChange(on('https://a.example/'), error, none)).toBe(true);
+    expect(connectionMustChange(standalone, welcome, none)).toBe(true);
     // Lifted: nothing is wrong with staying.
-    expect(connectionMustChange(on('https://a.example/'), chosen)).toBe(false);
-    expect(connectionMustChange(on('https://a.example/'), on('https://a.example/'))).toBe(false);
-    expect(connectionMustChange(error, error)).toBe(false);
+    expect(connectionMustChange(on('https://a.example/'), chosen, none)).toBe(false);
+    expect(connectionMustChange(on('https://a.example/'), on('https://a.example/'), none)).toBe(false);
+    expect(connectionMustChange(error, error, none)).toBe(false);
+  });
+
+  test('a server nobody forced has to stay allowed, or "Later" runs out', () => {
+    const at = (url: string) => ({ kind: 'instance' as const, url, forced: false, canSwitch: true });
+    const welcome = { kind: 'welcome' as const, allowStandalone: true, instanceUrl: null, urlLocked: false, canSwitch: false as const };
+    const offTheList = snapshot({ AllowedJmapServers: ['https://other.example.com'] });
+    expect(connectionMustChange(at('https://chosen.example.com/'), welcome, offTheList)).toBe(true);
+    expect(connectionMustChange(at('https://chosen.example.com/'), decideStart(offTheList, null, { mode: 'instance', instanceUrl: 'https://chosen.example.com/' }), offTheList)).toBe(true);
+    expect(connectionMustChange(at('http://mail.lan/'), welcome, snapshot())).toBe(true);
+    expect(connectionMustChange(at('http://mail.lan/'), at('http://mail.lan/'), snapshot({ AllowInsecureInstance: 1 }))).toBe(false);
+    // A recommendation moving on leaves a server that's still fine.
+    expect(connectionMustChange(at('https://a.example/'), at('https://b.example/'), snapshot())).toBe(false);
+  });
+
+  test('a list nobody can read stops the app and says so, unless a forced server needs no list', () => {
+    for (const [list, reason] of [['https://a.example.com', 'not_a_list'], [['not a server'], 'no_usable_entries']] as const) {
+      const bad = snapshot({ AllowedJmapServers: list as never });
+      expect(decideStart(bad, null, {})).toMatchObject({ kind: 'policy-error', policy: 'AllowedJmapServers', reason });
+      expect(decideStart(bad, null, { mode: 'standalone' })).toMatchObject({ kind: 'policy-error', policy: 'AllowedJmapServers' });
+      expect(decideStart(snapshot({ AllowedJmapServers: list as never, InstanceUrl: INSTANCE }), null, {})).toMatchObject({ kind: 'instance', url: INSTANCE });
+    }
+    // Part of a list is still a list.
+    expect(decideStart(snapshot({ AllowedJmapServers: ['https://a.example.com', 'not a server'] }), null, {})).toMatchObject({ kind: 'welcome' });
   });
 
   test('a restart is only worth asking for when the outcome changes', () => {
@@ -552,6 +638,41 @@ test.describe('the switches a production build refuses', () => {
   ])('%s', (arg) => {
     expect(deniedSwitches([EXE, arg], 'linux').length).toBe(1);
     expect(withoutDeniedSwitches([EXE, arg, 'bulwark://x'], 'linux')).toEqual([EXE, 'bulwark://x']);
+  });
+
+  // Chromium trims each argument first, so these reach it as the switch they contain.
+  each([
+    ' --remote-debugging-port=9392', '\t--remote-debugging-port=9392', '--remote-debugging-port=9392 ', '  --remote-debugging-port=9392\t',
+    ' --user-data-dir=C:\\x', '\t--user-data-dir=C:\\x', '--user-data-dir ', ' --proxy-server=1.2.3.4:80', ' --js-flags=--x', ' --ignore-certificate-errors',
+    '\u00a0--no-sandbox', '\u3000--no-sandbox', '\u2003--no-sandbox', '\u0085--no-sandbox', '\r\n--no-sandbox',
+    // Not trimmed by Chromium, but nothing anyone needs as a file name.
+    '"--no-sandbox"', '\u200b--no-sandbox', '\ufeff--no-sandbox', '\u0001--no-sandbox', '---no-sandbox',
+  ])('padded: %s', (arg) => {
+    for (const platform of ['win32', 'linux', 'darwin'] as const) {
+      expect(deniedSwitches([EXE, arg], platform).length, platform).toBe(1);
+      expect(withoutDeniedSwitches([EXE, arg, 'bulwark://x'], platform), platform).toEqual([EXE, 'bulwark://x']);
+    }
+  });
+
+  test('a padded switch comes out under its own name, so it can be removed', () => {
+    expect(deniedSwitches([EXE, ' --Remote-Debugging-Port=9'], 'win32')).toEqual(['remote-debugging-port']);
+    expect(deniedSwitches([EXE, ' /no-sandbox'], 'win32')).toEqual(['no-sandbox']);
+    expect(deniedSwitches([EXE, ' /no-sandbox'], 'linux')).toEqual([]);
+  });
+
+  test('a padded -- ends the switches, as it does for Chromium, and files stay files', () => {
+    expect(deniedSwitches([EXE, ' -- ', '--no-sandbox'], 'win32')).toEqual([]);
+    const files = [EXE, ' C:\\some mail.eml ', 'mailto:a@example.org', '--lang=de '];
+    expect(deniedSwitches(files, 'win32')).toEqual([]);
+    expect(withoutDeniedSwitches(files, 'win32')).toEqual(files);
+  });
+
+  test('the environment Electron, Node and Chromium read before any of our code', () => {
+    const refused = ['ELECTRON_DISABLE_SANDBOX', 'ELECTRON_NO_ASAR', 'ELECTRON_ENABLE_LOGGING', 'ELECTRON_LOG_FILE', 'ELECTRON_ENABLE_STACK_DUMPING', 'ELECTRON_LOG_ASAR_READS', 'ELECTRON_NO_ATTACH_CONSOLE', 'ELECTRON_RUN_AS_NODE', 'ELECTRON_SOMETHING_NEW', 'electron_disable_sandbox', 'NODE_OPTIONS', 'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_EXTRA_CA_CERTS', 'NODE_PATH', 'SSLKEYLOGFILE', 'CHROME_LOG_FILE'];
+    const left = ['PATH', 'NODE_ENV', 'APPIMAGE', 'HOME', 'ELECTRON_OZONE_PLATFORM_HINT', 'ELECTRON_TRASH', 'ELECTRON_FORCE_WINDOW_MENU_BAR', 'NODENAME'];
+    const env = Object.fromEntries([...refused, ...left].map((name) => [name, '1']));
+    expect(deniedEnvironment(env).sort()).toEqual([...refused].sort());
+    expect(deniedEnvironment({ ELECTRON_DISABLE_SANDBOX: undefined })).toEqual([]);
   });
 
   test('Windows also takes -name and /name, in any case', () => {
@@ -608,8 +729,111 @@ test.describe('every key has someone acting on it', () => {
 
   test('a key nobody wired yet names who owes it', () => {
     const pending = POLICY_KEYS.filter((key) => 'pendingConsumer' in POLICY_CONSUMERS[key]);
-    expect(pending.sort()).toEqual(['AutoUpdate', 'UpdateChannel'].sort());
-    for (const key of pending) expect((POLICY_CONSUMERS[key] as { pendingConsumer: string }).pendingConsumer).toMatch(/\S{3}/);
+    expect(pending).toEqual([]);
+  });
+});
+
+test.describe('values that make no sense', () => {
+  test('each forced one is named, with what was set', () => {
+    const bad = snapshot({ AllowStandalone: 'no', PluginsMode: 'OFF', AllowedJmapServers: 'x', OfflineEnabled: 'yes', AppLockTimeoutMinutes: '99999', WipeOfflineData: 'w'.repeat(200), InstanceUrl: 'https://mail.example.com' });
+    const problems = policyProblems(bad);
+    expect(problems.map((problem) => problem.key).sort()).toEqual(['AllowStandalone', 'AllowedJmapServers', 'AppLockTimeoutMinutes', 'OfflineEnabled', 'PluginsMode', 'WipeOfflineData']);
+    expect(problems.find((problem) => problem.key === 'PluginsMode')).toEqual({ key: 'PluginsMode', reason: 'unknown_value', raw: 'OFF' });
+    expect(problems.find((problem) => problem.key === 'WipeOfflineData')?.reason).toBe('too_long');
+    // Each still fails closed.
+    expect(bad.AllowStandalone.value).toBe(false);
+    expect(bad.PluginsMode.value).toBe('off');
+    expect(bad.AllowedJmapServers.value).toEqual([]);
+    expect(bad.WipeOfflineData.value).toBeNull();
+  });
+
+  test('a list with entries left out is named, and a good or absent value isn\'t', () => {
+    expect(policyProblems(snapshot({ AllowedJmapServers: ['https://a.example.com', 'not a server'] }))).toEqual([{ key: 'AllowedJmapServers', reason: 'entries_left_out' }]);
+    expect(policyProblems(snapshot({ AllowStandalone: 0, PluginsMode: 'off' }))).toEqual([]);
+    expect(policyProblems(snapshot({}, { AppLockTimeoutMinutes: 'nonsense' }))).toEqual([]);
+  });
+
+  test('an unusable lock timeout is the shortest there is, for the user\'s choice not to win', () => {
+    for (const raw of ['99999', 0, 'soon']) {
+      expect(snapshot({ AppLockTimeoutMinutes: raw }).AppLockTimeoutMinutes).toMatchObject({ value: 1, locked: true });
+    }
+    expect(snapshot({ AppLockTimeoutMinutes: 15 }).AppLockTimeoutMinutes).toMatchObject({ value: 15, locked: true });
+  });
+
+  test('a list of auth servers can\'t name a whole top-level domain', () => {
+    for (const raw of ['com', '.com', 'COM', '..com', 'com.', 'com:443', '*.com', '*', 'de', 'example.org,net']) {
+      expect(snapshot({ AuthServerAllowlist: raw }).AuthServerAllowlist, raw).toMatchObject({ value: null, invalid: 'invalid_host_list' });
+    }
+    for (const raw of ['intranet', 'sso', 'example.com', '.example.com', '*.example.com', 'dc1.corp.example.com:8443']) {
+      expect(snapshot({ AuthServerAllowlist: raw }).AuthServerAllowlist, raw).toMatchObject({ value: raw, locked: true });
+    }
+    expect(snapshot({ AuthNegotiateDelegateAllowlist: '.com' }).AuthNegotiateDelegateAllowlist.invalid).toBe('invalid_host_list');
+  });
+
+  test('a certificate rule can\'t cover a whole top-level domain', () => {
+    const rule = (pattern: string) => parseCertificateRule(JSON.stringify({ pattern }));
+    for (const pattern of ['[*.]com', 'https://[*.]com', '*.com', '[*.]com:443', '[*.]intranet']) expect(rule(pattern), pattern).toBeNull();
+    expect(rule('https://[*.]example.com')).toMatchObject({ host: 'example.com', subdomains: true });
+    expect(rule('https://intranet')).toMatchObject({ host: 'intranet', subdomains: false });
+  });
+});
+
+test.describe('what a recommendation can do', () => {
+  test('nothing, where there is no user\'s choice to sit under', () => {
+    for (const key of ['AppLockRequired', 'TelemetryAllowed', 'CrashReportsAllowed', 'AutoUpdate'] as const) {
+      expect(snapshot({}, { [key]: 0 })[key], key).toMatchObject({ source: 'default', locked: false });
+      expect(snapshot({ [key]: 0 })[key], key).toMatchObject({ value: false, locked: true });
+    }
+  });
+
+  test('AutoUpdate from `defaults write` on macOS doesn\'t stop updates', () => {
+    const read = readMacPolicies(
+      { getUserDefault: (key: string, type: string) => (key === 'AutoUpdate' ? '0' : type === 'array' ? [] : '') },
+      () => false,
+      { machine: 'm', user: 'u' },
+      () => ({ ok: true, values: null }),
+    );
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.layers.recommendedUser.AutoUpdate).toBe('0');
+    expect(updatePolicyFrom(resolvePolicies(read.layers))).toEqual({});
+  });
+});
+
+test.describe('what a page gets', () => {
+  const full = () => snapshot({
+    AuthServerAllowlist: '*.corp.example.com',
+    AuthNegotiateDelegateAllowlist: 'dc1.corp.example.com',
+    AutoSelectCertificateForUrls: [JSON.stringify({ pattern: 'https://sso.corp.example.com', filter: { ISSUER: { CN: 'Corp CA' } } })],
+    KeystoreAllowedOrigins: ['https://mail.corp.example.com'],
+    WipeOfflineData: 'guess-me',
+    PluginsMode: 'OFF',
+    PluginAllowlist: ['good-plugin'],
+    OfflineEnabled: 'yes',
+    AppLockRequired: 1,
+    AppLockTimeoutMinutes: 7,
+    CrashReportsAllowed: 0,
+  }, { InstanceUrl: 'https://mail.corp.example.com' });
+
+  test('no internal hosts, no wipe code, no recommended server and no raw value', () => {
+    const page = JSON.stringify(pagePolicySnapshot(full()));
+    for (const secret of ['corp.example.com', 'Corp CA', 'guess-me']) expect(page).not.toContain(secret);
+    expect(pagePolicySnapshot(full()).OfflineEnabled.raw).toBeUndefined();
+  });
+
+  test('every key is still there, with what the webmail reads intact', () => {
+    const page = pagePolicySnapshot(full());
+    for (const key of POLICY_KEYS) expect(page[key], key).toBeDefined();
+    expect(page.AuthServerAllowlist).toMatchObject({ value: null, locked: false, source: 'default' });
+    expect(page.InstanceUrl).toMatchObject({ value: null, locked: false });
+    // A forced server is the only one a page from a server can be on.
+    expect(pagePolicySnapshot(snapshot({ InstanceUrl: 'https://mail.example.com' })).InstanceUrl).toMatchObject({ value: 'https://mail.example.com/', locked: true });
+    expect(page.PluginsMode).toMatchObject({ value: 'off', invalid: 'unknown_value', locked: true });
+    expect(page.PluginAllowlist.value).toEqual(['good-plugin']);
+    expect(page.OfflineEnabled).toMatchObject({ value: false, invalid: 'not_a_switch', locked: true });
+    expect(page.AppLockRequired).toMatchObject({ value: true, locked: true });
+    expect(page.AppLockTimeoutMinutes).toMatchObject({ value: 7, locked: true });
+    expect(page.CrashReportsAllowed).toMatchObject({ value: false, locked: true });
   });
 });
 

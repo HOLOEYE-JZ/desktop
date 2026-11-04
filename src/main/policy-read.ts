@@ -19,10 +19,12 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, type Stats } from 'node:fs';
+import { existsSync, realpathSync, type Stats } from 'node:fs';
 import path from 'node:path';
 import {
+  POLICY_BUNDLE_ID,
   POLICY_KEYS,
+  POLICY_LINUX_FILE,
   POLICY_MAX_FILE_BYTES,
   POLICY_MAX_LIST_ITEMS,
   POLICY_RECOMMENDED_SUBKEY,
@@ -74,20 +76,29 @@ export interface RegResult {
 
 export type RunReg = (args: string[]) => Promise<RegResult>;
 
-/**
- * Where reg.exe is. Not from %SystemRoot%: anyone can start the app with that
- * pointing at their own reg.exe, which would answer "no policies".
- */
-export function regPath(exists: (file: string) => boolean = existsSync, env: NodeJS.ProcessEnv = process.env): string | null {
-  const standard = 'C:\\Windows\\System32\\reg.exe';
-  if (exists(standard)) return standard;
-  // Windows on another drive. C:\Windows isn't there, so this only happens on such a machine.
-  const root = env.SystemRoot;
-  if (root && /^[A-Za-z]:\\Windows$/i.test(root)) {
-    const other = `${root}\\System32\\reg.exe`;
-    if (exists(other)) return other;
+/** The kernel's own link to the Windows folder. No environment variable or user can move it. */
+const KERNEL_SYSTEM_ROOT = '\\\\?\\GLOBALROOT\\SystemRoot';
+
+/** Where Windows really is, or null. */
+export function realSystemRoot(resolve: (file: string) => string = realpathSync.native): string | null {
+  try {
+    const root = resolve(KERNEL_SYSTEM_ROOT);
+    return /^[A-Za-z]:\\[^"]*$/.test(root) ? root : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+/**
+ * Where reg.exe is. Not from %SystemRoot%: anyone can start the app with that pointing at
+ * their own reg.exe, which would answer "no policies". Not C:\Windows on trust either: with
+ * Windows on another drive, anyone may be able to make that folder. Null if Windows won't
+ * say, and the caller reads through the watcher instead.
+ */
+export function regPath(root: string | null = realSystemRoot(), exists: (file: string) => boolean = existsSync): string | null {
+  if (!root) return null;
+  const file = `${root}\\System32\\reg.exe`;
+  return exists(file) ? file : null;
 }
 
 /** Only keys we name ourselves go on this command line: nothing a policy value could reach. */
@@ -120,31 +131,6 @@ export const runRegExe: RunReg = (args) =>
     });
   });
 
-/** False on a machine with Windows elsewhere than C:, where the path comes from the environment. */
-export function regPathIsStandard(exists: (file: string) => boolean = existsSync): boolean {
-  return exists('C:\\Windows\\System32\\reg.exe');
-}
-
-/**
- * Whether reg.exe's answer agrees with the native watcher's. On a machine where reg.exe's
- * path comes from the environment, a planted one could answer "no policies". The watcher
- * has no such path. It merges machine over user and reads narrow strings, so only ASCII
- * single values can be compared: that's enough to catch a value left out or changed.
- */
-export function registryAgrees(fromReg: PolicyLayers, fromWatcher: PolicyLayers): boolean {
-  const same = (reg: PolicyLayer, user: PolicyLayer, watcher: PolicyLayer) =>
-    SCALARS.every((key) => {
-      const seen = watcher[key];
-      if (typeof seen === 'string' && /[^\x20-\x7e]/.test(seen)) return true;
-      const read = reg[key] ?? user[key];
-      return read === seen;
-    });
-  return (
-    same(fromReg.forcedMachine, fromReg.forcedUser, fromWatcher.forcedMachine) &&
-    same(fromReg.recommendedMachine, fromReg.recommendedUser, fromWatcher.recommendedMachine)
-  );
-}
-
 type RegValues = Map<string, unknown>;
 type RegTree = Map<string, RegValues>;
 
@@ -164,24 +150,39 @@ function hiveLong(key: string): string {
   return key.replace(/^HKLM\\/i, 'HKEY_LOCAL_MACHINE\\').replace(/^HKCU\\/i, 'HKEY_CURRENT_USER\\');
 }
 
-/** `reg query <key> /s` as a tree, by lowercased subkey path. Lines outside the key are ignored. */
+/**
+ * `reg query <key> /s` as a tree, by lowercased subkey path. reg.exe prints a value's line
+ * breaks as they are, so a value can print what looks like a key. A real key comes after an
+ * empty line and lies under the one asked for. Anything else right after a value is more of
+ * that value: it counts as a bad one, where cutting it off could leave a different setting.
+ */
 export function parseRegOutput(output: string, target: string): RegTree {
   const root = hiveLong(target).toLowerCase();
   const tree: RegTree = new Map();
   let current: RegValues | null = null;
+  let lastValue: string | null = null;
+  let afterEmptyLine = true;
   for (const line of output.split(/\r?\n/)) {
-    if (line.startsWith('HKEY_')) {
-      const key = line.trimEnd().toLowerCase();
-      if (key === root || key.startsWith(`${root}\\`)) {
-        current = new Map();
-        tree.set(key.slice(root.length + 1), current);
-      } else {
-        current = null;
-      }
+    if (line === '') {
+      afterEmptyLine = true;
+      lastValue = null;
       continue;
     }
-    const value = VALUE_LINE.exec(line);
-    if (value && current) current.set(value[1].toLowerCase(), regValue(value[2], value[3]));
+    const key = line.trimEnd().toLowerCase();
+    if (afterEmptyLine && line.startsWith('HKEY_') && (key === root || key.startsWith(`${root}\\`))) {
+      current = new Map();
+      tree.set(key.slice(root.length + 1), current);
+      lastValue = null;
+    } else {
+      const value = VALUE_LINE.exec(line);
+      if (value && current) {
+        lastValue = value[1].toLowerCase();
+        current.set(lastValue, regValue(value[2], value[3]));
+      } else if (current && lastValue !== null) {
+        current.set(lastValue, { invalid: 'line_break' });
+      }
+    }
+    afterEmptyLine = false;
   }
   return tree;
 }
@@ -294,7 +295,12 @@ function watchOne(create: CreateWatcher, productName: string, options: { registr
   }, options);
 }
 
-/** For a machine where reg.exe is blocked: the watcher's merged values, machine over user. */
+/**
+ * For a machine where reg.exe is blocked: the watcher's merged values, machine over user.
+ * A single value where a list belongs counts as a bad list, as it does through reg.exe. What
+ * the watcher can't do is see a REG_BINARY or REG_EXPAND_SZ value, or tell a one-line
+ * REG_MULTI_SZ from a string: it has no way to report those.
+ */
 export async function readThroughWatcher(create: CreateWatcher, registryRoot: string, timeoutMs = 5000): Promise<PolicyReadResult> {
   const one = (registryPath: string, names: string[]) =>
     new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -312,8 +318,8 @@ export async function readThroughWatcher(create: CreateWatcher, registryRoot: st
     });
   const level = async (root: string): Promise<PolicyLayer> => {
     const layer: PolicyLayer = {};
-    const scalars = await one(root, SCALARS);
-    for (const key of SCALARS) if (scalars[key] !== undefined) layer[key] = scalars[key];
+    const values = await one(root, [...POLICY_KEYS]);
+    for (const key of POLICY_KEYS) if (values[key] !== undefined) layer[key] = values[key];
     const numbers = Array.from({ length: WATCHED_LIST_ITEMS }, (_, i) => String(i + 1));
     await Promise.all(
       LISTS.map(async (key) => {
@@ -330,6 +336,13 @@ export async function readThroughWatcher(create: CreateWatcher, registryRoot: st
   } catch {
     return { ok: false, reason: 'watcher_failed' };
   }
+}
+
+/** What an error page calls the place policies come from, on this OS. */
+export function policySourceName(platform: NodeJS.Platform): string {
+  if (platform === 'linux') return POLICY_LINUX_FILE;
+  if (platform === 'darwin') return `/Library/Managed Preferences/${POLICY_BUNDLE_ID}.plist`;
+  return POLICY_REGISTRY_ROOT;
 }
 
 export type LinuxFileProblem = 'not_a_file' | 'not_root_owned' | 'writable_by_others' | 'dir_unsafe' | 'too_large' | 'unreadable' | 'not_json';

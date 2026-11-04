@@ -18,6 +18,7 @@ import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
 import { buildToastXml, inQuietHours, parseFocusAssist, parseToastArguments, REPLY_INPUT, type FocusAssist } from './os-rules';
+import { isInstalledBuild } from '../installed';
 
 export const TOAST_CLSID = '{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}';
 // A development run points LocalServer32 at electron.exe: not over an installed app's.
@@ -31,7 +32,7 @@ const FOCUS_ASSIST_TIMEOUT_MS = 3000;
 const MAX_ACTIONS = 5;
 
 export function setToastActivator(): void {
-  app.setToastActivatorCLSID(app.isPackaged ? TOAST_CLSID : DEV_TOAST_CLSID);
+  app.setToastActivatorCLSID(isInstalledBuild() ? TOAST_CLSID : DEV_TOAST_CLSID);
 }
 
 /** Do Not Disturb's profile (WNF) and the shell's notification state. PowerShell because Electron has no call for either. */

@@ -14,6 +14,7 @@ import type { OsDefaultAppStatus } from '../../shared/bridge';
 import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
 import { needsRegistration, WINDOWS_APP_NAME, WINDOWS_URLS, windowsRegistration, windowsRegistrationKeys, type RegistryValue } from './os-rules';
+import { isInstalledBuild } from '../installed';
 
 export const DEFAULT_APP_SETTINGS_URL = `ms-settings:defaultapps?registeredAppUser=${WINDOWS_APP_NAME}`;
 
@@ -94,12 +95,12 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
   // Follows the path of an update, and comes back after an uninstall and a reinstall to the
   // same path, so this asks the registry rather than remember. A development run writes
   // nothing unless asked.
-  if (win32 && app.isPackaged) {
+  if (win32 && isInstalledBuild()) {
     void reg(['query', 'HKCU\\Software\\Classes\\bulwark\\shell\\open\\command', '/ve']).then((query) => {
       if (needsRegistration(query, process.execPath)) void register();
     });
   }
-  if (app.isPackaged && !win32) app.setAsDefaultProtocolClient('bulwark');
+  if (isInstalledBuild() && !win32) app.setAsDefaultProtocolClient('bulwark');
 
   return { status, open, register, unregister: unregisterOnWindows };
 }
