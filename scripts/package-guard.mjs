@@ -5,7 +5,7 @@
 // chunks: they mean nothing on a user's machine and name the developer. Warns if
 // the home folder is still in there.
 
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -155,6 +155,39 @@ export function findResourceProblems(resources) {
     }
   }
   return problems.sort();
+}
+
+/**
+ * Files others can change, or that are setuid or setgid, as `path (mode)`. Windows has no such
+ * modes: everything reads 0666 there. Links read 0777 everywhere and mean nothing.
+ */
+export function findLooseModes(tree, { stat = lstatSync, platform = process.platform } = {}) {
+  if (platform === 'win32') return [];
+  const found = [];
+  for (const { full } of walk(tree)) {
+    const info = stat(full);
+    if (info.isSymbolicLink()) continue;
+    const mode = info.mode & 0o7777;
+    if (mode & 0o6022) found.push(`${toPosix(path.relative(tree, full))} (${mode.toString(8).padStart(4, '0')})`);
+  }
+  return found.sort();
+}
+
+/**
+ * `chmod -R go-w`. electron-builder's zip extraction applies the modes stored in Electron's zip
+ * with chmod, past the umask, and those are 0777 and 0666 (app-builder-lib's electronGet.js).
+ */
+export function tightenModes(tree) {
+  if (process.platform === 'win32') return;
+  for (const { full } of walk(tree)) {
+    const info = lstatSync(full);
+    if (!info.isSymbolicLink() && info.mode & 0o022) chmodSync(full, info.mode & 0o7777 & ~0o022);
+  }
+}
+
+export function guardModes(tree, options) {
+  const found = findLooseModes(tree, options);
+  if (found.length > 0) throw new Error(`Do not ship this package, others can change these files:\n  ${found.slice(0, 30).join('\n  ')}`);
 }
 
 /** Nothing but Electron's own files goes next to the exe (`extraFiles`, a stray config). */
