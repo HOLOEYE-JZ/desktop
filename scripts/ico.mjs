@@ -82,3 +82,37 @@ export function icoSizes(buffer) {
   }
   return sizes;
 }
+
+/**
+ * The 32-bit bitmaps in an .ico as RGBA, top row first, by size. Entries stored as PNG are
+ * left out: encodeIco never writes them.
+ * @param {Buffer} buffer
+ * @returns {Map<number, Buffer>}
+ */
+export function icoBitmaps(buffer) {
+  /** @type {Map<number, Buffer>} */
+  const found = new Map();
+  if (!icoSizes(buffer)) return found;
+  const count = buffer.readUInt16LE(4);
+  for (let index = 0; index < count; index += 1) {
+    const at = 6 + 16 * index;
+    const size = buffer.readUInt8(at) || 256;
+    const offset = buffer.readUInt32LE(at + 12);
+    const image = buffer.subarray(offset, offset + buffer.readUInt32LE(at + 8));
+    if (image.subarray(0, 8).equals(PNG)) continue;
+    const rgba = Buffer.alloc(size * size * 4);
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        // Bottom-up BGRA after the 40 byte header.
+        const from = 40 + ((size - 1 - y) * size + x) * 4;
+        const to = (y * size + x) * 4;
+        rgba[to] = image[from + 2];
+        rgba[to + 1] = image[from + 1];
+        rgba[to + 2] = image[from];
+        rgba[to + 3] = image[from + 3];
+      }
+    }
+    found.set(size, rgba);
+  }
+  return found;
+}

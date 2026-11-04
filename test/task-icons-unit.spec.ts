@@ -3,7 +3,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { encodeIco, icoSizes } from '../scripts/ico.mjs';
+import { encodeIco, icoBitmaps, icoSizes } from '../scripts/ico.mjs';
 import { findPackagedTaskIconProblems, findResourceProblems } from '../scripts/package-guard.mjs';
 import { findTaskIconProblems, TASK_ICON_SIZES, TASK_ICONS } from '../scripts/task-icons.mjs';
 import { APP_USER_MODEL_ID, appUserModelId, TEST_APP_USER_MODEL_ID } from '../src/main/features/os-rules';
@@ -147,6 +147,23 @@ test.describe('the jump list icons', () => {
     wrongSize.writeUInt8(17, 6);
     expect(icoSizes(wrongSize)).toBeNull();
     expect(icoSizes(Buffer.alloc(0))).toBeNull();
+  });
+
+  test('the bitmaps come back out of an .ico pixel for pixel, top row first, for the menus', () => {
+    // A different colour per corner, so a flip or a swapped channel shows.
+    const image = (size: number) => {
+      const rgba = Buffer.alloc(size * size * 4);
+      rgba.set([255, 0, 0, 255], 0);
+      rgba.set([0, 255, 0, 128], (size - 1) * 4);
+      rgba.set([0, 0, 255, 255], (size - 1) * size * 4);
+      return rgba;
+    };
+    const images = TASK_ICON_SIZES.map((size) => ({ size, rgba: image(size) }));
+    const back = icoBitmaps(encodeIco(images));
+    expect([...back.keys()]).toEqual(TASK_ICON_SIZES);
+    for (const { size, rgba } of images) expect(back.get(size)!.equals(rgba), `${size} px`).toBe(true);
+    expect(icoBitmaps(readFileSync(path.join(ASSETS, 'task-compose-light.ico'))).get(16)!.length).toBe(16 * 16 * 4);
+    expect(icoBitmaps(Buffer.alloc(0)).size).toBe(0);
   });
 });
 
