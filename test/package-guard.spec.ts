@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { asarFiles, findResourceProblems, guardExtraFiles } from '../scripts/package-guard.mjs';
+import { asarFiles, findProblems, findResourceProblems, guardExtraFiles, scrubPaths } from '../scripts/package-guard.mjs';
 import { sharpTargets, trimServer } from '../scripts/server-natives.mjs';
 
 /**
@@ -44,7 +44,12 @@ function makeProject(probe: string | null): Project {
 
   // A shell that loads a native module out of the asar's unpacked side and says so.
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
-  if (probe) copyFileSync(probe, path.join(dir, 'dist', 'probe.node'));
+  if (probe) {
+    copyFileSync(probe, path.join(dir, 'dist', 'probe.node'));
+    // after-pack.cjs wants the helper in a Windows or macOS package.
+    mkdirSync(path.join(dir, 'native', 'dist', 'win32-x64'), { recursive: true });
+    copyFileSync(probe, path.join(dir, 'native', 'dist', 'win32-x64', 'bulwark-native.node'));
+  }
   writeFileSync(
     path.join(dir, 'dist', 'main.cjs'),
     `const { app } = require('electron'); const fs = require('node:fs'); const out = process.argv.find((a) => a.startsWith('--out=')).slice(6);
@@ -110,6 +115,19 @@ async function runApp(exe: string, out: string): Promise<number | null> {
 
 test.describe('the package guard in the real flow', () => {
   test.setTimeout(300_000);
+
+  test('a Windows package with no native helper does not ship', () => {
+    test.skip(process.platform !== 'win32', 'the helper is optional on Linux');
+    const project = makeProject(findProbeModule());
+    try {
+      rmSync(path.join(project.dir, 'native'), { recursive: true, force: true });
+      const { status, output } = pack(project);
+      expect(status).not.toBe(0);
+      expect(output).toContain('app.asar has no native/bulwark-native.node');
+    } finally {
+      project.remove();
+    }
+  });
 
   test('a clean tree packs: the control, or the two below would prove nothing', async () => {
     const probe = process.platform === 'win32' ? findProbeModule() : null;
@@ -268,6 +286,112 @@ test.describe('what sits next to the server', () => {
   });
 });
 
+test.describe('what the guard looks for', () => {
+  const dir = () => mkdtempSync(path.join(tmpdir(), 'bw-names-'));
+  const put = (root: string, relative: string, text = 'x') => {
+    mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+    writeFileSync(path.join(root, relative), text);
+  };
+
+  test('any .env under .next and node_modules, except the three that hold no secrets', () => {
+    const tree = dir();
+    try {
+      for (const name of ['.envrc', '.env-local', '.env_prod', '.env~', '.ENV.staging']) put(tree, `.next/server/${name}`);
+      put(tree, 'node_modules/a/.envrc');
+      for (const name of ['.env.example', '.env.sample', '.env.template', 'env.js', 'my.env']) put(tree, `node_modules/a/${name}`);
+      expect(findProblems(tree)).toEqual(
+        ['.next/server/.ENV.staging', '.next/server/.env-local', '.next/server/.env_prod', '.next/server/.env~', '.next/server/.envrc', 'node_modules/a/.envrc'].sort(),
+      );
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+
+  test('private folders and files in the unpacked sides and the policies', () => {
+    const resources = dir();
+    try {
+      put(resources, 'server.asar.unpacked/public/a.txt');
+      put(resources, 'server.asar.unpacked/.next/static/chunks/data/a.js');
+      put(resources, 'app.asar.unpacked/native/bulwark-native.node');
+      put(resources, 'policies/bulwark.admx');
+      expect(findResourceProblems(resources, 'linux')).toEqual([]);
+
+      put(resources, 'server.asar.unpacked/data/admin.json');
+      put(resources, 'app.asar.unpacked/repos/a');
+      put(resources, 'policies/local-data/a');
+      put(resources, 'policies/.env');
+      expect(findResourceProblems(resources, 'linux')).toEqual(
+        ['app.asar.unpacked/repos/', 'policies/.env', 'policies/local-data/', 'server.asar.unpacked/data/'].sort(),
+      );
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test("a compiler's leftovers in the unpacked side", () => {
+    const resources = dir();
+    const build = 'app.asar.unpacked/node_modules/@vscode/policy-watcher/build';
+    try {
+      put(resources, `${build}/Release/vscode-policy-watcher.node`);
+      expect(findResourceProblems(resources, 'win32')).toEqual([]);
+      for (const name of ['a.iobj', 'a.ipdb', 'a.lib', 'a.exp', 'a.vcxproj', 'a.tlog/CL.command.1.tlog']) put(resources, `${build}/Release/${name}`);
+      expect(findResourceProblems(resources, 'win32')).toEqual(
+        ['a.exp', 'a.iobj', 'a.ipdb', 'a.lib', 'a.tlog', 'a.tlog/CL.command.1.tlog', 'a.vcxproj'].map((name) => `${build}/Release/${name}`),
+      );
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test('macOS names only on macOS, and only the ones Electron puts there', () => {
+    const resources = dir();
+    try {
+      put(resources, 'icon.icns');
+      mkdirSync(path.join(resources, 'en.lproj'));
+      put(resources, 'de.lproj/locale.pak');
+      expect(findResourceProblems(resources, 'darwin')).toEqual([]);
+      for (const platform of ['win32', 'linux'] as const) {
+        expect(findResourceProblems(resources, platform)).toEqual(['resources/de.lproj', 'resources/en.lproj', 'resources/icon.icns']);
+      }
+
+      put(resources, 'a.plist');
+      put(resources, 'b.nib');
+      put(resources, 'other.icns');
+      put(resources, 'de.lproj/secret.txt');
+      expect(findResourceProblems(resources, 'darwin')).toEqual(['resources/a.plist', 'resources/b.nib', 'resources/de.lproj/secret.txt', 'resources/other.icns']);
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test('the path scrub takes every way a path lands in a built file', () => {
+    const tree = dir();
+    const root = 'C:\\Users\\someone\\my project';
+    try {
+      put(tree, '.next/required-server-files.json', JSON.stringify({ config: { outputFileTracingRoot: root } }));
+      const spellings: Record<string, string> = {
+        'a.js': root,
+        'b.js': root.split('\\').join('/'),
+        'c.js': root.split('\\').join('\\\\'),
+        'd.js': root.split('\\').join('\\\\\\\\'),
+        'e.js': encodeURIComponent(root),
+        'f.js': encodeURI(root.split('\\').join('/')),
+        'g.js': encodeURIComponent(root.split('\\').join('/')),
+        'h.css': `url(${root.split('\\').join('/')}/a.png)`,
+      };
+      for (const [name, text] of Object.entries(spellings)) put(tree, `.next/${name}`, `before ${text} after`);
+      scrubPaths(tree);
+      for (const name of Object.keys(spellings)) {
+        const after = readFileSync(path.join(tree, '.next', name), 'utf8');
+        expect(after, name).toContain('/bulwark-build');
+        expect(after, name).not.toContain('someone');
+      }
+    } finally {
+      rmSync(tree, { recursive: true, force: true });
+    }
+  });
+});
+
 test.describe('fetching the webmail', () => {
   const script = path.join(ROOT, 'scripts', 'fetch-webmail.mjs');
   const run = (...args: string[]) => spawnSync(process.execPath, [script, ...args], { encoding: 'utf8', env: { ...process.env, ...(args.includes('--tag') ? { BULWARK_WEBMAIL_REPO: repo } : {}) } });
@@ -362,6 +486,10 @@ test.describe('after-pack on a universal macOS build', () => {
       mkdirSync(tree);
       writeFileSync(path.join(tree, 'server.js'), 'x');
       await requireHere('@electron/asar').createPackage(tree, path.join(resources, 'server.asar'));
+      const shell = path.join(project, 'shell-tree');
+      mkdirSync(path.join(shell, 'native'), { recursive: true });
+      writeFileSync(path.join(shell, 'native', 'bulwark-native.node'), 'x');
+      await requireHere('@electron/asar').createPackage(shell, path.join(resources, 'app.asar'));
       const context = (arch: number) => ({
         packager: { projectDir: project, appInfo: { productFilename: 'Bulwark' } },
         electronPlatformName: 'darwin',

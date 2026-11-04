@@ -26,7 +26,9 @@ if (!existsSync(path.join(MODULE, 'package.json'))) {
 }
 
 for (const arch of (option('arch') ?? process.arch).split(',')) {
-  const result = spawnSync('npx', ['node-gyp', 'rebuild', `--arch=${arch}`], { cwd: MODULE, stdio: 'inherit', shell: process.platform === 'win32' });
+  // cl and link read these, and binding.gyp is the package's. Control Flow Guard, as the helper has.
+  const env = process.platform === 'win32' ? { ...process.env, _CL_: '/guard:cf', _LINK_: '/guard:cf' } : process.env;
+  const result = spawnSync('npx', ['node-gyp', 'rebuild', `--arch=${arch}`], { cwd: MODULE, env, stdio: 'inherit', shell: process.platform === 'win32' });
   if (result.status !== 0) process.exit(result.status ?? 1);
   const out = path.join(ROOT, '.native-modules', `${process.platform}-${arch}`);
   rmSync(out, { recursive: true, force: true });

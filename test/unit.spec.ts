@@ -333,6 +333,7 @@ test.describe('the image optimizer', () => {
     for (const url of ['/_next/image', '/_next/image?url=%2Fa.png&w=64&q=75', '//_next//image', '/_next/%69mage', '/_NEXT/image/']) {
       expect(isImageOptimizer(url), url).toBe(true);
     }
+    for (const url of ['/_next/./image?url=x', '/_next/static/../image']) expect(isImageOptimizer(url), url).toBe(true);
     for (const url of ['/_next/static/chunks/image.js', '/_next/images', '/api/og-image', undefined]) {
       expect(isImageOptimizer(url), String(url)).toBe(false);
     }
@@ -341,11 +342,18 @@ test.describe('the image optimizer', () => {
 
 test.describe('the admin login route', () => {
   test('is recognised however it is spelled, reading its status is not', () => {
-    for (const url of ['/api/admin/auth', '/api/admin/auth/', '//api//admin/auth', '/api/admin/%61uth', '/API/admin/auth?x=1']) {
+    for (const url of [
+      '/api/admin/auth', '/api/admin/auth/', '//api//admin/auth', '/api/admin/%61uth', '/API/admin/auth?x=1',
+      // Next resolves these before it routes, so they reach the login.
+      '/api/admin/./auth', '/api/admin/x/../auth', '/_next/../api/admin/auth', '/api/admin/%2e/auth', '/api/admin/x/%2E%2E/auth',
+      '/api\\admin\\auth', 'https://app.bulwark.localhost/api/admin/auth', 'http://x/api/admin/auth',
+    ]) {
       expect(isAdminLogin('POST', url), url).toBe(true);
     }
     expect(isAdminLogin('GET', '/api/admin/auth')).toBe(false);
+    expect(isAdminLogin('GET', '/api/admin/./auth')).toBe(false);
     expect(isAdminLogin('POST', '/api/admin/plugins')).toBe(false);
+    expect(isAdminLogin('POST', '/api/admin/auth/../plugins')).toBe(false);
   });
 });
 
@@ -629,6 +637,8 @@ test.describe('the install prompt', () => {
     pluginPermissions: 'It asks to:',
     pluginNoPermissions: 'No permissions',
     pluginPrivileged: 'FULL ACCESS WARNING',
+    pluginKeystore: 'Use certificates on this computer',
+    pluginNewPermissions: 'New in this version:',
     install: 'Install',
     cancel: 'Cancel',
   };
@@ -659,6 +669,39 @@ test.describe('the install prompt', () => {
     expect(box.detail).toContain('FULL ACCESS WARNING');
     expect(box.type).toBe('warning');
     expect(box.buttons![box.defaultId!]).toBe('Cancel');
+  });
+
+  test('a permission the directory leaves out still shows: optional ones count too', () => {
+    const bundled = { tier: 'privileged', permissions: ['crypto:full', 'email:read'], optionalPermissions: ['keystore'] };
+    const facts = pluginFacts({
+      extension: { name: 'S/MIME', permissionDetails: [{ id: 'crypto:full', title: 'Full crypto' }, { id: 'email:read', title: 'Read your mail' }] },
+      preview: { version: '1.5.0' },
+      bundle: { manifest: bundled },
+    }, 'smime');
+    expect(facts.permissionIds).toEqual(['crypto:full', 'email:read', 'keystore']);
+    expect(pluginPrompt(facts, text).detail).toContain('Use certificates on this computer');
+  });
+
+  test('the server\'s own text for keystore wins, and it never shows without the privileged tier', () => {
+    const titled = pluginFacts({
+      extension: { permissionDetails: [{ id: 'keystore', title: 'Certificates, from the server' }] },
+      preview: { version: '1.0.0' },
+      bundle: { manifest: { tier: 'privileged', optionalPermissions: ['keystore'] } },
+    }, 'x');
+    expect(titled.permissions).toEqual(['Certificates, from the server']);
+    const untrusted = pluginFacts({ preview: { version: '1.0.0' }, bundle: { manifest: { optionalPermissions: ['keystore'] } } }, 'x');
+    expect(untrusted.permissionIds).toEqual([]);
+  });
+
+  test('an update says what it adds', () => {
+    const facts = pluginFacts({
+      extension: { permissionDetails: [{ id: 'email:read', title: 'Read your mail' }] },
+      preview: { version: '2.0.0' },
+      bundle: { manifest: { tier: 'privileged', permissions: ['email:read'], optionalPermissions: ['keystore'] }, addedPermissions: ['keystore'] },
+    }, 'x');
+    const lines = String(pluginPrompt(facts, text).detail).split('\n');
+    expect(lines.slice(lines.indexOf('New in this version:'))).toEqual(['New in this version:', '• Use certificates on this computer', '', 'FULL ACCESS WARNING']);
+    expect(pluginPrompt(pluginFacts(detail(), 'x'), text).detail).not.toContain('New in this version');
   });
 
   test('a yanked version has nothing to install, and missing facts stay honest', () => {

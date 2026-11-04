@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
+import { helperFile } from '../src/main/native-loader';
 import { fakeOsIntegration, launch, opened, prompts, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
 
 /**
@@ -773,5 +774,40 @@ test.describe('plugins and mail servers in standalone mode', () => {
 
     reg('delete', key(root, 'Machine'), '/v', 'PluginsMode', '/f');
     await expect.poll(() => features().pluginsEnabled).toBe(true);
+  });
+});
+
+test.describe('the keystore switched off', () => {
+  const helperPath = () => helperFile({ packaged: false, mainDir: path.join(import.meta.dirname, '..', 'dist'), platform: process.platform, arch: process.arch });
+  const hasMember = (window: Page) => window.evaluate(() => 'keystore' in (window as unknown as { bulwarkDesktop: object }).bulwarkDesktop);
+
+  for (const [name, force] of [
+    ['KeystoreEnabled 0', (root: string) => setNumber(key(root, 'Machine'), 'KeystoreEnabled', 0)],
+    ['PluginsMode off', (root: string) => setString(key(root, 'Machine'), 'PluginsMode', 'off')],
+  ] as const) {
+    test(`${name} leaves it off the bridge`, async () => {
+      test.skip(!existsSync(helperPath()), 'needs the native helper');
+      const root = freshRoot();
+      setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+      force(root);
+      const started = await start(root);
+      expect(await hasMember(started.page)).toBe(false);
+    });
+  }
+
+  test('forced off while running, a page that has it gets unsupported, with no dialog', async () => {
+    test.skip(!existsSync(helperPath()), 'needs the native helper');
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root);
+    await fakeOsIntegration(started.app, 1);
+    expect(await hasMember(started.page)).toBe(true);
+    setNumber(key(root, 'Machine'), 'KeystoreEnabled', 0);
+    await expect.poll(() => bridgePolicy(started.page).then((p) => p.KeystoreEnabled.value)).toBe(false);
+    const answer = await started.page.evaluate(() => (window as unknown as { bulwarkDesktop: { keystore: { list(): Promise<unknown> } } }).bulwarkDesktop.keystore.list().then(() => 'listed', (error: Error) => error.message));
+    expect(answer).toBe('keystore:unsupported');
+    expect(await prompts(started.app)).toEqual([]);
+    reg('delete', key(root, 'Machine'), '/v', 'KeystoreEnabled', '/f');
+    await expect.poll(() => bridgePolicy(started.page).then((p) => p.KeystoreEnabled.value)).toBe(true);
   });
 });

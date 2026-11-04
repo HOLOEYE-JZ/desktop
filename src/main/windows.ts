@@ -20,6 +20,7 @@ import { EventEmitter } from 'node:events';
 import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { SessionWindow, StateFile } from './state';
+import { keystoreOffByPolicy } from './keystore-policy';
 import { native } from './native';
 import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
@@ -228,7 +229,7 @@ export class WindowManager extends EventEmitter<{
       additionalArguments: [
         `${PRELOAD_ARG.allowedOrigin}${origin}`,
         `${PRELOAD_ARG.mode}${mode}`,
-        `${PRELOAD_ARG.keystore}${native().keystore.available ? '1' : '0'}`,
+        `${PRELOAD_ARG.keystore}${native().keystore.available && !keystoreOffByPolicy() ? '1' : '0'}`,
       ],
     };
   }
