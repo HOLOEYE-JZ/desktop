@@ -10,12 +10,25 @@
  *
  * Starts locked until it's known otherwise, so nothing shows mail in the first moments of
  * a start. An unreadable file counts as locked. No Electron in this file.
+ *
+ * It also counts PIN guesses (see `guess`): every guess needs main's secret, so this count
+ * is the one a page, a frame or a copy of the page's records can't reset.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+
+/** Wrong PINs that cost nothing, as on the page (the webmail's lib/app-lock/vault.ts). */
+const FREE_GUESSES = 4;
+const FIRST_WAIT_MS = 30_000;
+const LONGEST_WAIT_MS = 60 * 60_000;
+
+export function waitAfterGuesses(guesses: number): number {
+  if (guesses <= FREE_GUESSES) return 0;
+  return Math.min(FIRST_WAIT_MS * 2 ** (guesses - FREE_GUESSES - 1), LONGEST_WAIT_MS);
+}
 
 function digest(proof: Uint8Array): string {
   return createHash('sha256').update(proof).digest('hex');
@@ -29,6 +42,8 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   private file: string | null = null;
   private proofHash: string | null = null;
   private lockedNow = true;
+  private guesses = 0;
+  private blockedUntil = 0;
 
   /** Features start in some order, and whichever asks first reads the profile. */
   initForProfile(userData: string, origin: string): void {
@@ -42,8 +57,10 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
     this.file = file;
     let locked = false;
     try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { proofHash?: unknown };
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { proofHash?: unknown; guesses?: unknown; blockedUntil?: unknown };
       if (typeof parsed.proofHash === 'string') this.proofHash = parsed.proofHash;
+      this.guesses = typeof parsed.guesses === 'number' ? parsed.guesses : 0;
+      this.blockedUntil = typeof parsed.blockedUntil === 'number' ? parsed.blockedUntil : 0;
       locked = true;
     } catch (error) {
       // No file: no lock here. Anything else: it can't be told, so locked.
@@ -88,9 +105,10 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   /** Sets the lock up. Refused when there is one, or a page could replace it and then prove it. */
   enroll(proof: unknown): boolean {
     if (!isProof(proof) || this.enrolled || !this.file) return false;
-    mkdirSync(path.dirname(this.file), { recursive: true });
-    writeFileSync(this.file, JSON.stringify({ proofHash: digest(proof) }), { mode: 0o600 });
     this.proofHash = digest(proof);
+    this.guesses = 0;
+    this.blockedUntil = 0;
+    this.write();
     this.set(false);
     this.emit('enrolled', true);
     return true;
@@ -99,8 +117,33 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   /** Someone really unlocked, with the PIN or a passkey. */
   prove(proof: unknown): boolean {
     if (!this.matches(proof)) return false;
+    if (this.guesses > 0 || this.blockedUntil > 0) {
+      this.guesses = 0;
+      this.blockedUntil = 0;
+      this.write();
+    }
     this.set(false);
     return true;
+  }
+
+  /**
+   * One more PIN guess. Counted before anyone knows whether it's right, and only `prove`
+   * clears the count. Before a lock exists there's nothing to guess at: that's setting a PIN.
+   * Says until when it's refused, or 0 to go ahead.
+   */
+  guess(now = Date.now()): number {
+    if (!this.enrolled) return 0;
+    if (this.blockedUntil > now) return this.blockedUntil;
+    this.guesses += 1;
+    this.blockedUntil = now + waitAfterGuesses(this.guesses);
+    this.write();
+    return 0;
+  }
+
+  private write(): void {
+    if (!this.file || !this.proofHash) return;
+    mkdirSync(path.dirname(this.file), { recursive: true });
+    writeFileSync(this.file, JSON.stringify({ proofHash: this.proofHash, guesses: this.guesses, blockedUntil: this.blockedUntil }), { mode: 0o600 });
   }
 
   /** For main's own checks: Windows Hello or Touch ID said yes. */
@@ -118,6 +161,8 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   forget(): void {
     if (this.file) rmSync(this.file, { force: true });
     this.proofHash = null;
+    this.guesses = 0;
+    this.blockedUntil = 0;
     this.set(false);
     this.emit('enrolled', false);
   }

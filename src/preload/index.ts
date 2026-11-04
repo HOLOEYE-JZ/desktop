@@ -14,6 +14,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import {
   BRIDGE_VERSION,
   type AppLockStatus,
+  type PinStepAnswer,
   type OsUnlockAnswer,
   CHANNEL,
   PRELOAD_ARG,
@@ -139,25 +140,33 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     appLock: {
       status: (): Promise<AppLockStatus> => ipcRenderer.invoke(CHANNEL.appLockStatus),
       // A same-origin frame reaches this object through `parent`, and main can't tell its calls
-      // from the page's (ipc.ts). So these two go to whoever asks first, and the page asks in
-      // its first render, before any frame exists. This is per document: the preload runs again.
+      // from the page's (ipc.ts). So these go to whoever asks first, and the page asks in its
+      // first render, before any frame exists. This is per document: the preload runs again.
+      // Unwrapping is here because a frame could take the OS's layer off the PIN record and
+      // guess at it elsewhere, and a PIN step because every guess has to be counted.
       claim: () => {
         if (appLockClaimed) return null;
         appLockClaimed = true;
         return {
           lock: () => ipcRenderer.send(CHANNEL.appLockLock),
           osUnlock: (): Promise<OsUnlockAnswer> => ipcRenderer.invoke(CHANNEL.appLockOsUnlock),
+          wrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockWrap, data),
+          unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
+          pinStep: (data: Uint8Array): Promise<PinStepAnswer> => ipcRenderer.invoke(CHANNEL.appLockPinStep, data),
+          replaceRenderer: () => ipcRenderer.send(CHANNEL.appLockReplaceRenderer),
         };
       },
       enroll: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockEnroll, proof),
       prove: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockProve, proof),
       disable: (proof: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockDisable, proof),
       forget: (proof?: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockForget, proof),
-      wrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockWrap, data),
-      unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
       osEnroll: (proof: Uint8Array, lockKey: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockOsEnroll, proof, lockKey),
       osRemove: (): Promise<void> => ipcRenderer.invoke(CHANNEL.appLockOsRemove),
       onLockRequest: (listener: () => void) => subscribe(CHANNEL.appLockRequest, listener),
+    },
+    httpCache: {
+      /** Nobody is signed in any more. Only ever deletes, so anyone may ask. */
+      clear: (): Promise<void> => ipcRenderer.invoke(CHANNEL.httpCacheClear),
     },
     shell: {
       openExternal: (url: string) => ipcRenderer.send(CHANNEL.shellOpenExternal, url),

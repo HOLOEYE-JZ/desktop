@@ -70,15 +70,20 @@ export interface WipeResult {
 }
 
 /**
- * Everything but the HTTP cache of the app's own files. Sign-ins go too: the keys and
- * the account list do, and a cookie with no account would only confuse the start-up.
- * Done means every partition finished: on any failure the caller asks again next time.
+ * Everything, the HTTP cache too: it held whatever the mail server sent before a page asked
+ * for `no-store`, attachments and whole messages among it. Sign-ins go too: the keys and the
+ * account list do, and a cookie with no account would only confuse the start-up. So do the
+ * mail servers this profile has used: a device told to remove everything doesn't keep their
+ * names. Done means every partition finished: on any failure the caller asks again next time.
  */
 export async function runLocalWipe(reason: WipeReason, userData: string, state: StateFile): Promise<WipeResult> {
   await leaveWindows();
   // The windows to bring back name drafts and messages. A wipe at the start comes before any window manager.
   delete state.data.session;
   delete state.data.restoreAttempts;
+  state.data.corsOrigins = [];
+  state.data.approvedServers = [];
+  state.save();
   const partitions = knownPartitions(state);
   const failed: string[] = [];
   // No session has these open, and none may: see knownPartitions.
@@ -94,6 +99,7 @@ export async function runLocalWipe(reason: WipeReason, userData: string, state: 
     try {
       const session = electronSession.fromPartition(partition);
       await session.clearStorageData();
+      await session.clearCache();
       await session.clearAuthCache();
       for (const step of steps) await step(session, partition, reason);
     } catch (error) {
