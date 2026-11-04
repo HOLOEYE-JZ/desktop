@@ -44,7 +44,12 @@ function makeProject(probe: string | null): Project {
 
   // A shell that loads a native module out of the asar's unpacked side and says so.
   mkdirSync(path.join(dir, 'dist'), { recursive: true });
-  if (probe) copyFileSync(probe, path.join(dir, 'dist', 'probe.node'));
+  if (probe) {
+    copyFileSync(probe, path.join(dir, 'dist', 'probe.node'));
+    // after-pack.cjs wants the helper in a Windows or macOS package.
+    mkdirSync(path.join(dir, 'native', 'dist', 'win32-x64'), { recursive: true });
+    copyFileSync(probe, path.join(dir, 'native', 'dist', 'win32-x64', 'bulwark-native.node'));
+  }
   writeFileSync(
     path.join(dir, 'dist', 'main.cjs'),
     `const { app } = require('electron'); const fs = require('node:fs'); const out = process.argv.find((a) => a.startsWith('--out=')).slice(6);
@@ -110,6 +115,19 @@ async function runApp(exe: string, out: string): Promise<number | null> {
 
 test.describe('the package guard in the real flow', () => {
   test.setTimeout(300_000);
+
+  test('a Windows package with no native helper does not ship', () => {
+    test.skip(process.platform !== 'win32', 'the helper is optional on Linux');
+    const project = makeProject(findProbeModule());
+    try {
+      rmSync(path.join(project.dir, 'native'), { recursive: true, force: true });
+      const { status, output } = pack(project);
+      expect(status).not.toBe(0);
+      expect(output).toContain('app.asar has no native/bulwark-native.node');
+    } finally {
+      project.remove();
+    }
+  });
 
   test('a clean tree packs: the control, or the two below would prove nothing', async () => {
     const probe = process.platform === 'win32' ? findProbeModule() : null;
@@ -468,6 +486,10 @@ test.describe('after-pack on a universal macOS build', () => {
       mkdirSync(tree);
       writeFileSync(path.join(tree, 'server.js'), 'x');
       await requireHere('@electron/asar').createPackage(tree, path.join(resources, 'server.asar'));
+      const shell = path.join(project, 'shell-tree');
+      mkdirSync(path.join(shell, 'native'), { recursive: true });
+      writeFileSync(path.join(shell, 'native', 'bulwark-native.node'), 'x');
+      await requireHere('@electron/asar').createPackage(shell, path.join(resources, 'app.asar'));
       const context = (arch: number) => ({
         packager: { projectDir: project, appInfo: { productFilename: 'Bulwark' } },
         electronPlatformName: 'darwin',
