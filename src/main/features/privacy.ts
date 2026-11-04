@@ -448,7 +448,8 @@ export class PrivacyManager extends EventEmitter<PrivacyEvents> {
     ctx.handle(CHANNEL.privacyGet, () => this.view());
     ctx.handle(CHANNEL.privacySetTelemetry, (_event, window, on) => this.setTelemetry(on, window));
     ctx.handle(CHANNEL.privacySetCrashReports, (_event, window, on) => this.setCrashReports(on, window));
-    ctx.handle(CHANNEL.privacySetCrashUploadUrl, (_event, _window, url) => this.setCrashUploadUrl(url));
+    // Where crash dumps go is the user's to say, and only the settings page's Save button says it.
+    ctx.handle(CHANNEL.privacySetCrashUploadUrl, (_event, _window, url, clicked) => (clicked === true ? this.setCrashUploadUrl(url) : { ok: false, state: this.view() }));
     ctx.handle(CHANNEL.privacyListCrashes, () => this.listCrashes());
     ctx.handle(CHANNEL.privacySendCrash, (_event, window, id) => this.sendCrash(id, window));
     ctx.handle(CHANNEL.privacyDeleteCrashes, () => this.deleteCrashes());

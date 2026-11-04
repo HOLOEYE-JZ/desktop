@@ -138,6 +138,8 @@ jobs:
       # sharp for the other architecture comes along here: a build on x64 only holds its own.
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         shell: bash
@@ -226,6 +228,8 @@ jobs:
       # Both of sharp's architectures: a universal app holds them side by side.
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT" --native darwin-x64,darwin-arm64
@@ -342,6 +346,8 @@ jobs:
 
       - name: Build the webmail
         env:
+          # A macOS runner has 7 GB, and Node's default limit ran out there.
+          NODE_OPTIONS: --max-old-space-size=6144
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
         run: node scripts/fetch-webmail.mjs --ref "$WEBMAIL_REF" --commit "$WEBMAIL_COMMIT"

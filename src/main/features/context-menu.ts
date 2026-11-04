@@ -18,7 +18,7 @@ import { clipboard, Menu, type BrowserWindow, type ContextMenuParams, type Downl
 import { CHANNEL, type LanguagesUpdate, type MenuBarEntry, type MenuState } from '../../shared/bridge';
 import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toMenuTemplate } from '../menu-text';
 import { openExternally } from '../navigation';
-import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads } from '../spellcheck';
+import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads, outsideHostsAllowed } from '../spellcheck';
 import { setUiLanguage, strings } from '../strings';
 import { noteUserGesture } from '../user-gesture';
 import { clientAuth } from './client-certificates';
@@ -210,8 +210,11 @@ export const contextMenuFeature: Feature = {
     onDictionaryMissing((language) => windows.broadcast(CHANNEL.spellMissing, language));
     ctx.handle(CHANNEL.spellListMissing, () => missingDictionaries());
     ctx.on(CHANNEL.spellAllowDownload, () => {
-      openDictionaryDownloads(session);
-      applySpellLanguages();
+      void outsideHostsAllowed(() => session.fetch(new URL('/api/config', origin).toString())).then((allowed) => {
+        if (!allowed) return;
+        openDictionaryDownloads(session);
+        applySpellLanguages();
+      });
     });
   },
 };

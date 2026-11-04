@@ -574,6 +574,7 @@ export const CHANNEL = {
   appLockProve: 'bulwark:appLock.prove',
   appLockDisable: 'bulwark:appLock.disable',
   appLockForget: 'bulwark:appLock.forget',
+  appLockClearOrphan: 'bulwark:appLock.clearOrphan',
   appLockOsEnroll: 'bulwark:appLock.osEnroll',
   appLockOsRemove: 'bulwark:appLock.osRemove',
   appLockOsUnlock: 'bulwark:appLock.osUnlock',
