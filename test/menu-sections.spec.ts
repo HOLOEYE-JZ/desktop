@@ -1,5 +1,5 @@
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
+import { fakeOsIntegration, launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
 import { clickMenuItem, menuItem } from './native-helpers';
 
 /**
@@ -67,6 +67,8 @@ test.describe('the menus follow the part of the app on screen', () => {
     requireAccount();
     profile = tempProfile('menu-sections');
     ({ app, page } = await launchStandalone(profile));
+    // Links never reach the user's browser.
+    await fakeOsIntegration(app);
     await signIn(page, SERVER);
   });
 
