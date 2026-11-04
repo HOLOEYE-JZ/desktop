@@ -15,7 +15,7 @@
  */
 
 import { clipboard, Menu, type BrowserWindow, type ContextMenuParams, type DownloadItem, type MenuItemConstructorOptions, type Session, type WebContents } from 'electron';
-import { CHANNEL, type LanguagesUpdate, type MenuBarEntry, type MenuState } from '../../shared/bridge';
+import { CHANNEL, type LanguagesUpdate, type MenuBarEntry, type MenuBarMenu, type MenuState } from '../../shared/bridge';
 import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toMenuTemplate } from '../menu-text';
 import { openExternally } from '../navigation';
 import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads, outsideHostsAllowed } from '../spellcheck';
@@ -181,6 +181,16 @@ export const contextMenuFeature: Feature = {
     }));
 
     ctx.handle(CHANNEL.menuBarEntries, (): MenuBarEntry[] => menu.barEntries());
+    ctx.handle(CHANNEL.menuBarMenus, (_event, window): MenuBarMenu[] => (window ? menu.barMenus(window) : []));
+    ctx.on(CHANNEL.menuBarRun, (_event, window, key, label) => {
+      if (window) menu.runBarItem(window, key, label);
+    });
+    ctx.on(CHANNEL.menuBarReport, (_event, window, report) => {
+      if (window) menu.barReport(window, report);
+    });
+    ctx.on(CHANNEL.menuBarSetPinned, (_event, _window, pinned) => {
+      if (typeof pinned === 'boolean') menu.setBarPinned(pinned);
+    });
     ctx.on(CHANNEL.menuBarOpen, (_event, window, id, at) => {
       const point = (at ?? {}) as { x?: unknown; y?: unknown };
       if (window && typeof id === 'string' && typeof point.x === 'number' && typeof point.y === 'number') {

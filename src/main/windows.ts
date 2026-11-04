@@ -249,7 +249,8 @@ export class WindowManager extends EventEmitter<{
   }
 
   private chromeOptions(colours: ChromeColours): BrowserWindowConstructorOptions {
-    if (!this.wantsOverlay()) return { autoHideMenuBar: true };
+    // A native bar hides behind Alt, unless the user wants it always.
+    if (!this.wantsOverlay()) return { autoHideMenuBar: !this.menuBarPinned() };
     if (process.platform === 'darwin') {
       // At the top of the rail, centred on the toolbar row.
       return { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 14, y: 21 }, titleBarOverlay: { height: TITLE_BAR_HEIGHT } };
@@ -261,9 +262,61 @@ export class WindowManager extends EventEmitter<{
     };
   }
 
-  /** The row grows with the page's zoom, and the buttons with it. */
-  private overlayHeight(): number {
-    return Math.round(TITLE_BAR_HEIGHT * 1.2 ** (this.options.state.data.zoomLevel ?? 0));
+  /** The menu bar rows pages draw, in CSS pixels, per window: the controls sit in that row while it's there. */
+  private readonly barHeights = new WeakMap<BrowserWindow, number>();
+
+  /**
+   * The row grows with the page's zoom, and the buttons with it. While the page shows
+   * its menu bar, the controls are as tall as that, as in a native window with a menu
+   * bar, and everything else moves down under both. A new window starts the height an
+   * always-shown bar has, so its controls don't jump once it loads.
+   */
+  private overlayHeight(window?: BrowserWindow): number {
+    const stored = this.options.state.data.menuBarHeight;
+    const pinnedHeight = this.menuBarPinned() && typeof stored === 'number' && stored > 0 && stored <= TITLE_BAR_HEIGHT ? stored : undefined;
+    // Until a page says, what an always-shown bar takes.
+    const bar = window && this.barHeights.has(window) ? this.barHeights.get(window) : pinnedHeight;
+    return Math.round((bar || TITLE_BAR_HEIGHT) * 1.2 ** (this.options.state.data.zoomLevel ?? 0));
+  }
+
+  menuBarPinned(): boolean {
+    return this.options.state.data.menuBarPinned === true && process.platform !== 'darwin';
+  }
+
+  /** "Always show the menu bar": a native bar stops hiding, and the pages draw theirs (menu.ts). */
+  setMenuBarPinned(pinned: boolean): void {
+    const { state } = this.options;
+    if ((state.data.menuBarPinned === true) === pinned) return;
+    state.data.menuBarPinned = pinned;
+    state.touch();
+    if (this.wantsOverlay()) return;
+    for (const { window } of this.windows.values()) {
+      if (window.isDestroyed()) continue;
+      window.setAutoHideMenuBar(!pinned);
+      window.setMenuBarVisibility(pinned);
+    }
+  }
+
+  /** A page drew its menu bar this tall, or took it away (0). */
+  setMenuBarHeight(window: BrowserWindow, height: number): void {
+    if (process.platform === 'darwin' || !this.wantsOverlay() || window.isDestroyed()) return;
+    const next = Number.isFinite(height) && height > 0 ? Math.min(Math.round(height), TITLE_BAR_HEIGHT) : 0;
+    if (this.barHeights.get(window) === next) return;
+    this.barHeights.set(window, next);
+    if (next && this.menuBarPinned() && this.options.state.data.menuBarHeight !== next) {
+      this.options.state.data.menuBarHeight = next;
+      this.options.state.touch();
+    }
+    try {
+      window.setTitleBarOverlay({ color: OVERLAY_COLOUR, symbolColor: this.options.theme.colours().symbol, height: this.overlayHeight(window) });
+    } catch {
+      // A window that was made with a native frame has no overlay.
+    }
+  }
+
+  /** The controls' height now, in window pixels: for the checks. */
+  overlayHeightOf(window: BrowserWindow): number {
+    return this.overlayHeight(window);
   }
 
   /** Zoom changed. */
@@ -657,7 +710,7 @@ export class WindowManager extends EventEmitter<{
       window.setBackgroundColor(colours.background);
       if (process.platform !== 'darwin' && this.wantsOverlay()) {
         try {
-          window.setTitleBarOverlay({ color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight() });
+          window.setTitleBarOverlay({ color: OVERLAY_COLOUR, symbolColor: colours.symbol, height: this.overlayHeight(window) });
         } catch {
           // A window that was made with a native frame has no overlay to colour.
         }
