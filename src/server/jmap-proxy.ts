@@ -26,21 +26,27 @@ const DROP_REQUEST = new Set([
 ]);
 
 /**
- * Never passed back. fetch decodes bodies, so the encoding and length would be
- * wrong. WWW-Authenticate would make Chromium prompt for a password on what is
- * now a same-origin response, and Set-Cookie would land in the app's jar.
+ * The only answer headers that come back, besides the type and length below. These answers
+ * land on the app's own origin, where a browser obeys what a header says for that whole
+ * origin: Clear-Site-Data alone wipes the cookies, the offline store and the outbox, from one
+ * answer of an http server, or of anyone on the way to it. So what's not named stays out.
+ * The JMAP client reads Retry-After. A caller can compare the other two itself.
  */
-const DROP_RESPONSE = new Set([
-  'set-cookie', 'www-authenticate', 'content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive',
-  'strict-transport-security', 'content-security-policy', 'content-security-policy-report-only', 'alt-svc', 'refresh', 'link',
-  'content-disposition', 'content-type', 'location',
-]);
+const PASS_RESPONSE = new Set(['etag', 'last-modified', 'retry-after']);
 
+/**
+ * Always last, so an answer can't overwrite them. No storing: a stored answer is served to a
+ * later `<script src>` without coming past the Sec-Fetch check below.
+ */
 const SAFE_HEADERS = {
   'x-content-type-options': 'nosniff',
   'content-security-policy': "sandbox; default-src 'none'",
   'cross-origin-resource-policy': 'same-origin',
+  'cache-control': 'no-store',
 };
+
+/** What goes along when a redirect leaves the origin. None of it says who's asking. */
+const CROSS_ORIGIN_REQUEST = new Set(['accept', 'accept-language', 'cache-control', 'if-modified-since', 'if-none-match', 'pragma', 'range', 'user-agent']);
 
 export function isJmapRoute(url: string | undefined): boolean {
   return !!url && url.startsWith(PREFIX);
@@ -136,16 +142,23 @@ export async function forwardJmap(
         refuse(res, 502, 'The mail server redirected to a server that has not been approved.');
         return;
       }
-      // Credentials stay with their host, as fetch itself would do it.
-      if (next.hostname !== target.hostname) headers.delete('authorization');
+      // Credentials stay with their origin, and a move to https or another port is another one.
+      if (next.origin !== target.origin) {
+        for (const name of [...headers.keys()]) {
+          if (!CROSS_ORIGIN_REQUEST.has(name)) headers.delete(name);
+        }
+      }
       target = next;
     }
 
-    const out: Record<string, string> = { ...SAFE_HEADERS, 'content-type': safeContentType(upstream.headers.get('content-type')) };
+    const out: Record<string, string> = {};
     upstream.headers.forEach((value, name) => {
-      if (!DROP_RESPONSE.has(name) && !name.startsWith('access-control-')) out[name] = value;
+      if (PASS_RESPONSE.has(name)) out[name] = value;
     });
-    res.writeHead(upstream.status, out);
+    // fetch has decoded the body by now, so a compressed answer's length is wrong.
+    const length = upstream.headers.get('content-length');
+    if (length && !upstream.headers.has('content-encoding')) out['content-length'] = length;
+    res.writeHead(upstream.status, { ...out, 'content-type': safeContentType(upstream.headers.get('content-type')), ...SAFE_HEADERS });
     res.flushHeaders();
     if (upstream.body) await pipeline(Readable.fromWeb(upstream.body as never), res);
     else res.end();

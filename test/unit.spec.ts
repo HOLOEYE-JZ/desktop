@@ -6,6 +6,7 @@ import { createServer as createHttpsServer, request } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { expect, test } from '@playwright/test';
 import { fingerprintOf, generateCertificate } from '../src/main/cert';
 import { isJmapProxyPath, isSsoStart, looksLikeProviderLogout } from '../src/main/navigation-rules';
@@ -495,6 +496,105 @@ test.describe('/__jmap route', () => {
     expect(answer.headers.get('access-control-allow-origin')).toBeNull();
   });
 
+  test('only the answer headers JMAP needs come back, and the safe ones win', async () => {
+    const hostile = createHttpServer((_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'text/html',
+        'clear-site-data': '"*"',
+        'x-content-type-options': 'off',
+        'cross-origin-resource-policy': 'cross-origin',
+        'cache-control': 'public, max-age=31536000',
+        'content-security-policy': 'default-src *',
+        'report-to': '{}',
+        nel: '{}',
+        'reporting-endpoints': 'a="https://x.invalid"',
+        'service-worker-allowed': '/',
+        'x-frame-options': 'ALLOWALL',
+        'permissions-policy': 'camera=*',
+        'set-cookie': 'a=1',
+        'www-authenticate': 'Basic',
+        'proxy-authenticate': 'Basic',
+        location: 'https://x.invalid',
+        refresh: '0;url=https://x.invalid',
+        link: '<https://x.invalid>; rel=preload',
+        'x-anything': 'a',
+        etag: '"v1"',
+        'last-modified': 'Wed, 04 Nov 2026 01:00:00 GMT',
+        'retry-after': '7',
+        'content-length': String('<script>1</script>'.length),
+      });
+      res.end('<script>1</script>');
+    });
+    await new Promise<void>((resolve) => hostile.listen(0, '127.0.0.1', resolve));
+    const hostileOrigin = `http://127.0.0.1:${(hostile.address() as AddressInfo).port}`;
+    const front = createHttpServer((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === hostileOrigin);
+    });
+    await new Promise<void>((resolve) => front.listen(0, '127.0.0.1', resolve));
+    try {
+      const answer = await fetch(`http://127.0.0.1:${(front.address() as AddressInfo).port}/__jmap/${idOf(hostileOrigin)}/x`, { headers: PAGE_FETCH });
+      const names = [...answer.headers.keys()].filter((name) => !['connection', 'date', 'keep-alive', 'transfer-encoding'].includes(name)).sort();
+      expect(names).toEqual([
+        'cache-control',
+        'content-length',
+        'content-security-policy',
+        'content-type',
+        'cross-origin-resource-policy',
+        'etag',
+        'last-modified',
+        'retry-after',
+        'x-content-type-options',
+      ]);
+      expect(answer.headers.get('cache-control')).toBe('no-store');
+      expect(answer.headers.get('x-content-type-options')).toBe('nosniff');
+      expect(answer.headers.get('cross-origin-resource-policy')).toBe('same-origin');
+      expect(answer.headers.get('content-security-policy')).toBe("sandbox; default-src 'none'");
+      expect(answer.headers.get('content-type')).toBe('application/octet-stream');
+      expect(answer.headers.get('etag')).toBe('"v1"');
+      expect(answer.headers.get('retry-after')).toBe('7');
+      expect(answer.headers.get('content-length')).toBe(String('<script>1</script>'.length));
+      expect(await answer.text()).toBe('<script>1</script>');
+    } finally {
+      for (const server of [hostile, front]) {
+        server.close();
+        server.closeAllConnections();
+      }
+    }
+  });
+
+  test('a compressed answer loses its length: fetch has decoded the body by then', async () => {
+    const body = JSON.stringify({ text: 'x'.repeat(2000) });
+    const zipped = gzipSync(body);
+    const compressing = createHttpServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': 'gzip', 'content-length': String(zipped.length) });
+      res.end(zipped);
+    });
+    await new Promise<void>((resolve) => compressing.listen(0, '127.0.0.1', resolve));
+    const compressingOrigin = `http://127.0.0.1:${(compressing.address() as AddressInfo).port}`;
+    const front = createHttpServer((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === compressingOrigin);
+    });
+    await new Promise<void>((resolve) => front.listen(0, '127.0.0.1', resolve));
+    try {
+      const answer = await fetch(`http://127.0.0.1:${(front.address() as AddressInfo).port}/__jmap/${idOf(compressingOrigin)}/x`, { headers: PAGE_FETCH });
+      expect(answer.headers.get('content-encoding')).toBeNull();
+      expect(answer.headers.get('content-length')).toBeNull();
+      expect(answer.headers.get('content-type')).toBe('application/json');
+      expect(await answer.text()).toBe(body);
+    } finally {
+      for (const server of [compressing, front]) {
+        server.close();
+        server.closeAllConnections();
+      }
+    }
+  });
+
+  test('a refusal is not stored either', async () => {
+    const answer = await through(`/__jmap/${idOf(origin)}/html`, {}, false);
+    expect(answer.status).toBe(403);
+    expect(answer.headers.get('cache-control')).toBe('no-store');
+  });
+
   test('JSON stays JSON', () => {
     expect(safeContentType('application/json; charset=utf-8')).toBe('application/json; charset=utf-8');
     expect(safeContentType('application/problem+json')).toBe('application/problem+json');
@@ -597,6 +697,91 @@ test.describe('/__jmap redirects between servers', () => {
     expect(refused.status).toBe(502);
     expect(seen).toHaveLength(1);
     for (const { server } of [first, second, front, frontStrict]) {
+      server.close();
+      server.closeAllConnections();
+    }
+  });
+
+  const secrets = { authorization: 'Basic ACCOUNT-A', 'x-account-key': 'K', 'x-custom': 'C', accept: 'application/json', 'accept-language': 'de' };
+
+  test('another port is another server: only standard headers go along', async () => {
+    const got: IncomingMessage['headers'][] = [];
+    const second = await listen((req, res) => {
+      got.push(req.headers);
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    const first = await listen((_req, res) => {
+      res.writeHead(302, { location: `${second.origin}/x` }).end();
+    });
+    const front = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === first.origin || candidate === second.origin);
+    });
+    const id = Buffer.from(first.origin).toString('base64url');
+    expect((await fetch(`${front.origin}/__jmap/${id}/start`, { headers: { ...PAGE_FETCH, ...secrets } })).status).toBe(200);
+    expect(got).toHaveLength(1);
+    expect(got[0].authorization).toBeUndefined();
+    expect(got[0]['x-account-key']).toBeUndefined();
+    expect(got[0]['x-custom']).toBeUndefined();
+    expect(got[0].accept).toBe('application/json');
+    expect(got[0]['accept-language']).toBe('de');
+    for (const { server } of [first, second, front]) {
+      server.close();
+      server.closeAllConnections();
+    }
+  });
+
+  test('the same origin keeps everything along a redirect', async () => {
+    const got: IncomingMessage['headers'][] = [];
+    const only = await listen((req, res) => {
+      if (req.url === '/start') {
+        res.writeHead(307, { location: '/x' }).end();
+        return;
+      }
+      got.push(req.headers);
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    const front = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === only.origin);
+    });
+    const id = Buffer.from(only.origin).toString('base64url');
+    expect((await fetch(`${front.origin}/__jmap/${id}/start`, { headers: { ...PAGE_FETCH, ...secrets } })).status).toBe(200);
+    expect(got[0].authorization).toBe('Basic ACCOUNT-A');
+    expect(got[0]['x-account-key']).toBe('K');
+    expect(got[0]['x-custom']).toBe('C');
+    for (const { server } of [only, front]) {
+      server.close();
+      server.closeAllConnections();
+    }
+  });
+
+  test('moving up to TLS on the same host is another origin too: nothing of the account goes along', async () => {
+    const cert = generateCertificate('localhost');
+    const got: IncomingMessage['headers'][] = [];
+    const tls = createHttpsServer({ key: cert.keyPem, cert: cert.certPem }, (req, res) => {
+      got.push(req.headers);
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+    });
+    await new Promise<void>((resolve) => tls.listen(0, '127.0.0.1', resolve));
+    const first = await listen((_req, res) => {
+      res.writeHead(301, { location: `https://127.0.0.1:${(tls.address() as AddressInfo).port}/x` }).end();
+    });
+    const front = await listen((req, res) => {
+      void forwardJmap(req, res, (candidate) => candidate === first.origin);
+    });
+    const id = Buffer.from(first.origin).toString('base64url');
+    const insecure = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+    try {
+      expect((await fetch(`${front.origin}/__jmap/${id}/start`, { headers: { ...PAGE_FETCH, ...secrets } })).status).toBe(200);
+    } finally {
+      if (insecure === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = insecure;
+    }
+    expect(got).toHaveLength(1);
+    expect(got[0].authorization).toBeUndefined();
+    expect(got[0]['x-account-key']).toBeUndefined();
+    expect(got[0]['x-custom']).toBeUndefined();
+    for (const server of [first.server, front.server, tls]) {
       server.close();
       server.closeAllConnections();
     }
