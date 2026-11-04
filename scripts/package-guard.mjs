@@ -16,6 +16,8 @@ const FORBIDDEN_FILE = /^(\.env.*|plugin-signing\.key)$/i;
 const FORBIDDEN_DEEP = /^(\.env(?!\.(example|sample|template)$).*|plugin-signing\.key)$/i;
 const TEXT_FILE = /\.(js|cjs|mjs|json|rsc|html|map|txt|css)$/;
 const PLACEHOLDER = '/bulwark-build';
+/** What node-gyp leaves beside a Windows addon. electron-builder.yml keeps it out. */
+const BUILD_LEFTOVER = /\.(iobj|ipdb|lib|exp|tlog|vcxproj)$/i;
 
 function toPosix(p) {
   return p.split(path.sep).join('/');
@@ -159,6 +161,12 @@ export function findResourceProblems(resources, platform = process.platform) {
   for (const name of ['app.asar.unpacked', 'server.asar.unpacked', 'policies']) {
     const tree = path.join(resources, name);
     if (existsSync(tree)) problems.push(...findProblems(tree).map((problem) => `${name}/${problem}`));
+  }
+  const unpacked = path.join(resources, 'app.asar.unpacked');
+  if (existsSync(unpacked)) {
+    for (const { full, entry } of walk(unpacked)) {
+      if (BUILD_LEFTOVER.test(entry.name)) problems.push(`app.asar.unpacked/${toPosix(path.relative(unpacked, full))}`);
+    }
   }
   const asar = path.join(resources, 'app.asar');
   if (existsSync(asar)) {

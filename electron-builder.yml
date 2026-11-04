@@ -21,6 +21,9 @@ files:
     to: native
     filter:
       - bulwark-native.node
+  # What node-gyp leaves beside the policy watcher on Windows.
+  - '!**/node_modules/@vscode/policy-watcher/build/**/*.{iobj,ipdb,lib,exp,tlog,vcxproj}'
+  - '!**/node_modules/@vscode/policy-watcher/build/**/*.tlog/**'
 # The webmail server, trimmed, guarded and packed for this target by before-pack.cjs.
 # As an extra resource so electron-builder lists it for ASAR integrity. Its unpacked files
 # go in by after-pack.cjs.

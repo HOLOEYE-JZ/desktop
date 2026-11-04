@@ -310,6 +310,21 @@ test.describe('what the guard looks for', () => {
     }
   });
 
+  test("a compiler's leftovers in the unpacked side", () => {
+    const resources = dir();
+    const build = 'app.asar.unpacked/node_modules/@vscode/policy-watcher/build';
+    try {
+      put(resources, `${build}/Release/vscode-policy-watcher.node`);
+      expect(findResourceProblems(resources, 'win32')).toEqual([]);
+      for (const name of ['a.iobj', 'a.ipdb', 'a.lib', 'a.exp', 'a.vcxproj', 'a.tlog/CL.command.1.tlog']) put(resources, `${build}/Release/${name}`);
+      expect(findResourceProblems(resources, 'win32')).toEqual(
+        ['a.exp', 'a.iobj', 'a.ipdb', 'a.lib', 'a.tlog', 'a.tlog/CL.command.1.tlog', 'a.vcxproj'].map((name) => `${build}/Release/${name}`),
+      );
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
   test('macOS names only on macOS, and only the ones Electron puts there', () => {
     const resources = dir();
     try {
