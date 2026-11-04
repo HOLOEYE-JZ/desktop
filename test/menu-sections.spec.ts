@@ -139,6 +139,54 @@ test.describe('the menus follow the part of the app on screen', () => {
     expect(new URL(page.url()).pathname).toMatch(/^\/files/);
   });
 
+  test('View > Refresh reloads the screen on view, and Go fits it', async () => {
+    const calls: string[] = [];
+    page.on('request', (request) => {
+      const body = request.postData();
+      if (body?.includes('"methodCalls"')) for (const m of body.matchAll(/\["([A-Za-z]+\/[a-z]+)"/g)) calls.push(m[1]);
+    });
+    const goLines = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.getMenuItemById('go')!.submenu!.items
+      .filter((item) => item.visible && item.type !== 'separator').map((item) => item.id));
+    const refreshes = async (screen: string, method: RegExp) => {
+      // The menu follows once the screen has said what it is.
+      const search = { calendar: 'Search events', contacts: 'Search contacts', files: 'Search files' }[screen];
+      await expect.poll(async () => (await menuItem(app, 'edit.search'))?.label, { timeout: 30_000 }).toBe(search);
+      await expect.poll(async () => (await menuItem(app, 'view.refresh'))?.enabled, { timeout: 30_000 }).toBe(true);
+      expect((await menuItem(app, 'view.refresh'))?.label, screen).toBe('Refresh');
+      calls.length = 0;
+      await clickMenuItem(app, 'view.refresh');
+      await expect.poll(() => calls.some((call) => method.test(call)), { timeout: 30_000, message: screen }).toBe(true);
+      const go = await goLines();
+      expect(go, screen).not.toContain('go.inbox');
+      expect(go, screen).not.toContain('go.nextMessage');
+      return go;
+    };
+
+    await clickMenuItem(app, 'go.calendar');
+    await page.waitForURL((url) => url.pathname.startsWith('/calendar'), { timeout: 60_000 });
+    const calendarGo = await refreshes('calendar', /^CalendarEvent\//);
+    expect(calendarGo.slice(0, 3)).toEqual(['go.today', 'go.nextPeriod', 'go.previousPeriod']);
+    const title = () => page.locator('main h1, h1').first().getAttribute('title');
+    const now = await title();
+    await clickMenuItem(app, 'go.nextPeriod');
+    await expect.poll(title).not.toBe(now);
+    await clickMenuItem(app, 'go.today');
+    await expect.poll(title).toBe(now);
+
+    await clickMenuItem(app, 'go.contacts');
+    await page.waitForURL((url) => url.pathname.startsWith('/contacts'), { timeout: 60_000 });
+    await refreshes('contacts', /^(ContactCard|AddressBook)\//);
+
+    await clickMenuItem(app, 'go.files');
+    await page.waitForURL((url) => url.pathname.startsWith('/files'), { timeout: 60_000 });
+    await refreshes('files', /^FileNode\//);
+
+    await clickMenuItem(app, 'go.mail');
+    await page.waitForURL((url) => !/^\/(calendar|contacts|files)/.test(url.pathname), { timeout: 60_000 });
+    await expect.poll(async () => (await menuItem(app, 'view.refresh'))?.label, { timeout: 30_000 }).toBe('Check for new mail');
+    expect(await goLines()).toContain('go.inbox');
+  });
+
   test('File > Import > Calendar… and Contacts… open that app\'s import from anywhere', async () => {
     await clickMenuItem(app, 'file.importCalendar');
     await page.waitForURL((url) => url.pathname.startsWith('/calendar'), { timeout: 60_000 });
