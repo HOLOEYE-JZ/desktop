@@ -700,10 +700,6 @@ function buildMenu(): MenuController {
       // Unique across runs: one restored from last time may hold a low number.
       windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
     },
-    openSettings: () => {
-      const windows = windowManager;
-      if (windows) windows.open({ type: 'settings', url: `${windows.originUrl()}/settings`, key: 'settings' });
-    },
     zoom: (step) => zoom.step(step),
     print: (window) => printWindow(window, menu?.commandState(window)),
     saveAsPdf: (window) => void saveWindowAsPdf(window, menu?.commandState(window)),

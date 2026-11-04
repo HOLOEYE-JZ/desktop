@@ -140,6 +140,17 @@ export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');
 }
 
+const ACCELERATOR = /^((Ctrl|Cmd|CmdOrCtrl|Alt|Shift|Super)\+){0,3}([A-Z0-9]|F([1-9]|1[0-9]|2[0-4])|[)!@#$%^&*(:;=<,_\-.>?/~`{\][|\\}"']|Plus|Space|Tab|Backspace|Delete|Insert|Enter|Up|Down|Left|Right|Home|End|PageUp|PageDown|Escape)$/;
+
+/**
+ * A key the page says it answers, to show next to an item. Only in Electron's own
+ * syntax, and never registered: the page runs it. macOS menus show only what they run.
+ */
+export function shownAccelerator(raw: unknown, platform: string = process.platform): string | undefined {
+  if (platform === 'darwin' || typeof raw !== 'string' || raw.length > 40) return undefined;
+  return ACCELERATOR.test(raw) ? raw : undefined;
+}
+
 /**
  * What a page sent, made safe to show. Anything out of shape is dropped, and a menu
  * with nothing left isn't shown. `onPick` gets the item's id.
@@ -167,7 +178,8 @@ export function toMenuTemplate(items: unknown, onPick: (id: string) => void): Me
       const id = raw.id;
       if (typeof id !== 'string') continue;
       const type = raw.type === 'checkbox' || raw.type === 'radio' ? raw.type : 'normal';
-      out.push({ label, enabled, type, ...(type !== 'normal' ? { checked: raw.checked === true } : {}), click: () => onPick(id) });
+      const key = type === 'normal' ? shownAccelerator(raw.accelerator) : undefined;
+      out.push({ label, enabled, type, ...(type !== 'normal' ? { checked: raw.checked === true } : {}), ...(key ? { accelerator: key, registerAccelerator: false } : {}), click: () => onPick(id) });
     }
     if (out[out.length - 1]?.type === 'separator') out.pop();
     return out;

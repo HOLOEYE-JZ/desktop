@@ -136,6 +136,8 @@ export interface NativeMenuItem {
   type?: 'normal' | 'separator' | 'checkbox' | 'radio';
   enabled?: boolean;
   checked?: boolean;
+  /** The key the page answers for this item ("D", "Shift+I", "Ctrl+X"). Only shown, never registered. */
+  accelerator?: string;
   submenu?: NativeMenuItem[];
 }
 
