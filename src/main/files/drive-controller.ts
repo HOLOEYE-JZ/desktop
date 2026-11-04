@@ -38,6 +38,7 @@ import type {
 import { filesErrorCode, type NativeFilesModule, type NativeSyncRoot } from '../native-loader';
 import { FetchRelay, type FetchFailure } from './drive-fetch';
 import { settleLetter, type LetterSystem } from './drive-letter';
+import { claimLetterLabel, releaseLetterLabel, type LetterLabelSystem } from './drive-letter-label';
 import {
   accountKey,
   displayNameFor,
@@ -105,6 +106,8 @@ export interface DriveDeps {
   /** The page's record of a root whose folder went: a new folder must not look like everything was deleted. */
   forgetState?: (rootId: string) => Promise<void>;
   letters: LetterSystem | null;
+  /** The letter's name and icon in "This PC" (drive-letter-label.ts). None: Windows names it. */
+  letterLabels?: LetterLabelSystem | null;
   now?: () => number;
   warn?: (message: string) => void;
   /** Pin changes come through a watcher on each root. Off in tests that don't want it. */
@@ -455,15 +458,49 @@ export class DriveController {
   /**
    * At a start, before any sign-in: sync roots of ours nobody wants any more go (a crash
    * between a sign-out and its cleanup, an account removed elsewhere), and so does all of it
-   * when the policy says off. Wanted ones stay registered, unconnected, until the page asks.
+   * when the policy says off. Wanted ones stay registered, unconnected, until the page asks,
+   * and take this version's icon if they have another.
    */
   startUp(): Promise<void> {
     return this.serial(async () => {
       if (!this.available) return;
       await this.settleWithPolicy();
+      await this.refreshIcons();
       await this.applyLetter();
       this.emit();
     });
+  }
+
+  /**
+   * A root registered with another icon (the exe's, before the app had its own .ico, or an
+   * install somewhere else) is registered again with this one. Registering updates it in
+   * place, so the user's drive switches without being turned off and on.
+   */
+  private async refreshIcons(): Promise<void> {
+    if (this.deps.policy().forcedOff) return;
+    const labels = new Map<string, string>();
+    for (const [account, entry] of Object.entries(this.deps.store.read().accounts ?? {})) {
+      if (!entry.signedOut) labels.set(accountKey(this.deps.profile, account), entry.label);
+    }
+    for (const root of await this.ourRoots()) {
+      const key = root.id.split('!').at(-1) ?? '';
+      const label = labels.get(key);
+      // An older helper lists no icon: nothing to compare, so nothing changes.
+      if (label === undefined || !root.path || typeof root.icon !== 'string') continue;
+      if (root.icon.toLowerCase() === this.deps.icon.toLowerCase()) continue;
+      try {
+        await this.native().filesDriveRegister({
+          provider: this.deps.provider,
+          account: key,
+          path: root.path,
+          displayName: root.displayName || displayNameFor(label, labels.size),
+          icon: this.deps.icon,
+          version: this.deps.version,
+        });
+      } catch (error) {
+        this.warn(`Updating the drive's icon failed: ${(error as Error).message}`);
+      }
+    }
   }
 
   /** `FilesDriveEnabled` or `FilesDriveLetter` changed. */
@@ -648,11 +685,33 @@ export class DriveController {
   private async applyLetter(): Promise<void> {
     if (!this.deps.letters) return;
     const targets = this.targets();
-    const letter = wantedLetter(this.deps.policy().letter, this.deps.store.read().letter ?? null, targets.length > 0);
+    const policyLetter = this.deps.policy().letter;
+    const chosen = this.deps.store.read().letter ?? null;
+    const letter = wantedLetter(policyLetter, chosen, targets.length > 0);
+    const before = this.letterNow;
+    const labels = this.deps.letterLabels ?? null;
+    let named: string | null = null;
     try {
+      // Named before it comes, so Explorer never shows it as the disk under it. Not a letter
+      // something else holds: that one keeps its own name, and this gets no letter.
+      const free = letter !== null && (this.deps.letters.usedMask() & (1 << (letter.charCodeAt(0) - 65))) === 0;
+      if (labels && letter && (free || letter === before) && (await claimLetterLabel(labels, letter, this.deps.icon, this.warn))) named = letter;
       this.letterNow = await settleLetter(this.deps.letters, this.base(), letter, letterTarget(this.base(), targets), this.warn);
+      // Ours from before this start: the letter outlives the app within a sign-in.
+      if (labels && this.letterNow && this.letterNow !== named) await claimLetterLabel(labels, this.letterNow, this.deps.icon, this.warn);
     } catch (error) {
       this.warn(`Setting the drive letter failed: ${(error as Error).message}`);
+    }
+    if (!labels) return;
+    // Every letter this may have named: the one before, the one it wanted and didn't get, and
+    // the stored and the policy's, for a name a crash left behind.
+    const others = new Set([before, letter, chosen, policyLetter].filter((other): other is string => !!other && /^[D-Z]$/.test(other) && other !== this.letterNow));
+    for (const other of others) {
+      try {
+        await releaseLetterLabel(labels, other, this.deps.icon);
+      } catch (error) {
+        this.warn(`Removing the drive letter's name failed: ${(error as Error).message}`);
+      }
     }
   }
 

@@ -18,6 +18,9 @@
 !include "FileFunc.nsh"
 !include "LogicLib.nsh"
 
+; The window: build/installer-theme.nsh.
+!include "${__FILEDIR__}\installer-theme.nsh"
+
 !ifndef BUILD_UNINSTALLER
 ; Not ${GetOptions}: it ends a value at the next "/", which is most of an address.
 ; A value runs to the next space, or is in double quotes. Sets the error flag if absent.
@@ -273,6 +276,9 @@ bulwarkPoliciesDone:
 ; ${isUpdated} set, and those stay: the app keeps its pending download, the app writes the
 ; rest again at its next start, and only a real uninstall should drop the login item.
 !macro customUnInstall
+  !ifmacrodef bulwarkThemeUninstallerPage
+    !insertmacro bulwarkThemeUninstallerPage
+  !endif
   ${ifNot} ${isUpdated}
     DeleteRegValue HKCU "Software\RegisteredApplications" "Bulwark"
     DeleteRegKey HKCU "Software\Bulwark"
@@ -337,6 +343,26 @@ bulwarkPoliciesDone:
       ${Else}
         IntOp $R6 $R6 + 1
       ${EndIf}
+    ${Loop}
+    ; The Files drive letter's name and icon in "This PC" (src/main/files/drive-letter-label.ts):
+    ; only where they are still this install's, a letter's key someone else set stays.
+    StrCpy $R6 3
+    ${Do}
+      StrCpy $R7 "ABCDEFGHIJKLMNOPQRSTUVWXYZ" 1 $R6
+      ${If} $R7 == ""
+        ${ExitDo}
+      ${EndIf}
+      ReadRegStr $R8 HKCU "Software\Classes\Applications\Explorer.exe\Drives\$R7\DefaultIcon" ""
+      ${If} $R8 == "$INSTDIR\resources\os-icons\bulwark.ico,0"
+        ReadRegStr $R8 HKCU "Software\Classes\Applications\Explorer.exe\Drives\$R7\DefaultLabel" ""
+        ${If} $R8 == "Bulwark Files"
+        ${OrIf} $R8 == ""
+          DeleteRegKey HKCU "Software\Classes\Applications\Explorer.exe\Drives\$R7\DefaultLabel"
+          DeleteRegKey HKCU "Software\Classes\Applications\Explorer.exe\Drives\$R7\DefaultIcon"
+          DeleteRegKey /ifempty HKCU "Software\Classes\Applications\Explorer.exe\Drives\$R7"
+        ${EndIf}
+      ${EndIf}
+      IntOp $R6 $R6 + 1
     ${Loop}
     Pop $R8
     Pop $R7

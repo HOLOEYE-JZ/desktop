@@ -26,6 +26,7 @@ use windows::Win32::Storage::CloudFilters::*;
 use windows::Win32::Storage::FileSystem::*;
 use windows::Win32::System::Registry::{RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_LOCAL_MACHINE, KEY_READ, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_UPDATEITEM, SHCNF_PATHW};
 use windows_future::{AsyncStatus, IAsyncOperation};
 
 use crate::{FilesFetchEvent, FilesPlaceholderInfo, FilesPlacement, FilesRegistration, FilesSyncRoot, FilesUpdate};
@@ -295,6 +296,7 @@ pub fn roots() -> Result<Vec<FilesSyncRoot>, String> {
         found.push(FilesSyncRoot {
             path: registry_text(manager.0, &format!(r"{id}\UserSyncRoots"), &sid).unwrap_or_default(),
             display_name: registry_text(manager.0, &id, "DisplayNameResource").unwrap_or_default(),
+            icon: registry_text(manager.0, &id, "IconResource").unwrap_or_default(),
             id,
         });
     }
@@ -684,4 +686,10 @@ pub fn dehydrate(path: &str) -> Result<(), String> {
 /// Drive letters in use, A as bit 0.
 pub fn used_drive_letters() -> u32 {
     unsafe { GetLogicalDrives() }
+}
+
+/// The drive's item in "This PC" is read again: its name and icon.
+pub fn letter_changed(letter: &str) {
+    let root = HSTRING::from(format!("{letter}:\\"));
+    unsafe { SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW, Some(root.as_ptr() as *const c_void), None) };
 }

@@ -51,6 +51,8 @@ export interface NativeSyncRoot {
   id: string;
   path: string;
   displayName: string;
+  /** `<file>,<index>`, as it was registered. Empty if Windows has none. */
+  icon: string;
 }
 
 /** What Windows' FETCH_DATA and CANCEL_FETCH_DATA callbacks bring. Keys are 64-bit, so text. */
@@ -114,6 +116,8 @@ export interface NativeFilesModule {
   filesDriveStatusAttach?(id: string, clsid: string): void;
   filesDriveStatusSet?(id: string, status: NativeDriveStatus | undefined): void;
   filesDriveStatusRead?(id: string, waitMs: number): Promise<NativeDriveStatusSeen>;
+  /** Explorer reads the letter's name and icon again. */
+  filesDriveLetterChanged(letter: string): void;
 }
 
 /** What Explorer shows for a sync root. Absent, not null, for what isn't there: the helper takes undefined only. */
@@ -144,6 +148,7 @@ export const FILES_NATIVE_EXPORTS = [
   'filesDriveDisconnect',
   'filesDriveHydrate',
   'filesDriveInfo',
+  'filesDriveLetterChanged',
   'filesDrivePlace',
   'filesDriveRegister',
   'filesDriveRoots',

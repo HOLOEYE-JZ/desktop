@@ -8,7 +8,7 @@
 import { chmodSync, closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { findTaskIconProblems, TASK_ICON_FOLDER } from './task-icons.mjs';
+import { APP_ICON_FILE, findAppIconProblems, findTaskIconProblems, TASK_ICON_FOLDER } from './task-icons.mjs';
 
 const FORBIDDEN_DIRS = new Set(['data', 'local-data', 'repos']);
 const FORBIDDEN_FILE = /^(\.env.*|plugin-signing\.key)$/i;
@@ -163,11 +163,12 @@ export function findResourceProblems(resources, platform = process.platform) {
     const tree = path.join(resources, name);
     if (existsSync(tree)) problems.push(...findProblems(tree).map((problem) => `${name}/${problem}`));
   }
-  // The jump list's icons, and nothing else.
+  // The jump list's icons and the app's, and nothing else.
   const icons = path.join(resources, TASK_ICON_FOLDER);
   if (existsSync(icons)) {
     for (const { full, entry } of walk(icons)) {
-      if (!entry.isFile() || !/^task-[a-z]+-(light|dark)\.ico$/.test(entry.name) || path.dirname(full) !== icons) problems.push(`${TASK_ICON_FOLDER}/${toPosix(path.relative(icons, full))}`);
+      const known = /^task-[a-z]+-(light|dark)\.ico$/.test(entry.name) || entry.name === APP_ICON_FILE;
+      if (!entry.isFile() || !known || path.dirname(full) !== icons) problems.push(`${TASK_ICON_FOLDER}/${toPosix(path.relative(icons, full))}`);
     }
   }
   const unpacked = path.join(resources, 'app.asar.unpacked');
@@ -248,12 +249,13 @@ export function guardHelper(resources, platform) {
 }
 
 /**
- * Windows reads the jump list's icons itself, from resources/os-icons: each has to be there,
- * a real .ico, with every size from 100% to 300% scale.
+ * Windows reads the jump list's icons and the Files drive's itself, from resources/os-icons:
+ * each has to be there, a real .ico, with every size from 100% to 300% scale.
  */
 export function findPackagedTaskIconProblems(resources, platform) {
   if (platform !== 'win32') return [];
-  return findTaskIconProblems(path.join(resources, TASK_ICON_FOLDER)).map((problem) => `resources/${TASK_ICON_FOLDER}/${problem}`);
+  const dir = path.join(resources, TASK_ICON_FOLDER);
+  return [...findTaskIconProblems(dir), ...findAppIconProblems(dir)].map((problem) => `resources/${TASK_ICON_FOLDER}/${problem}`);
 }
 
 export function guardResources(resources, platform) {

@@ -1,13 +1,13 @@
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { encodeIco, icoSizes } from '../scripts/ico.mjs';
+import { encodeIco, icoBitmaps, icoSizes } from '../scripts/ico.mjs';
 import { findPackagedTaskIconProblems, findResourceProblems } from '../scripts/package-guard.mjs';
-import { findTaskIconProblems, TASK_ICON_SIZES, TASK_ICONS } from '../scripts/task-icons.mjs';
+import { APP_ICON_SIZES, APP_ICON_SOURCE, findTaskIconProblems, TASK_ICON_SIZES, TASK_ICONS } from '../scripts/task-icons.mjs';
 import { APP_USER_MODEL_ID, appUserModelId, TEST_APP_USER_MODEL_ID } from '../src/main/features/os-rules';
-import { jumpListCategories, taskIconsDir, taskIconVariant, type JumpListInput, type TaskIconVariant } from '../src/main/features/os-tasks';
+import { appIconResource, jumpListCategories, taskIconsDir, taskIconVariant, type JumpListInput, type TaskIconVariant } from '../src/main/features/os-tasks';
 import { jumpListId } from './jump-list';
 
 /**
@@ -41,14 +41,20 @@ const items = (list: ReturnType<typeof categories>) => list.flatMap((category) =
 
 /**
  * resources/ as electron-builder lays out a Windows package: the extraResources of the
- * config's top level and its win section, here only those from this repo's assets.
+ * config's top level and its win section, here only those from this repo's assets and build/.
+ * A file goes to the path `to` names, a folder's files into `to`.
  */
 function packagedResources(): string {
   const resources = mkdtempSync(path.join(tmpdir(), 'bw-task-icons-'));
   for (const entry of [...(config.extraResources ?? []), ...(config.win.extraResources ?? [])]) {
-    if (typeof entry !== 'object' || !entry.from.startsWith('assets/')) continue;
+    if (typeof entry !== 'object' || !/^(assets|build)\//.test(entry.from)) continue;
     const from = path.join(ROOT, entry.from);
     const to = path.join(resources, entry.to);
+    if (statSync(from).isFile()) {
+      mkdirSync(path.dirname(to), { recursive: true });
+      copyFileSync(from, to);
+      continue;
+    }
     mkdirSync(to, { recursive: true });
     for (const name of readdirSync(from)) {
       if ((entry.filter ?? ['**/*']).some((pattern: string) => minimatch(name, pattern))) copyFileSync(path.join(from, name), path.join(to, name));
@@ -147,6 +153,73 @@ test.describe('the jump list icons', () => {
     wrongSize.writeUInt8(17, 6);
     expect(icoSizes(wrongSize)).toBeNull();
     expect(icoSizes(Buffer.alloc(0))).toBeNull();
+  });
+
+  test('the bitmaps come back out of an .ico pixel for pixel, top row first, for the menus', () => {
+    // A different colour per corner, so a flip or a swapped channel shows.
+    const image = (size: number) => {
+      const rgba = Buffer.alloc(size * size * 4);
+      rgba.set([255, 0, 0, 255], 0);
+      rgba.set([0, 255, 0, 128], (size - 1) * 4);
+      rgba.set([0, 0, 255, 255], (size - 1) * size * 4);
+      return rgba;
+    };
+    const images = TASK_ICON_SIZES.map((size) => ({ size, rgba: image(size) }));
+    const back = icoBitmaps(encodeIco(images));
+    expect([...back.keys()]).toEqual(TASK_ICON_SIZES);
+    for (const { size, rgba } of images) expect(back.get(size)!.equals(rgba), `${size} px`).toBe(true);
+    expect(icoBitmaps(readFileSync(path.join(ASSETS, 'task-compose-light.ico'))).get(16)!.length).toBe(16 * 16 * 4);
+    expect(icoBitmaps(Buffer.alloc(0)).size).toBe(0);
+  });
+});
+
+test.describe("the Files drive's icon", () => {
+  test('is the app icon, with every size Explorer draws', () => {
+    expect(icoSizes(readFileSync(path.join(ROOT, APP_ICON_SOURCE)))).toEqual(expect.arrayContaining([16, 20, 24, 32, 40, 48, 256]));
+    expect(APP_ICON_SIZES).toEqual([16, 20, 24, 32, 40, 48, 256]);
+    // Bulwark.exe gets the same file: what Explorer showed before, in an installed app.
+    expect(config.win.icon).toBe(APP_ICON_SOURCE);
+  });
+
+  test('in a packaged layout it is the .ico in resources/os-icons, outside the asar, never the exe', () => {
+    const resources = packagedResources();
+    try {
+      const icon = appIconResource(taskIconsDir(true, resources, path.join(ROOT, 'dist', 'os-icons')));
+      expect(icon).toBe(`${path.join(resources, 'os-icons', 'bulwark.ico')},0`);
+      expect(icoSizes(readFileSync(icon.slice(0, -2)))).toEqual(expect.arrayContaining(APP_ICON_SIZES));
+      expect(readFileSync(icon.slice(0, -2)).equals(readFileSync(path.join(ROOT, APP_ICON_SOURCE)))).toBe(true);
+      expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual([]);
+      expect(findResourceProblems(resources, 'win32')).toEqual([]);
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
+  });
+
+  test('in a build from source it is the copy in dist/os-icons', () => {
+    const dist = path.join(ROOT, 'dist', 'os-icons');
+    const icon = appIconResource(taskIconsDir(false, 'C:\\unused', dist));
+    expect(icon).toBe(`${path.join(dist, 'bulwark.ico')},0`);
+    expect(existsSync(icon.slice(0, -2)), 'node build.mjs copies it').toBe(true);
+    expect(readFileSync(icon.slice(0, -2)).equals(readFileSync(path.join(ROOT, APP_ICON_SOURCE)))).toBe(true);
+  });
+
+  test('the guard names a missing one and one short of a size', () => {
+    const resources = packagedResources();
+    const file = path.join(resources, 'os-icons', 'bulwark.ico');
+    try {
+      rmSync(file);
+      expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual(['resources/os-icons/bulwark.ico (missing)']);
+      const rgba = (size: number) => Buffer.alloc(size * size * 4, 0xff);
+      writeFileSync(file, encodeIco(TASK_ICON_SIZES.map((size) => ({ size, rgba: rgba(size) }))));
+      expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual(['resources/os-icons/bulwark.ico (no 256 px)']);
+      writeFileSync(file, 'not an icon');
+      expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual(['resources/os-icons/bulwark.ico (not an icon)']);
+      // Only that name: another file in the folder is still refused.
+      writeFileSync(path.join(resources, 'os-icons', 'other.ico'), 'x');
+      expect(findResourceProblems(resources, 'win32')).toEqual(['os-icons/other.ico']);
+    } finally {
+      rmSync(resources, { recursive: true, force: true });
+    }
   });
 });
 

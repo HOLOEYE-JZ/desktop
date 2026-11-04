@@ -382,6 +382,8 @@ pub struct FilesSyncRoot {
     pub id: String,
     pub path: String,
     pub display_name: String,
+    /// `<file>,<index>`, as it was registered.
+    pub icon: String,
 }
 
 #[napi(object)]
@@ -696,4 +698,11 @@ pub fn files_drive_status_read(id: String, wait_ms: u32) -> Result<AsyncTask<Fil
     checked_root_id(&id)?;
     let wait = wait_ms.min(60_000);
     Ok(files_job(move || files_status::read(&id, wait)))
+}
+/// Tells Explorer a drive letter's name or icon changed, so "This PC" shows the new ones.
+#[napi]
+pub fn files_drive_letter_changed(letter: String) -> Result<()> {
+    checked_label(&letter, 1, "letter", |c| c.is_ascii_uppercase())?;
+    files::letter_changed(&letter);
+    Ok(())
 }

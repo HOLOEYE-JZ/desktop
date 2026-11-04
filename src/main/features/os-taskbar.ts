@@ -5,9 +5,10 @@
 
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { app, Menu, nativeImage, nativeTheme, type BrowserWindow, type JumpListCategory, type ProgressBarOptions } from 'electron';
+import { app, Menu, nativeImage, nativeTheme, screen, type BrowserWindow, type JumpListCategory, type MenuItemConstructorOptions, type ProgressBarOptions } from 'electron';
 import type { OsCommand, OsSummary, OsTrayMessage } from '../../shared/bridge';
 import { onUiLanguage, strings } from '../strings';
+import { menuIcon, thumbIcon } from './menu-icons';
 import { overlayPng } from './os-icons';
 import type { OsHub } from './os-hub';
 import { jumpListCategories, taskIconPath, taskIconVariant, type TaskIcon, type TaskIconVariant } from './os-tasks';
@@ -22,6 +23,8 @@ export interface TaskbarHandle {
   applyThumbar: (window: BrowserWindow) => boolean;
   /** Which glyphs the jump list and the thumbnail toolbar have now, for the checks. */
   iconVariant: () => TaskIconVariant;
+  /** The dock's menu as macOS gets it, for the checks on any platform. */
+  dockTemplate: () => MenuItemConstructorOptions[];
 }
 
 /** A jump list entry starts us again; in development the script goes in front. */
@@ -106,15 +109,15 @@ export function setupTaskbar(hub: OsHub, iconsDir: string, taskIconsDir: string)
     }
   };
 
-  // The jump list's .ico files: Windows picks the size for the scale.
-  const thumbIcon = (name: TaskIcon) => nativeImage.createFromPath(taskIconPath(taskIconsDir, name, variant()));
-
   const applyThumbar = (window: BrowserWindow) => {
     if (!win32 || window.isDestroyed()) return false;
     const text = strings();
+    // The jump list's .ico files, at the size for the screen the window is on.
+    const { scaleFactor } = screen.getDisplayMatching(window.getBounds());
+    const icon = (name: TaskIcon) => thumbIcon(taskIconPath(taskIconsDir, name, variant()), scaleFactor);
     return window.setThumbarButtons([
-      { tooltip: text.thumbNewMessage, icon: thumbIcon('compose'), click: () => hub.dispatch({ type: 'new-message' }) },
-      { tooltip: text.thumbInbox, icon: thumbIcon('inbox'), click: () => hub.dispatch({ type: 'navigate', target: 'inbox' }) },
+      { tooltip: text.thumbNewMessage, icon: icon('compose'), click: () => hub.dispatch({ type: 'new-message' }) },
+      { tooltip: text.thumbInbox, icon: icon('inbox'), click: () => hub.dispatch({ type: 'navigate', target: 'inbox' }) },
     ]);
   };
 
@@ -181,22 +184,22 @@ export function setupTaskbar(hub: OsHub, iconsDir: string, taskIconsDir: string)
     refreshThumbar();
   });
 
-  const applyDockMenu = () => {
-    if (process.platform !== 'darwin' || !app.dock) return;
+  const dockTemplate = (): MenuItemConstructorOptions[] => {
     const text = strings();
     const dockCommand = (command: OsCommand) => () => hub.dispatch(command);
     // Template images: the menu tints them.
-    const icon = (name: TaskIcon) => {
-      const image = nativeImage.createFromPath(path.join(iconsDir, `menu-${name}Template.png`));
-      image.setTemplateImage(true);
-      return image;
-    };
-    app.dock.setMenu(Menu.buildFromTemplate([
+    const icon = (name: TaskIcon) => menuIcon(path.join(iconsDir, `menu-${name}Template.png`));
+    return [
       { label: text.trayNewMessage, icon: icon('compose'), click: dockCommand({ type: 'new-message' }) },
       { label: text.jumpInbox, icon: icon('inbox'), click: dockCommand({ type: 'navigate', target: 'inbox' }) },
       { label: text.jumpCalendar, icon: icon('calendar'), click: dockCommand({ type: 'navigate', target: 'calendar' }) },
       { label: text.jumpContacts, icon: icon('contacts'), click: dockCommand({ type: 'navigate', target: 'contacts' }) },
-    ]));
+    ];
+  };
+
+  const applyDockMenu = () => {
+    if (process.platform !== 'darwin' || !app.dock) return;
+    app.dock.setMenu(Menu.buildFromTemplate(dockTemplate()));
   };
   applyDockMenu();
 
@@ -207,5 +210,5 @@ export function setupTaskbar(hub: OsHub, iconsDir: string, taskIconsDir: string)
     applyDockMenu();
   });
 
-  return { jumpListResult: () => jumpResult, applyJumpList, attention, setProgress, applyThumbar, iconVariant: () => lastVariant };
+  return { jumpListResult: () => jumpResult, applyJumpList, attention, setProgress, applyThumbar, iconVariant: () => lastVariant, dockTemplate };
 }

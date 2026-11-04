@@ -12,6 +12,7 @@ import type { OsSummary } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { onUiLanguage, strings, uiLanguageNow } from '../strings';
 import { PAUSE_UNTIL_TURNED_ON, pausedText } from './os-rules';
+import { menuIcon as menuImage } from './menu-icons';
 import { withUnreadDot } from './os-icons';
 import type { OsHub } from './os-hub';
 import { taskIconPath, taskIconVariant, type TaskIcon } from './os-tasks';
@@ -73,11 +74,9 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
   // The webmail's glyph for a command. Windows draws the menu in the apps' light or dark,
   // macOS tints a template image. Linux menus go over D-Bus in a theme we can't know: none.
   const menuIcon = (name: TaskIcon): { icon: NativeImage } | Record<string, never> => {
-    if (process.platform === 'win32') return { icon: nativeImage.createFromPath(taskIconPath(taskIconsDir, name, taskIconVariant(nativeTheme.shouldUseDarkColors))) };
+    if (process.platform === 'win32') return { icon: menuImage(taskIconPath(taskIconsDir, name, taskIconVariant(nativeTheme.shouldUseDarkColors))) };
     if (!mac) return {};
-    const image = nativeImage.createFromPath(path.join(iconsDir, `menu-${name}Template.png`));
-    image.setTemplateImage(true);
-    return { icon: image };
+    return { icon: menuImage(path.join(iconsDir, `menu-${name}Template.png`)) };
   };
 
   let tray: Tray;
@@ -140,7 +139,8 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
       {
         label: text.trayNewMessage,
         ...menuIcon('compose'),
-        ...(hub.quickComposeStatus?.active && hub.quickComposeStatus.shortcut ? { accelerator: hub.quickComposeStatus.shortcut, registerAccelerator: false } : {}),
+        // No shortcut text: Windows' tray menus show none, and Chromium spells it out in an
+        // odd order ("Alt+Strg+Eingabetaste"). The File menu shows it.
         click: () => hub.dispatch({ type: 'new-message' }),
       },
       ...(appLockGate.enrolled && !appLockGate.locked ? [{ label: text.trayLockNow, click: () => appLockGate.requestLock() }] : []),

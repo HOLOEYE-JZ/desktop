@@ -6,10 +6,13 @@ import { createHash } from 'node:crypto';
 import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { build } from 'esbuild';
 import { addonPins } from './scripts/addon-pins.mjs';
+import { APP_ICON_FILE, APP_ICON_SOURCE, TASK_ICON_FOLDER } from './scripts/task-icons.mjs';
 
 rmSync('dist', { recursive: true, force: true });
 mkdirSync('dist/pages', { recursive: true });
-cpSync('assets/os', 'dist/os-icons', { recursive: true });
+cpSync('assets/os', `dist/${TASK_ICON_FOLDER}`, { recursive: true });
+// The Files drive's icon, where a build from source looks for it (features/files-drive.ts).
+cpSync(APP_ICON_SOURCE, `dist/${TASK_ICON_FOLDER}/${APP_ICON_FILE}`);
 
 const common = { bundle: true, platform: 'node', target: 'node22', sourcemap: false, logLevel: 'warning' };
 

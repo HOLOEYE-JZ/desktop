@@ -6,7 +6,7 @@
 
 import path from 'node:path';
 import type { JumpListCategory, JumpListItem } from 'electron';
-import { TASK_ICON_FOLDER, taskIconFile } from '../../../scripts/task-icons.mjs';
+import { APP_ICON_FILE, TASK_ICON_FOLDER, taskIconFile } from '../../../scripts/task-icons.mjs';
 
 export type TaskIcon = 'compose' | 'inbox' | 'calendar' | 'contacts' | 'message';
 export type TaskIconVariant = 'light' | 'dark';
@@ -27,6 +27,15 @@ export function taskIconsDir(packaged: boolean, resourcesPath: string, buildDir:
 
 export function taskIconPath(dir: string, icon: TaskIcon, variant: TaskIconVariant): string {
   return path.join(dir, taskIconFile(icon, variant));
+}
+
+/**
+ * The Files drive's icon, as Explorer reads one: `<file>,<index>`. The app's .ico in the
+ * same folder as the task icons, never the exe: in a build from source that's electron.exe,
+ * and Explorer would show Electron's icon.
+ */
+export function appIconResource(dir: string): string {
+  return `${path.join(dir, APP_ICON_FILE)},0`;
 }
 
 export interface JumpListInput {

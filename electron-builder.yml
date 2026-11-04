@@ -88,6 +88,9 @@ win:
       to: os-icons
       filter:
         - task-*.ico
+    # The Files drive's icon in Explorer: the exe's own, as a file (scripts/task-icons.mjs).
+    - from: build/icon.ico
+      to: os-icons/bulwark.ico
   target:
     - target: nsis
       arch: [x64, arm64]
@@ -115,6 +118,11 @@ nsis:
   createStartMenuShortcut: true
   runAfterFinish: true
   deleteAppDataOnUninstall: false
+  # The app's languages where NSIS has them, and Swedish and Finnish, which it had before. Not
+  # Farsi: electron-builder asks NSIS for "Persian", and NSIS calls it Farsi. Each needs the
+  # window's strings in build/installer-strings.nsh, or makensis fails.
+  installerLanguages: [en_US, de_DE, fr_FR, es_ES, zh_CN, zh_TW, ja_JP, ko_KR, it_IT, nl_NL, da_DK, sv_SE, nb_NO, fi_FI, ru_RU, pt_PT, pt_BR, pl_PL, uk_UA, cs_CZ, sk_SK, hu_HU, ar_SA, tr_TR, th_TH, vi_VN, ca_ES, et_EE, he_IL, lv_LV, mn_MN, ro_RO]
+  # The window (build/installer-theme.nsh) and the switches.
   include: build/installer.nsh
 msi:
   # Per-machine, for IT. electron-updater can't replace it: see "Updates" in the README.
@@ -178,6 +186,10 @@ mac:
       rank: Alternate
 dmg:
   sign: false
+  # From assets/dmg-background.svg, by scripts/make-dmg-background.mjs. The @2x next to it is
+  # found by name. Its arrow runs between electron-builder's default icon places, so this sets
+  # no contents.
+  background: build/dmg-background.png
 
 linux:
   icon: build/icons
