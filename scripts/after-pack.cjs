@@ -43,7 +43,7 @@ exports.default = async function afterPack(context) {
   const { guardModes, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
   // Last, so it covers what's copied above. Before fpm and the others pack the tree.
   tightenModes(context.appOutDir);
-  guardResources(resources);
+  guardResources(resources, context.electronPlatformName);
   guardExtraFiles(context.appOutDir);
   guardModes(context.appOutDir);
 };
