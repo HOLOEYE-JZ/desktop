@@ -11,14 +11,17 @@
  * Chords such as Ctrl+N are real accelerators. A key press reaches the page first,
  * and only one the page didn't take reaches the menu, so the two can't both fire.
  *
- * In a window with an integrated title bar on Windows there's no native bar: the page
- * draws a strip when Alt is pressed, and the strip opens these same menus natively.
+ * In a window with an integrated title bar on Windows and Linux there's no native bar:
+ * the page draws these same menus as a row at the top when Alt is pressed, or always
+ * with "Always show the menu bar" (`barMenus`, `runBarItem`). Its controls shrink to
+ * that row while it's there, as in a native window with a menu bar.
  */
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
-import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics } from './menu-text';
+import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
+import { assignMnemonics, barItemsOf, findBarItem, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
+import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
 
 export interface MenuHooks {
@@ -78,6 +81,8 @@ export class MenuController {
     // A page's report is for that page: the next one starts over.
     windows.on('navigated', (window) => {
       this.stateByWindow.delete(window);
+      this.barReporting.delete(window);
+      this.barShown.delete(window);
       this.applyState();
     });
     windows.on('changed', (list) => {
@@ -258,12 +263,15 @@ export class MenuController {
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
+        // Settings where Windows and Linux mail apps keep them, next to how the app connects.
+        ...(mac ? [] : [{ id: 'file.settings', label: text.menuSettings, accelerator: 'Ctrl+,', enabled: !!windows, click: hooks.openSettings } as MenuItemConstructorOptions]),
         // Left out while a policy forces the connection.
         ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },
-        ...(mac ? [] : [{ id: 'file.quit', label: text.menuQuit, role: 'quit', accelerator: 'Ctrl+Q' } as MenuItemConstructorOptions]),
+        // Windows calls it Exit.
+        ...(mac ? [] : [{ id: 'file.quit', label: process.platform === 'win32' ? text.menuExit : text.menuQuit, role: 'quit', accelerator: 'Ctrl+Q' } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -307,6 +315,13 @@ export class MenuController {
         { id: 'view.zoomReset', label: text.menuZoomReset, accelerator: 'CmdOrCtrl+0', click: () => hooks.zoom(0) },
         { type: 'separator' },
         { role: 'togglefullscreen', label: text.menuFullScreen },
+        ...(mac || !windows ? [] : [{
+          id: 'view.menuBar',
+          label: text.menuShowMenuBar,
+          type: 'checkbox',
+          checked: windows.menuBarPinned(),
+          click: (item: MenuItem) => this.setBarPinned(item.checked),
+        } as MenuItemConstructorOptions]),
         ...this.extras('view'),
       ],
     };
@@ -325,7 +340,7 @@ export class MenuController {
         { type: 'separator' },
         this.command('message.move', text.menuMove),
         this.command('message.archive', text.menuArchive, this.pageKey('E')),
-        this.command('message.spam', text.menuSpam, this.pageKey('Shift+1')),
+        this.command('message.spam', text.menuSpam, this.pageKey('!')),
         this.command('message.delete', text.menuDelete, this.pageKey('Delete', false)),
         { type: 'separator' },
         this.command('message.openWindow', text.menuOpenInWindow),
@@ -393,10 +408,10 @@ export class MenuController {
       label: text.menuHelp,
       ...(mac ? { role: 'help' } : {}),
       submenu: [
-        this.command('help.shortcuts', text.menuShortcuts, this.pageKey('Shift+/')),
+        this.command('help.shortcuts', text.menuShortcuts, this.pageKey('?')),
         { id: 'help.docs', label: text.menuDocs, click: () => void shell.openExternal('https://bulwarkmail.org/docs').catch(() => {}) },
         ...this.extras('help'),
-        ...(mac ? [] : [{ type: 'separator' } as MenuItemConstructorOptions, { id: 'help.settings', label: text.menuSettings, accelerator: 'Ctrl+,', enabled: !!windows, click: hooks.openSettings }, { role: 'about', label: text.menuAbout } as MenuItemConstructorOptions]),
+        ...(mac ? [] : [{ type: 'separator' } as MenuItemConstructorOptions, { role: 'about', label: text.menuAbout } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -487,15 +502,75 @@ export class MenuController {
     });
   }
 
+  /** Windows whose bar has the keys: Alt was pressed there. */
   private readonly barShown = new WeakSet<BrowserWindow>();
+  /** Windows whose page draws the whole bar and says when it goes (`barReport`). */
+  private readonly barReporting = new WeakSet<BrowserWindow>();
 
   isBarShown(window: BrowserWindow): boolean {
     return this.barShown.has(window);
   }
 
+  /** The page closes its own menus with Escape, and only then the bar. An older page can't. */
+  barHandlesEscape(window: BrowserWindow): boolean {
+    return this.barReporting.has(window);
+  }
+
   showBar(window: BrowserWindow, event: MenuBarEvent): void {
     if (event.visible) this.barShown.add(window);
     else this.barShown.delete(window);
-    window.webContents.send(CHANNEL.menuBarEvent, event);
+    window.webContents.send(CHANNEL.menuBarEvent, { ...event, pinned: this.barPinned() });
+  }
+
+  barPinned(): boolean {
+    return this.windows?.menuBarPinned() ?? false;
+  }
+
+  /** "Always show the menu bar", from the View menu or the settings page: every window, at once. */
+  setBarPinned(pinned: boolean): void {
+    const windows = this.windows;
+    if (!windows || process.platform === 'darwin') return;
+    windows.setMenuBarPinned(pinned);
+    for (const { window } of windows.all()) {
+      if (!window.isDestroyed()) window.webContents.send(CHANNEL.menuBarEvent, { visible: this.barShown.has(window), pinned } satisfies MenuBarEvent);
+    }
+    this.scheduleRebuild();
+  }
+
+  /** What the page's bar holds: every menu, with what's enabled and ticked in that window now. */
+  barMenus(window: BrowserWindow): MenuBarMenu[] {
+    // The state of the window asking, not the last one that had the focus.
+    if (BrowserWindow.getFocusedWindow() === window) this.applyState();
+    return this.barItems.map(({ entry, item }) => ({
+      ...entry,
+      items: barItemsOf((item.submenu?.items ?? []) as unknown as BarSourceItem[], String(this.topIndex(item))),
+    }));
+  }
+
+  private topIndex(item: MenuItem): number {
+    return Menu.getApplicationMenu()?.items.indexOf(item) ?? -1;
+  }
+
+  /** A line of the page's bar was picked: the same item the native menu has, clicked in that window. */
+  runBarItem(window: BrowserWindow, key: unknown, label: unknown): void {
+    const menu = Menu.getApplicationMenu();
+    if (!menu || typeof key !== 'string' || typeof label !== 'string' || window.isDestroyed()) return;
+    const item = findBarItem(menu.items as unknown as (BarSourceItem & MenuItem)[], key, label);
+    if (!item || !item.enabled) return;
+    noteUserGesture(window.webContents);
+    item.click(undefined, window, window.webContents);
+  }
+
+  /** The page's bar took this much room, or none, and has the keys or not. */
+  barReport(window: BrowserWindow, report: unknown): void {
+    const { height, active } = (report ?? {}) as Partial<MenuBarReport>;
+    if (typeof height !== 'number' || typeof active !== 'boolean') return;
+    // Its first word: it's listening now, and may have to show the bar from the start.
+    const first = !this.barReporting.has(window);
+    this.barReporting.add(window);
+    if (first && this.barPinned()) window.webContents.send(CHANNEL.menuBarEvent, { visible: active, pinned: true } satisfies MenuBarEvent);
+    if (active) this.barShown.add(window);
+    else this.barShown.delete(window);
+    this.windows?.setMenuBarHeight(window, height);
   }
 }

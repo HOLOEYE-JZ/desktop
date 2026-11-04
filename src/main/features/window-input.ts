@@ -71,7 +71,8 @@ export const windowInputFeature: Feature = {
       webContents.on('before-input-event', (event, input) => {
         const action = alt.feed(input, menu.barEntries());
         if (action.type === 'none') {
-          if (menu.isBarShown(window) && input.type === 'keyDown' && input.key === 'Escape') menu.showBar(window, { visible: false });
+          // A page that draws the whole bar closes its open menu first, then the bar.
+          if (menu.isBarShown(window) && !menu.barHandlesEscape(window) && input.type === 'keyDown' && input.key === 'Escape') menu.showBar(window, { visible: false });
           return;
         }
         const message: MenuBarEvent = action.type === 'open' ? { visible: true, open: action.id } : { visible: !menu.isBarShown(window) };

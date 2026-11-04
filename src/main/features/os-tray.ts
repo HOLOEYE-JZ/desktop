@@ -10,7 +10,7 @@ import path from 'node:path';
 import { app, Menu, nativeImage, nativeTheme, Tray, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import type { OsSummary } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
-import { strings } from '../strings';
+import { onUiLanguage, strings } from '../strings';
 import { withUnreadDot } from './os-icons';
 import type { OsHub } from './os-hub';
 
@@ -128,7 +128,7 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
       pauseItem(),
       { type: 'separator' },
       { label: text.trayOpen, click: showMain },
-      { label: text.trayQuit, click: () => app.quit() },
+      { label: process.platform === 'win32' ? text.trayExit : text.trayQuit, click: () => app.quit() },
     ];
   };
 
@@ -156,6 +156,11 @@ export function setupTray(hub: OsHub, iconsDir: string): TrayHandle | null {
   appLockGate.on('locked', refreshMenu);
   hub.on('badge', refreshIcon);
   nativeTheme.on('updated', refreshIcon);
+  // The app's language, once the page has said: the tray was built in the OS's.
+  onUiLanguage(() => {
+    refreshMenu();
+    refreshIcon();
+  });
   windows.on('created', (managed) => {
     if (managed.type === 'main') managed.window.on('blur', () => { lastBlur = Date.now(); });
   });

@@ -148,9 +148,37 @@ export interface MenuBarEntry {
 }
 
 export interface MenuBarEvent {
+  /** The bar has the keys: Alt was pressed. With `pinned` it shows either way. */
   visible: boolean;
   /** Open this menu right away: Alt plus its letter. */
   open?: string;
+  /** "Always show the menu bar". */
+  pinned?: boolean;
+}
+
+/** One line of a menu the page draws as the menu bar's. */
+export interface MenuBarItem {
+  /** Its place in the app menu: handed back with its text when it's picked. */
+  key: string;
+  label: string;
+  type: 'normal' | 'checkbox' | 'radio' | 'separator' | 'submenu';
+  enabled: boolean;
+  checked?: boolean;
+  /** As Electron writes it: `CmdOrCtrl+N`. */
+  accelerator?: string;
+  /** Where in `label` the letter for it is. */
+  mnemonic?: number;
+  items?: MenuBarItem[];
+}
+
+export interface MenuBarMenu extends MenuBarEntry {
+  items: MenuBarItem[];
+}
+
+/** What the page's bar takes now: its height in CSS pixels (0 when gone), and whether it has the keys. */
+export interface MenuBarReport {
+  height: number;
+  active: boolean;
 }
 
 /** What a page says when asked to save before a window goes. */
@@ -510,6 +538,10 @@ export const CHANNEL = {
   menuBarEntries: 'bulwark:menu.barEntries',
   menuBarOpen: 'bulwark:menu.barOpen',
   menuBarEvent: 'bulwark:menu.barEvent',
+  menuBarMenus: 'bulwark:menu.barMenus',
+  menuBarRun: 'bulwark:menu.barRun',
+  menuBarReport: 'bulwark:menu.barReport',
+  menuBarSetPinned: 'bulwark:menu.barSetPinned',
   shellOpenExternal: 'bulwark:shell.openExternal',
   shellSetLanguages: 'bulwark:shell.setLanguages',
   dialogsConfirm: 'bulwark:dialogs.confirm',
