@@ -396,6 +396,18 @@ export interface EditSession {
   hash: string;
   /** A composer has it and offers the update itself. */
   claimed: boolean;
+  /** Wanted gone, and another program has it open. */
+  held: boolean;
+  /** Saved under a new name in that program. */
+  savedAs: boolean;
+  /** Not used for 30 days: this offer is the last. */
+  lastChance: boolean;
+}
+
+/** What couldn't be deleted because another program has it open, by file name. `refused`: nothing happened. */
+export interface EditClearResult {
+  held: string[];
+  refused?: boolean;
 }
 
 export interface EditFile {
@@ -409,7 +421,8 @@ export interface EditFile {
 }
 
 export type EditBeginResult =
-  | { ok: true; ticket: string; /** A session for that key exists: reopen this one. */ open?: string }
+  /** One click, one ticket, for that key. A session for it exists: reopen this one. */
+  | { ok: true; ticket: string; open?: string }
   | { ok: false; reason: 'locked' | 'gesture' };
 
 export type EditOpenResult =
@@ -486,8 +499,13 @@ export const CHANNEL = {
   editSettle: 'bulwark:edit.settle',
   editRead: 'bulwark:edit.read',
   editTaken: 'bulwark:edit.taken',
+  editRelease: 'bulwark:edit.release',
   editDiscard: 'bulwark:edit.discard',
+  editForceDiscard: 'bulwark:edit.forceDiscard',
+  editAskClear: 'bulwark:edit.askClear',
   editClear: 'bulwark:edit.clear',
+  editWipe: 'bulwark:edit.wipe',
+  editShown: 'bulwark:edit.shown',
   editSetSource: 'bulwark:edit.setSource',
   editClaim: 'bulwark:edit.claim',
   editChanged: 'bulwark:edit.changed',

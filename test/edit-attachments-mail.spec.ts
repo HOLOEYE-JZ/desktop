@@ -58,6 +58,22 @@ async function rightClickAttachment(app: ElectronApplication, page: Page, pick?:
   await expect.poll(() => menuCount(app), { timeout: 10_000 }).toBeGreaterThan(before);
 }
 
+/** Someone who takes their time over the menu: the right-click is long past when the pick comes. */
+async function pickSlowly(app: ElectronApplication, label: string, afterMs: number): Promise<void> {
+  await app.evaluate(({ Menu }, [wanted, wait]) => {
+    type Item = { label: string; submenu?: { items: Item[] }; click: () => void };
+    const before = Menu.prototype.popup;
+    Menu.prototype.popup = function popup(this: { items: Item[] }, options?: { callback?: () => void }) {
+      Menu.prototype.popup = before;
+      before.call(this as never, {} as never);
+      setTimeout(() => {
+        this.items.find((item) => item.label === wanted)?.click();
+        options?.callback?.();
+      }, wait as number);
+    } as never;
+  }, [label, afterMs] as const);
+}
+
 async function sentAttachmentSize(server: string, subject: string): Promise<number | null> {
   const sent = await mailboxIdOf(server, ACCOUNT, ENT_PASSWORD, 'sent');
   const answers = await jmap(server, ACCOUNT, ENT_PASSWORD, [
@@ -116,7 +132,9 @@ for (const server of STALWARTS) {
       cleanup.push(await seedMessage(server.url, ACCOUNT, ENT_PASSWORD, subject, 'See the file.', withAttachment('notes.txt')));
       await openMessage(page, subject);
 
-      await rightClickAttachment(app, page, 'Edit');
+      // Longer than a click's activation lasts: main's own record of the pick is what counts.
+      await pickSlowly(app, 'Edit', 6_000);
+      await rightClickAttachment(app, page);
       expect(await menuLabels(app)).toEqual(expect.arrayContaining(['Open', 'Save as…', 'Edit']));
       await expect.poll(async () => (await openedFiles(app)).length, { timeout: 30_000 }).toBe(1);
       const file = (await openedFiles(app))[0];

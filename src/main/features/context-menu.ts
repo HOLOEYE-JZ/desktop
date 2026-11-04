@@ -20,6 +20,7 @@ import { escapeMenuLabel, linkOffersOpen, pickSpellLanguages, safeImageName, toM
 import { openExternally } from '../navigation';
 import { missingDictionaries, onDictionaryMissing, openDictionaryDownloads } from '../spellcheck';
 import { setUiLanguage, strings } from '../strings';
+import { noteUserGesture } from '../user-gesture';
 import type { Feature } from './index';
 
 const MAX_SUGGESTIONS = 6;
@@ -150,6 +151,7 @@ export const contextMenuFeature: Feature = {
       let picked: string | null = null;
       const template = toMenuTemplate(items, (id) => {
         picked = id;
+        noteUserGesture(window.webContents);
       });
       if (template.length === 0) {
         resolve(null);

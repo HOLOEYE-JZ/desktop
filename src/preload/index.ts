@@ -14,6 +14,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { editFileName } from '../shared/edit-rules';
 import {
   type EditBeginResult,
+  type EditClearResult,
   type EditFile,
   type EditOpenResult,
   type EditReadResult,
@@ -240,7 +241,7 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     },
     edit: {
       /** Whether this file may go through Edit at all: the same rule main enforces. */
-      canEdit: (name: string) => editFileName(name) !== null,
+      canEdit: (name: string) => editFileName(name, process.platform) !== null,
       begin: (key: string): Promise<EditBeginResult> => ipcRenderer.invoke(CHANNEL.editBegin, key),
       open: (ticket: string, file: EditFile): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editOpen, ticket, file),
       reopen: (ticket: string, id: string): Promise<EditOpenResult> => ipcRenderer.invoke(CHANNEL.editReopen, ticket, id),
@@ -249,8 +250,19 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       settle: (): Promise<EditSession[]> => ipcRenderer.invoke(CHANNEL.editSettle),
       read: (id: string): Promise<EditReadResult> => ipcRenderer.invoke(CHANNEL.editRead, id),
       taken: (id: string, hash: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editTaken, id, hash),
-      discard: (id: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editDiscard, id),
-      clear: (account: string | null): Promise<void> => ipcRenderer.invoke(CHANNEL.editClear, account),
+      /** The draft it was on has gone: deleted, unless it holds a save nobody took. */
+      release: (id: string, source: string): Promise<void> => ipcRenderer.invoke(CHANNEL.editRelease, id, source),
+      /** Asks natively if it holds edits. */
+      discard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editDiscard, id),
+      /** The organisation said no: no question. */
+      forceDiscard: (id: string): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editForceDiscard, id),
+      /** The question before a sign-out. A yes covers the `clear` that follows. */
+      askClear: (account: string): Promise<boolean> => ipcRenderer.invoke(CHANNEL.editAskClear, account),
+      clear: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editClear, account),
+      /** A wipe: no question. */
+      wipe: (account: string | null): Promise<EditClearResult> => ipcRenderer.invoke(CHANNEL.editWipe, account),
+      /** The page has shown a last offer. */
+      shown: (id: string) => ipcRenderer.send(CHANNEL.editShown, id),
       setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
       claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
       onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
