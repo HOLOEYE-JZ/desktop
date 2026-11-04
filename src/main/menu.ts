@@ -19,7 +19,7 @@
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
 import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics, barItemsOf, findBarItem, tidySeparators, type BarSourceItem } from './menu-text';
+import { assignMnemonics, barItemsOf, enabledWhileLocked, findBarItem, tidySeparators, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
 import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
@@ -87,11 +87,20 @@ function withoutMnemonic(label: string): string {
   return label.replace(/&(.)/g, '$1');
 }
 
+function greyWhileLocked(items: MenuItemConstructorOptions[]): void {
+  for (const item of items) {
+    if (Array.isArray(item.submenu)) greyWhileLocked(item.submenu);
+    else if (item.type !== 'separator' && !enabledWhileLocked(item)) item.enabled = false;
+  }
+}
+
 export class MenuController {
   private readonly stateByWindow = new WeakMap<BrowserWindow, MenuState>();
   private readonly extensions = new Map<MenuSection, Extension[]>();
   private windows: WindowManager | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** The app lock is on: only what shows no mail stays enabled (`enabledWhileLocked`). */
+  private locked = false;
 
   constructor(private readonly hooks: MenuHooks) {}
 
@@ -154,6 +163,10 @@ export class MenuController {
     const walk = (items: MenuItem[]) => {
       for (const item of items) {
         if (item.submenu) walk(item.submenu.items);
+        if (this.locked && !item.submenu && item.type !== 'separator' && !enabledWhileLocked(item)) {
+          item.enabled = false;
+          continue;
+        }
         const id = item.id;
         if (!id) continue;
         if (id.startsWith('window.focus.')) {
@@ -174,6 +187,13 @@ export class MenuController {
 
   /** Items whose state comes from the page or the policy. */
   private readonly knownCommands = new Set<string>(SHELL_STATE_COMMANDS);
+
+  /** The app lock closed or opened: a new menu, greyed or not. */
+  setLocked(locked: boolean): void {
+    if (this.locked === locked) return;
+    this.locked = locked;
+    this.rebuild();
+  }
 
   /** The language changed: a new menu. */
   refresh(): void {
@@ -510,6 +530,7 @@ export class MenuController {
     const bar = [fileMenu, editMenu, viewMenu, messageMenu, goMenu, windowMenu, helpMenu];
     // A hidden line (Reading pane outside Mail) leaves its lines around it: one is enough.
     for (const menu of [appMenu, ...bar]) menu.submenu = tidySeparators(menu.submenu as MenuItemConstructorOptions[]);
+    if (this.locked) for (const menu of [appMenu, ...bar]) greyWhileLocked(menu.submenu as MenuItemConstructorOptions[]);
     assignMnemonics(bar.map((item) => item.label as string)).forEach((label, index) => {
       bar[index].label = label;
     });

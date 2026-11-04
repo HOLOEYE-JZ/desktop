@@ -165,6 +165,20 @@ export function tidySeparators<T extends { type?: string; visible?: boolean; sub
   return out;
 }
 
+/** Roles that show or keep no mail: the lock screen's field still needs Copy and Paste. */
+const ROLES_WHILE_LOCKED = new Set(['about', 'quit', 'minimize', 'zoom', 'front', 'close', 'hide', 'hideothers', 'unhide', 'services', 'undo', 'redo', 'cut', 'copy', 'paste', 'pasteandmatchstyle', 'selectall']);
+const IDS_WHILE_LOCKED = new Set(['file.unlock', 'file.quit', 'file.close', 'window.minimize', 'window.cycle', 'help.docs']);
+
+/**
+ * What the menus still offer while the app is locked: About, Unlock, Exit, the Window menu's
+ * basics and the editing keys of the PIN field. Nothing that shows, prints, saves or sends mail,
+ * and no settings: the page under the lock screen can't act, so they'd print the lock screen.
+ */
+export function enabledWhileLocked(item: { id?: string | null; role?: string | null }): boolean {
+  if (item.role && ROLES_WHILE_LOCKED.has(item.role.toLowerCase())) return true;
+  return !!item.id && (IDS_WHILE_LOCKED.has(item.id) || item.id.startsWith('window.focus.'));
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');

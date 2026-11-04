@@ -208,7 +208,48 @@ test.describe('through the real preload and IPC', () => {
       await expect.poll(item).toEqual({ enabled: true });
       await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('file.lockNow')?.click());
       expect(await gateLocked(app)).toBe(true);
-      await expect.poll(item).toEqual({ enabled: false });
+      // Locked, File offers Unlock in its place.
+      await expect.poll(item).toBeNull();
+    });
+  });
+
+  test('locked, the menus offer About, Unlock, Exit and the Window basics, nothing that shows mail', async () => {
+    await run('yes', async (app, page) => {
+      const state = () => app.evaluate(({ Menu }) => {
+        const out: Record<string, boolean> = {};
+        type Item = { id?: string; role?: string; label: string; type: string; enabled: boolean; submenu?: { items: Item[] } };
+        const walk = (items: Item[]) => {
+          for (const item of items) {
+            if (item.submenu) walk(item.submenu.items);
+            else if (item.type !== 'separator') out[item.id || item.role || item.label] = item.enabled;
+          }
+        };
+        walk(Menu.getApplicationMenu()!.items as unknown as Item[]);
+        return out;
+      });
+      await call(page, 'enroll', 1);
+      await expect.poll(async () => (await state())['file.print']).toBe(true);
+      await call(page, 'lock');
+      await expect.poll(async () => (await state())['file.unlock']).toBe(true);
+      const locked = await state();
+      for (const id of ['file.newMessage', 'file.newWindow', 'file.print', 'file.savePdf', 'file.import', 'view.zoomIn', 'view.refresh', 'edit.search', 'go.inbox', 'message.reply', 'help.shortcuts']) {
+        expect(locked[id], id).toBe(false);
+      }
+      if (process.platform !== 'darwin') expect(locked['file.settings']).toBe(false);
+      if (process.platform === 'win32') {
+        expect(locked['file.quit']).toBe(true);
+        expect(locked['window.minimize']).toBe(true);
+        expect(locked.about).toBe(true);
+      }
+      expect(locked['window.cycle']).toBe(true);
+      expect(locked.paste).toBe(true);
+      // A report from the page doesn't bring them back while locked.
+      await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { setState(s: unknown): void } } }).bulwarkDesktop.menu.setState({ 'message.reply': true, 'file.newMessage': true }));
+      await page.waitForTimeout(300);
+      expect((await state())['message.reply']).toBe(false);
+      expect(await call(page, 'prove', 1)).toBe(true);
+      await expect.poll(async () => (await state())['file.print']).toBe(true);
+      expect((await state())['file.lockNow']).toBe(true);
     });
   });
 
