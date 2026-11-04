@@ -12,6 +12,7 @@ import { appLockGate } from '../app-lock-gate';
 import { strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 import { setupDefaultApp } from './os-default-app';
+import { setupEdit } from './os-edit';
 import { setupFiles } from './os-files';
 import { OsHub } from './os-hub';
 import { setupLaunch } from './os-launch';
@@ -22,6 +23,7 @@ import { setupQuickCompose } from './os-quick-compose';
 import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
+import { pageSetPause, settingsAllowedWithoutClick } from './os-rules';
 import { setupTray } from './os-tray';
 
 // Bundled into dist/main.mjs, so this is dist/.
@@ -97,6 +99,7 @@ function setup(ctx: FeatureContext): void {
   const launch = setupLaunch(hub);
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));
+  const edit = setupEdit(hub);
   hub.on('cleared', files.clear);
   hub.on('locked', (locked) => {
     if (locked && hub.lockIsReal) files.clear();
@@ -117,10 +120,8 @@ function setup(ctx: FeatureContext): void {
 
   ctx.on(CHANNEL.osSubscribe, (event) => hub.subscribe(event.sender));
   ctx.handle(CHANNEL.osGetStatus, () => hub.status());
-  ctx.handle(CHANNEL.osSetSettings, (_event, _window, patch) => hub.update(patch));
-  ctx.on(CHANNEL.osSetPaused, (_event, _window, until) => {
-    hub.setPaused(typeof until === 'number' && Number.isFinite(until) ? until : null);
-  });
+  ctx.handle(CHANNEL.osSetSettings, (_event, _window, patch, clicked) => hub.update(settingsAllowedWithoutClick(patch, clicked === true)));
+  ctx.on(CHANNEL.osSetPaused, (_event, _window, until) => hub.setPaused(pageSetPause(until, Date.now())));
   ctx.on(CHANNEL.osSetBadge, (_event, _window, count) => {
     hub.setBadge(typeof count === 'number' && Number.isFinite(count) && count > 0 ? Math.floor(count) : 0);
   });
@@ -151,6 +152,7 @@ function setup(ctx: FeatureContext): void {
       launch,
       defaultApp,
       files,
+      edit,
       power,
       quickCompose,
       applyLoginItem,

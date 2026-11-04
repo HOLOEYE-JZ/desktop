@@ -10,20 +10,25 @@
  * knows its PIN. Linux has neither prompt, so it's PIN only there.
  *
  * `wrap` and `unwrap` put safeStorage around the page's PIN record and the store's keys, so
- * a copy of the disk can't be guessed at without this user's OS login. A frame can call
- * them too, and gets what's still under the PIN or the page's own key, for this origin only.
+ * a copy of the disk can't be guessed at without this user's OS login. They go to the page
+ * through `claim`, not to a frame.
+ *
+ * `pinStep` makes a guess cost a trip through here. The key under the PIN also takes a secret
+ * that stays in main, and each trip is counted in the gate. So what a page could read out of
+ * storage isn't enough to guess at elsewhere, only someone who can open this user's DPAPI can.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow, dialog, powerMonitor, safeStorage, systemPreferences } from 'electron';
-import { CHANNEL, type AppLockStatus, type OsUnlockAnswer, type OsUnlockKind } from '../../shared/bridge';
+import { CHANNEL, type AppLockStatus, type OsUnlockAnswer, type OsUnlockKind, type PinStepAnswer } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { native } from '../native';
-import { SecretStore } from '../secrets';
+import { randomSecret, SecretStore } from '../secrets';
 import { strings } from '../strings';
-import { addWipeStep, runLocalWipe } from './local-wipe';
+import { replacingRenderer } from '../windows';
+import { addWipeStep, finishWipeForPage, runLocalWipe, wipeForPage } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
 
 const OS_KEY_NAME = 'app-lock-key';
@@ -83,6 +88,7 @@ function setup(ctx: FeatureContext): void {
   const folder = path.join(app.getPath('userData'), 'app-lock');
   const secrets = new SecretStore(folder);
   const osKeyName = `${OS_KEY_NAME}-${site}`;
+  const PEPPER_NAME = `app-lock-pepper-${site}`;
   appLockGate.initForProfile(app.getPath('userData'), ctx.origin);
 
   let prompting = false;
@@ -143,7 +149,41 @@ function setup(ctx: FeatureContext): void {
     wrap: await wrapAvailable(),
   }));
   ctx.on(CHANNEL.appLockLock, () => appLockGate.lock());
-  ctx.handle(CHANNEL.appLockEnroll, (_event, _window, proof) => appLockGate.enroll(proof));
+
+  /** The first button is the yes. A no holds for this run, so nothing can keep asking. */
+  const askOnce = (message: string, detail: string, yes: string, no: string, window: BrowserWindow | null) => {
+    const options = { type: 'question' as const, message, detail, buttons: [yes, no], defaultId: 1, cancelId: 1, noLink: true };
+    return (window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options)).then(({ response }) => response === 0);
+  };
+
+  let enrollDeclined = false;
+  // A lock survives a restart and only its PIN opens it, so setting one up isn't for just any
+  // call: a same-origin plugin frame gets here too. The page's own setup comes from a click, and
+  // whatever took longer than a click lasts is the user's to allow.
+  ctx.handle(CHANNEL.appLockEnroll, async (_event, window, proof, clicked) => {
+    if (clicked !== true) {
+      if (enrollDeclined || !(proof instanceof Uint8Array) || proof.length !== 32 || appLockGate.enrolled) return false;
+      const text = strings();
+      const allowed = await oneAtATime<boolean | null>(null, () => askOnce(text.appLockEnrollTitle, text.appLockEnrollDetail, text.appLockEnrollConfirm, text.appLockForgetCancel, window));
+      if (allowed === false) enrollDeclined = true;
+      if (!allowed) return false;
+    }
+    return appLockGate.enroll(proof);
+  });
+
+  let orphanAsked = false;
+  // Main keeps a lock and the page has no PIN for it (the webmail's clearOrphanedDesktopLock).
+  // Nothing can prove that lock, and no page's word can lift it, so the user decides, once a run.
+  ctx.handle(CHANNEL.appLockClearOrphan, (_event, window) => oneAtATime(false, async () => {
+    if (!appLockGate.enrolled) return true;
+    if (orphanAsked) return false;
+    orphanAsked = true;
+    const text = strings();
+    if (!(await askOnce(text.appLockOrphanTitle, text.appLockOrphanDetail, text.appLockOrphanConfirm, text.appLockOrphanCancel, window))) return false;
+    appLockGate.forget();
+    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    return true;
+  }));
   ctx.handle(CHANNEL.appLockProve, (_event, _window, proof) => appLockGate.prove(proof));
   ctx.handle(CHANNEL.appLockDisable, async (_event, _window, proof) => {
     if (!appLockGate.disable(proof)) return false;
@@ -186,6 +226,46 @@ function setup(ctx: FeatureContext): void {
   ctx.handle(CHANNEL.appLockOsRemove, () => {
     // Only ever narrows.
     rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+  });
+
+  // What a lock leaves in the renderer can't be overwritten, only ended with the process: a page
+  // reloads into the same one. Only while locked, or a frame could use it to take a window down.
+  ctx.on(CHANNEL.appLockReplaceRenderer, (_event, window) => {
+    if (!window || window.isDestroyed() || !appLockGate.locked) return;
+    const { webContents } = window;
+    replacingRenderer.add(webContents);
+    webContents.once('render-process-gone', () => {
+      webContents.once('did-finish-load', () => replacingRenderer.delete(webContents));
+      webContents.reload();
+    });
+    // Ended from outside rather than crashed: a crash would write its memory to a dump.
+    process.kill(webContents.getOSProcessId());
+  });
+
+  // The webmail's remote wipe and its wipe from settings run in the page, and end here. The page has
+  // asked its own questions by now: a remote wipe has nobody to ask, and settings have asked already.
+  ctx.handle(CHANNEL.localWipeRun, async (event, _window, request) => {
+    const { reason, account } = (request ?? {}) as { reason?: unknown; account?: unknown };
+    if ((reason !== 'remote' && reason !== 'settings') || (account !== null && typeof account !== 'string')) return { failed: ['bad request'] };
+    return { failed: await wipeForPage({ reason, account }, event.sender.session, app.getPath('userData'), ctx.state) };
+  });
+  ctx.handle(CHANNEL.localWipeFinish, (event, _window, options) => finishWipeForPage(event.sender.session, (options as { keepLocalStorage?: unknown } | undefined)?.keepLocalStorage === true));
+
+  // Only ever deletes. What the app's pages already fetched comes back from the local server.
+  ctx.handle(CHANNEL.httpCacheClear, (event) => event.sender.session.clearCache());
+
+  ctx.handle(CHANNEL.appLockPinStep, async (_event, _window, data): Promise<PinStepAnswer> => {
+    if (!(data instanceof Uint8Array) || data.length !== 32 || !(await wrapAvailable())) return { ok: false };
+    const blockedUntil = appLockGate.guess();
+    if (blockedUntil > 0) return { ok: false, blockedUntil };
+    try {
+      // Unreadable throws, and the page says main couldn't. Gone with a lock on reads as a wrong PIN,
+      // and the way out of that is the same as for a forgotten one.
+      const pepper = await secrets.getOrCreate(PEPPER_NAME, () => randomSecret(32));
+      return { ok: true, bytes: new Uint8Array(createHmac('sha256', pepper).update(data).digest()) };
+    } catch {
+      return { ok: false };
+    }
   });
 
   ctx.handle(CHANNEL.appLockWrap, async (_event, _window, data) => {

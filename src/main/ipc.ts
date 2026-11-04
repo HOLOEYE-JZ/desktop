@@ -2,12 +2,23 @@
  * Every bridge call passes through here. The preload only exposes the bridge on
  * the right origin, but the check that counts is this one: the sender must be a
  * main frame on the app's origin. A page the window navigated to gets nothing, and
- * neither does an opaque frame (mail, untrusted plugins).
+ * neither does a frame's own window.
  *
- * A same-origin frame, such as a privileged plugin, can reach parent.bulwarkDesktop,
- * and those calls arrive here from the main frame: this check can't tell them apart.
- * So nothing on the bridge may do harm on a call alone: installing and approving
- * ask the user natively, and windows only open the app's own routes.
+ * What a frame can reach through `parent` is another matter, and depends on the frame:
+ * - An untrusted plugin's frame is opaque (sandbox with allow-scripts, no allow-same-origin):
+ *   the browser stops it at `parent`.
+ * - A mail body's frame is NOT opaque. It has allow-same-origin and no allow-scripts
+ *   (email-viewer.tsx in the webmail), so it's on the app's origin and nothing in it runs.
+ *   The host needs the origin: it measures that document and wires its links, and cid: pictures
+ *   are blob: URLs of this origin. Only the missing allow-scripts and the sanitizer keep a mail
+ *   away from the bridge, the cookies and the store.
+ * - A same-origin frame with scripts, such as a privileged plugin, can reach
+ *   parent.bulwarkDesktop, and those calls arrive here from the main frame: this check can't
+ *   tell them apart.
+ *
+ * So nothing on the bridge may do harm on a call alone: installing and approving ask the user
+ * natively, what outlasts a run takes a real click (`clicked` in the preload), and windows only
+ * open the app's own routes.
  */
 
 import { BrowserWindow, ipcMain, type IpcMainEvent, type IpcMainInvokeEvent, type WebFrameMain } from 'electron';
@@ -15,7 +26,6 @@ import { CHANNEL, type ThemeColours, type WindowType } from '../shared/bridge';
 import { openExternally } from './navigation';
 import { isJmapProxyPath } from './navigation-rules';
 import type { FeatureContext } from './features';
-import type { LoopbackSignIn } from './oauth-loopback';
 import { installPlugin, type PluginPolicyCheck } from './plugins';
 import { windowTypeOf } from './windows';
 
@@ -32,7 +42,6 @@ export function senderAllowed(frame: WebFrameMain | null | undefined, origin: st
 
 export interface IpcOptions {
   origin: string;
-  signIn?: LoopbackSignIn;
   pluginPolicy?: PluginPolicyCheck;
 }
 
@@ -152,11 +161,6 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   ctx.on(CHANNEL.serversForget, (_event, _window, serverUrl, reason) => {
     ctx.servers!.forget(serverUrl, reason);
   });
-
-  const signIn = options.signIn!;
-  ctx.handle(CHANNEL.authBegin, (event) => signIn.begin(event.sender.id));
-  ctx.handle(CHANNEL.authComplete, (event, _window, flowId, authorizeUrl) => signIn.complete(flowId, authorizeUrl, event.sender.id));
-  ctx.on(CHANNEL.authCancel, (event, _window, flowId) => signIn.cancel(flowId, event.sender.id));
 
   ctx.handle(CHANNEL.pluginsInstall, (_event, window, slug, version) =>
     installPlugin(ctx.localAdmin!, slug, version, window, options.pluginPolicy),

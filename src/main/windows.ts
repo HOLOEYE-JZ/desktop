@@ -15,10 +15,12 @@
  * `focus` and `broadcast`. They don't create windows themselves.
  */
 
+import { wipeUnderWay } from './features/local-wipe';
 import { EventEmitter } from 'node:events';
-import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebPreferences } from 'electron';
+import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebContents, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { SessionWindow, StateFile } from './state';
+import { keystoreOffByPolicy } from './keystore-policy';
 import { native } from './native';
 import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
@@ -27,6 +29,9 @@ import { nextInCycle, sumAnswers } from './window-logic';
 
 /** The app's toolbar row (h-14), so the window's buttons line up with what's next to them. */
 export const TITLE_BAR_HEIGHT = 56;
+
+/** Pages whose renderer the app lock is ending on purpose: that isn't a crash to count or recover from. */
+export const replacingRenderer = new WeakSet<WebContents>();
 /** Whatever's under the buttons shows through: the app draws to the top of the window. */
 const OVERLAY_COLOUR = '#00000000';
 
@@ -118,6 +123,8 @@ export interface ManagedWindow {
   flushable?: boolean;
   /** Saved: the next close goes straight through. */
   flushed?: boolean;
+  /** Asked and not answered yet. */
+  flushWaits?: Set<(answers: FlushAnswer[]) => void>;
   /**
    * On its way out. Showing a window now takes the whole app down with it (exit code
    * 0xffff7003), which happens when its page finishes loading just as it's closed.
@@ -225,7 +232,7 @@ export class WindowManager extends EventEmitter<{
       additionalArguments: [
         `${PRELOAD_ARG.allowedOrigin}${origin}`,
         `${PRELOAD_ARG.mode}${mode}`,
-        `${PRELOAD_ARG.keystore}${native().keystore.available ? '1' : '0'}`,
+        `${PRELOAD_ARG.keystore}${native().keystore.available && !keystoreOffByPolicy() ? '1' : '0'}`,
       ],
     };
   }
@@ -384,6 +391,11 @@ export class WindowManager extends EventEmitter<{
     webContents.once('close' as never, () => {
       managed.closing = true;
     });
+    // The page that said it has something to save is gone, and the next says so itself. Nothing
+    // can answer now, and nothing may wait for it or ask about it: a question with no page
+    // behind it holds up a close for good.
+    // A crashed page gets here too: it's reloaded.
+    webContents.on('did-navigate', () => this.noPageLeft(managed));
     // The OS is ending the session: there's no time for questions, only for saving.
     window.on('session-end', () => this.saveForSessionEnd());
     webContents.on('did-start-navigation', (details) => {
@@ -392,6 +404,10 @@ export class WindowManager extends EventEmitter<{
     if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
     webContents.on('will-prevent-unload', (event) => {
+      if (wipeUnderWay()) {
+        event.preventDefault();
+        return;
+      }
       const text = strings();
       if (window.isMinimized()) window.restore();
       if (!window.isVisible()) window.show();
@@ -480,9 +496,14 @@ export class WindowManager extends EventEmitter<{
   }
 
   /** A pop-out's page died. It comes back from its address, unless it keeps doing that. */
+  private noPageLeft(managed: ManagedWindow): void {
+    managed.flushable = false;
+    for (const finish of [...(managed.flushWaits ?? [])]) finish([]);
+  }
+
   private onPageGone(managed: ManagedWindow, reason: string): void {
     const { window } = managed;
-    if (reason === 'clean-exit' || window.isDestroyed()) return;
+    if (reason === 'clean-exit' || window.isDestroyed() || replacingRenderer.has(window.webContents)) return;
     const now = Date.now();
     managed.crashes = [...(managed.crashes ?? []).filter((at) => now - at < CRASH_WINDOW_MS), now];
     if (managed.crashes.length > MAX_CRASH_RELOADS) {
@@ -764,10 +785,12 @@ export class WindowManager extends EventEmitter<{
       const finish = (answers: FlushAnswer[]) => {
         clearTimeout(timer);
         this.flushWaits.delete(id);
+        managed.flushWaits?.delete(finish);
         resolve(answers);
       };
       const timer = setTimeout(() => finish([{ timedOut: true }]), FLUSH_TIMEOUT_MS);
       this.flushWaits.set(id, finish);
+      (managed.flushWaits ??= new Set()).add(finish);
       managed.window.webContents.send(CHANNEL.lifecycleFlush, id);
     });
   }

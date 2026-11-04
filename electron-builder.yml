@@ -6,21 +6,29 @@ copyright: Copyright (C) 2025-2026 Bulwark Project Authors
 directories:
   output: release
   buildResources: build
-asar: true
-# A native module can't load from inside an asar, so the native helper's and
-# policy-watcher's .node files go next to it. ASAR integrity is fine with this: tested
-# in test/package-guard.spec.ts.
+# Only what has to be a real file comes out of the asar. By default electron-builder takes a
+# package's whole folder along with a .node, and its JavaScript would then run from outside.
+asar:
+  smartUnpack: false
+# A native module can't load from inside an asar, so the native helper's and policy-watcher's
+# .node files go next to it. ASAR integrity does not cover them: it only checks the asar. So
+# main.mjs holds their SHA-256 and refuses another file (scripts/addon-pins.mjs). The sharp
+# addons in server.asar.unpacked have no such check yet. On macOS the code signature does this,
+# in a signed build.
 asarUnpack:
   - '**/*.node'
 # What goes in app.asar. electron-builder adds the production dependencies.
 files:
   - dist/**/*
   - package.json
-  # The native helper, per architecture. Missing means the app runs without it.
+  # The native helper, per architecture. after-pack.cjs fails without it on Windows and macOS.
   - from: native/dist/${platform}-${arch}
     to: native
     filter:
       - bulwark-native.node
+  # What node-gyp leaves beside the policy watcher on Windows.
+  - '!**/node_modules/@vscode/policy-watcher/build/**/*.{iobj,ipdb,lib,exp,tlog,vcxproj}'
+  - '!**/node_modules/@vscode/policy-watcher/build/**/*.tlog/**'
 # The webmail server, trimmed, guarded and packed for this target by before-pack.cjs.
 # As an extra resource so electron-builder lists it for ASAR integrity. Its unpacked files
 # go in by after-pack.cjs.

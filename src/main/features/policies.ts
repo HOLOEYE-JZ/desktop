@@ -8,7 +8,9 @@
  * Nothing the app stores itself ever counts as a policy.
  */
 
+import { addonMayLoad, type AddonPins } from '../addon-pins';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { lstatSync, readFileSync, watch as watchFile, type Stats } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -54,6 +56,7 @@ import {
 import { standaloneAllowed, type PolicySourceProblem } from '../policy-start';
 import { requestGate } from '../request-gate';
 import type { StateFile } from '../state';
+import { keystorePolicyChanged, setKeystoreOffPolicy } from '../keystore-policy';
 import { setKeystoreAllowedOrigins } from './keystore';
 import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
@@ -61,6 +64,7 @@ import type { Feature, FeatureContext } from '.';
 // Set by build.mjs: true only with --test. Dropped from what a package holds, since a
 // renamed Bulwark.exe would pass any check on app.isPackaged.
 declare const __BULWARK_TEST_BUILD__: boolean;
+declare const __BULWARK_ADDON_PINS__: AddonPins;
 
 /** A value written with `reg add` or by an installer fires no event. Group Policy does. */
 const POLL_MS = 2 * 60_000;
@@ -76,13 +80,15 @@ function parseUrl(url: string): URL | null {
   }
 }
 
-function loadWatcher(): CreateWatcher | null {
+function loadWatcher(isPackaged: boolean): CreateWatcher | null {
   try {
     // The addon itself: that's all the package's index.js hands on, through `bindings`, and
     // electron-builder doesn't always package that. Without it the app hears nothing from
     // Group Policy, and has no way around a blocked reg.exe.
     const require = createRequire(import.meta.url);
-    return require('@vscode/policy-watcher/build/Release/vscode-policy-watcher.node') as CreateWatcher;
+    const file = path.join(path.dirname(require.resolve('@vscode/policy-watcher/package.json')), 'build', 'Release', 'vscode-policy-watcher.node');
+    if (!addonMayLoad({ file, name: 'watcher', packaged: isPackaged || !__BULWARK_TEST_BUILD__, platform: process.platform, arch: process.arch, pins: __BULWARK_ADDON_PINS__ })) return null;
+    return require(file) as CreateWatcher;
   } catch (error) {
     console.warn('The policy watcher is not available:', error);
     return null;
@@ -121,7 +127,6 @@ export interface PolicyEvents {
    */
   'wipe-offline-data': [nonce: string];
   /** A wipe ran with windows open: they're blank now. */
-  wiped: [];
 }
 
 export class PolicyManager extends EventEmitter<PolicyEvents> {
@@ -147,7 +152,7 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       const poll = options.argv.find((arg) => arg.startsWith('--bulwark-test-policy-poll='));
       if (poll) this.pollMs = Number(poll.split('=')[1]) || POLL_MS;
     }
-    if (process.platform !== 'linux') this.watcher = loadWatcher();
+    if (process.platform !== 'linux') this.watcher = loadWatcher(options.isPackaged);
     await this.refresh(true);
   }
 
@@ -308,7 +313,6 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
       const { failed } = await runLocalWipe('policy-nonce', userData, state);
       // Done only if every partition is: otherwise the next start tries again.
       if (failed.length === 0) this.markWipeDone(nonce);
-      if (inUse.length > 0) this.emit('wiped');
     }
     // Checked each time and not remembered: nothing else fills these while it's forced off,
     // and a note in the user's own profile could say it's done. A value that makes no sense
@@ -371,6 +375,8 @@ export const policiesFeature: Feature = {
   modes: ['standalone', 'instance'],
   setup(ctx) {
     setKeystoreAllowedOrigins(() => policies.snapshot.KeystoreAllowedOrigins.value);
+    setKeystoreOffPolicy(() => !policies.snapshot.KeystoreEnabled.value || policies.snapshot.PluginsMode.value === 'off');
+    policies.on('changed', () => keystorePolicyChanged());
     policies.attachState(ctx.state);
     // Sent while the preload runs, so the page never sees a moment without values. A
     // sync message always needs an answer, also for a sender that gets nothing.

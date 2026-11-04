@@ -16,7 +16,18 @@ import type { OsHub } from './os-hub';
 import { needsRegistration, WINDOWS_APP_NAME, WINDOWS_URLS, windowsRegistration, windowsRegistrationKeys, type RegistryValue } from './os-rules';
 import { isInstalledBuild } from '../installed';
 
+// Set by build.mjs.
+declare const __BULWARK_TEST_BUILD__: boolean;
+
 export const DEFAULT_APP_SETTINGS_URL = `ms-settings:defaultapps?registeredAppUser=${WINDOWS_APP_NAME}`;
+
+/** A test's own key to stand in for HKCU. A real build has no way to move it. */
+function testRegistryRoot(): string | undefined {
+  if (!__BULWARK_TEST_BUILD__) return undefined;
+  return process.argv.find((arg) => arg.startsWith('--bulwark-test-registry-root='))?.split('=')[1];
+}
+
+const REGISTRY_ROOT = testRegistryRoot() ?? 'HKCU';
 
 function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
@@ -25,7 +36,7 @@ function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
 }
 
 async function writeValue(value: RegistryValue): Promise<boolean> {
-  const args = ['add', `HKCU\\${value.key}`, '/f'];
+  const args = ['add', `${REGISTRY_ROOT}\\${value.key}`, '/f'];
   if (value.name === undefined) args.push('/ve');
   else args.push('/v', value.name);
   args.push('/t', 'REG_SZ', '/d', value.data);
@@ -39,12 +50,12 @@ export async function registerOnWindows(exe: string): Promise<boolean> {
 
 export async function unregisterOnWindows(): Promise<void> {
   const { keys, values } = windowsRegistrationKeys();
-  await Promise.all(keys.map((key) => reg(['delete', `HKCU\\${key}`, '/f'])));
-  await Promise.all(values.map((value) => reg(['delete', `HKCU\\${value.key}`, '/v', value.name, '/f'])));
+  await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
+  await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
 }
 
 async function isChosenOnWindows(scheme: string): Promise<boolean> {
-  const { ok, stdout } = await reg(['query', `HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\${scheme}\\UserChoice`, '/v', 'ProgId']);
+  const { ok, stdout } = await reg(['query', `${REGISTRY_ROOT}\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\${scheme}\\UserChoice`, '/v', 'ProgId']);
   return ok && stdout.includes(WINDOWS_URLS[scheme]);
 }
 
@@ -69,7 +80,7 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
   const status = async (): Promise<OsDefaultAppStatus> => {
     if (win32) {
       const [registered, mailto, webcal] = await Promise.all([
-        reg(['query', 'HKCU\\Software\\RegisteredApplications', '/v', WINDOWS_APP_NAME]).then((result) => result.ok),
+        reg(['query', `${REGISTRY_ROOT}\\Software\\RegisteredApplications`, '/v', WINDOWS_APP_NAME]).then((result) => result.ok),
         isChosenOnWindows('mailto'),
         isChosenOnWindows('webcal'),
       ]);
@@ -94,9 +105,9 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
 
   // Follows the path of an update, and comes back after an uninstall and a reinstall to the
   // same path, so this asks the registry rather than remember. A development run writes
-  // nothing unless asked.
-  if (win32 && isInstalledBuild()) {
-    void reg(['query', 'HKCU\\Software\\Classes\\bulwark\\shell\\open\\command', '/ve']).then((query) => {
+  // nothing unless asked, and a test's goes to its own key.
+  if (win32 && (isInstalledBuild() || REGISTRY_ROOT !== 'HKCU')) {
+    void reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']).then((query) => {
       if (needsRegistration(query, process.execPath)) void register();
     });
   }

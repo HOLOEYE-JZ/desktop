@@ -81,6 +81,14 @@ function copyToClipboard(paths: string[]): Promise<boolean> {
   });
 }
 
+/** Marked as coming from outside, as a browser's download is. Off NTFS there's nowhere to put the mark. */
+export async function writeMarkedFile(target: string, data: Uint8Array): Promise<void> {
+  await writeFile(target, data, { mode: 0o600 });
+  if (process.platform === 'win32') {
+    await writeFile(`${target}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n').catch(() => {});
+  }
+}
+
 export interface FilesHandle {
   directory: string;
   prepare: (raw: unknown) => Promise<{ folder: string; paths: string[] } | null>;
@@ -133,12 +141,7 @@ export function setupFiles(iconPath: string): FilesHandle {
     const paths: string[] = [];
     for (const file of files) {
       const target = path.join(folder, file.name);
-      await writeFile(target, file.data, { mode: 0o600 });
-      if (process.platform === 'win32') {
-        await writeFile(`${target}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n').catch(() => {
-          // Not NTFS: there's nowhere to put the mark.
-        });
-      }
+      await writeMarkedFile(target, file.data);
       paths.push(target);
     }
     return { folder, paths };

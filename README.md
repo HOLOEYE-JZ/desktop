@@ -39,6 +39,8 @@ Unpackaged, these write under HKCU when asked, and a toast makes a Start Menu sh
 
 A file dragged or copied out of the app is a temporary copy in a private folder (`%LOCALAPPDATA%\Bulwark\os-files`, or under userData elsewhere), gone within minutes, at sign-out and at quit. Save it somewhere before working on it: a program opened straight on that copy loses its edits when the copy goes. Decrypted S/MIME and PGP attachments never go through that folder.
 
+"Edit" on an attachment is a different thing (`features/os-edit.ts`): a copy in a private folder of its own (`%LOCALAPPDATA%\Bulwark\edit-files`, or under userData elsewhere), only readable by this user, opened in its default program and watched, so a save there can be attached to a reply or update the draft it came from. Saved edits survive closing that program and quitting the app, and are offered again at the next start, also a file saved under a new name in that folder. Unchanged copies go after a day, changed ones when the user decides, at a sign-out they agreed to, at a wipe, or after 30 days and one last offer. A copy a program holds can't be deleted: it stays watched until that program lets go, a save in it is still offered, a notice says so, and a wipe doesn't count as done until it's gone. `shared/edit-rules.ts` lists the file types allowed in: Office without macros, ODF, pictures, PDF, plain text, CSV and geometry-only CAD. Everything else is Download only. `.doc`, `.xls`, `.ppt` and `.rtf` can hold macros, so they go on Windows only, with the mark from the internet written and read back, which is what makes Office use Protected View. The app lock stops new files opening and hides what was saved until the unlock, but it can't close another program: a file already open stays open there, and stays on disk until the user is done with it. **What the app can't clear:** the other program's own recovery files and its list of recent files, which can name this folder and keep a copy, whatever a sign-out or a wipe does here.
+
 ## Packaging
 
 ```sh
@@ -82,7 +84,9 @@ Windows builds are unsigned for now.
 
 - **The updater works, and here's what that means.** electron-updater checks the publisher only if `app-update.yml` names one, and that comes from a certificate. With none, it skips that check and relies on the sha512 in `latest.yml`, which comes from the same release as the installer. So **anyone who can publish a release on `bulwarkmail/desktop` can run code on every install that updates itself**, with nothing on the user's side to stop it. That's why a stable release waits for a reviewer. With a certificate configured (the hook in `electron-builder.yml`), new builds refuse an installer from anyone else, and the first signed version installs fine over an unsigned one.
 - **SmartScreen.** A browser marks a downloaded file with its origin, and Windows then shows "Windows protected your PC" for an unsigned installer until the file has built up reputation. The user picks "More info", then "Run anyway". The download page and docs have to say so. Updates aren't affected: the file the updater downloads has no such mark (checked by the test), and it needs no elevation.
-- **macOS and Linux.** An unsigned DMG gets an ad-hoc signature, and Gatekeeper warns. AppImage, deb and rpm have no such check.
+- **macOS.** An unsigned DMG gets an ad-hoc signature, and Gatekeeper warns. A downloaded, quarantined copy should need System Settings > Privacy & Security > Open Anyway the first time. That's from memory and hasn't been tested on a Mac.
+- **Linux.** AppImage, deb and rpm have no such check.
+- **No client-side signature check on Windows or the AppImage.** `NsisUpdater.verifySignature` returns null because `app-update.yml` has no `publisherName`, and the AppImage updater has no check at all. The only barrier to a bad release is the security of the GitHub accounts that can publish on this repository.
 
 ### Linux: use the deb or rpm
 
@@ -101,7 +105,7 @@ Stable installs never take a beta. A beta build stays on beta by itself unless a
 In this order:
 
 1. Try a beta on all three systems.
-2. Create the `release` environment with required reviewers (Settings > Environments). The publish job waits for it on a stable tag. If the environment doesn't exist, GitHub creates it with no reviewers, and a pushed tag publishes straight to every install.
+2. Create the `release` environment with required reviewers (Settings > Environments). It doesn't exist yet and has to be there first. The publish job only waits for it on a stable tag once it does: without it GitHub creates one with no reviewers, and a pushed tag publishes straight to every install.
 3. Protect `v*` tags (Settings > Rules), so that only maintainers can push one.
 4. Release a webmail with `build:desktop` on a tag. Webmail tags have no `v`. Set `config.webmailTag` in `package.json` to that tag: it says `1.21.0` now, which doesn't exist yet, and a release fails at once until it does.
 5. Set `version` in `package.json`, and push the tag `v<version>` on that commit.

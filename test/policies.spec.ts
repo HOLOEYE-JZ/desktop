@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
+import { helperFile } from '../src/main/native-loader';
 import { fakeOsIntegration, launch, opened, prompts, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
 
 /**
@@ -515,10 +516,25 @@ test.describe('the wipe nonce', () => {
     removeProfile(profile);
   });
 
-  test('a new value while running wipes with the window open, and brings it back', async () => {
+  test('a new value while running wipes, and the app starts again on a clean screen', async () => {
     const root = freshRoot();
     setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
-    const started = await start(root);
+    let started = await start(root);
+    // The relaunch is the one thing not done for real: nothing here could reach the new process.
+    const untilRestart = async (app: ElectronApplication) => {
+      const marker = path.join(started.profile, 'relaunched');
+      rmSync(marker, { force: true });
+      await app.evaluate(({ app: electronApp }, file) => {
+        electronApp.relaunch = (() => {
+          process.getBuiltinModule('node:fs').writeFileSync(file, 'x');
+        }) as typeof electronApp.relaunch;
+      }, marker);
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      return async () => {
+        await gone;
+        expect(existsSync(marker), 'it asked for a new start').toBe(true);
+      };
+    };
     await plant(started.page);
     // What the native windows keep locally: a copy to paste, and a window to bring back.
     const leftover = path.join(started.profile, 'clipboard-files', 'report.pdf');
@@ -526,17 +542,28 @@ test.describe('the wipe nonce', () => {
     writeFileSync(leftover, 'x');
     await started.page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { openMessage: (t: object) => void } } }).bulwarkDesktop.windows.openMessage({ url: '/popout/message/secret-id', emailId: 'secret-id' }));
     await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).toContain('secret-id');
+    let restarted = await untilRestart(started.app);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
-    await expect.poll(() => (existsSync(path.join(started.profile, 'shell-state.json')) ? stateOf(started.profile).policyWipes : undefined)).toEqual(['live']);
+    await restarted();
+    expect(stateOf(started.profile).policyWipes).toEqual(['live']);
+    expect(existsSync(leftover)).toBe(false);
+    expect(JSON.stringify(stateOf(started.profile).session ?? [])).not.toContain('secret-id');
+    await stop(started, true);
+
+    started = await start(root, { profile: started.profile });
     await expect(started.page.locator('#stand-in')).toBeVisible();
     expect(await markers(started.page)).toEqual(NONE);
-    expect(existsSync(leftover)).toBe(false);
-    await expect.poll(() => JSON.stringify(stateOf(started.profile).session ?? [])).not.toContain('secret-id');
+    expect(JSON.stringify(await windowUrls(started.app))).not.toContain('secret-id');
 
     // An old value again: remembered per value.
     await plant(started.page);
+    restarted = await untilRestart(started.app);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'next');
-    await expect.poll(() => stateOf(started.profile).policyWipes).toEqual(['live', 'next']);
+    await restarted();
+    expect(stateOf(started.profile).policyWipes).toEqual(['live', 'next']);
+    await stop(started, true);
+
+    started = await start(root, { profile: started.profile });
     await expect(started.page.locator('#stand-in')).toBeVisible();
     await plant(started.page);
     setString(key(root, 'Machine'), 'WipeOfflineData', 'live');
@@ -868,5 +895,40 @@ test.describe('plugins and mail servers in standalone mode', () => {
 
     reg('delete', key(root, 'Machine'), '/v', 'PluginsMode', '/f');
     await expect.poll(() => features().pluginsEnabled).toBe(true);
+  });
+});
+
+test.describe('the keystore switched off', () => {
+  const helperPath = () => helperFile({ packaged: false, mainDir: path.join(import.meta.dirname, '..', 'dist'), platform: process.platform, arch: process.arch });
+  const hasMember = (window: Page) => window.evaluate(() => 'keystore' in (window as unknown as { bulwarkDesktop: object }).bulwarkDesktop);
+
+  for (const [name, force] of [
+    ['KeystoreEnabled 0', (root: string) => setNumber(key(root, 'Machine'), 'KeystoreEnabled', 0)],
+    ['PluginsMode off', (root: string) => setString(key(root, 'Machine'), 'PluginsMode', 'off')],
+  ] as const) {
+    test(`${name} leaves it off the bridge`, async () => {
+      test.skip(!existsSync(helperPath()), 'needs the native helper');
+      const root = freshRoot();
+      setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+      force(root);
+      const started = await start(root);
+      expect(await hasMember(started.page)).toBe(false);
+    });
+  }
+
+  test('forced off while running, a page that has it gets unsupported, with no dialog', async () => {
+    test.skip(!existsSync(helperPath()), 'needs the native helper');
+    const root = freshRoot();
+    setString(key(root, 'Machine'), 'InstanceUrl', instanceA);
+    const started = await start(root);
+    await fakeOsIntegration(started.app, 1);
+    expect(await hasMember(started.page)).toBe(true);
+    setNumber(key(root, 'Machine'), 'KeystoreEnabled', 0);
+    await expect.poll(() => bridgePolicy(started.page).then((p) => p.KeystoreEnabled.value)).toBe(false);
+    const answer = await started.page.evaluate(() => (window as unknown as { bulwarkDesktop: { keystore: { list(): Promise<unknown> } } }).bulwarkDesktop.keystore.list().then(() => 'listed', (error: Error) => error.message));
+    expect(answer).toBe('keystore:unsupported');
+    expect(await prompts(started.app)).toEqual([]);
+    reg('delete', key(root, 'Machine'), '/v', 'KeystoreEnabled', '/f');
+    await expect.poll(() => bridgePolicy(started.page).then((p) => p.KeystoreEnabled.value)).toBe(true);
   });
 });

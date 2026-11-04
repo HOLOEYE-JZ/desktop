@@ -8,8 +8,6 @@ pub const OID_EC: &str = "1.2.840.10045.2.1";
 const OID_KEY_USAGE: &str = "2.5.29.15";
 const OID_EXT_KEY_USAGE: &str = "2.5.29.37";
 const OID_BASIC_CONSTRAINTS: &str = "2.5.29.19";
-const OID_CLIENT_AUTH: &str = "1.3.6.1.5.5.7.3.2";
-const OID_SMARTCARD_LOGON: &str = "1.3.6.1.4.1.311.20.2.2";
 pub const OID_ANY_EKU: &str = "2.5.29.37.0";
 pub const OID_EMAIL_PROTECTION: &str = "1.3.6.1.5.5.7.3.4";
 
@@ -121,12 +119,17 @@ impl Certificate {
         eku && self.key_usage.is_none_or(|bits| bits & wanted != 0)
     }
 
-    /// This key can do more than mail: it may also sign the user in somewhere. Signing a
-    /// digest for a page could be a login, so consent is per operation, not per session.
+    /// Consent per operation, not for a while, unless this key does mail and nothing else:
+    /// its extended key usage is exactly email protection. Anything broader could also sign
+    /// code or sign the user in. A key with nonRepudiation is a qualified signing key, whose
+    /// signature can bind the user legally, so it asks whatever else it says.
     pub fn ask_each_use(&self) -> bool {
+        if self.key_usage.is_some_and(|bits| bits & KU_NON_REPUDIATION != 0) {
+            return true;
+        }
         match &self.extended_key_usage {
+            Some(list) => !matches!(list.as_slice(), [only] if only == OID_EMAIL_PROTECTION),
             None => true,
-            Some(list) => list.iter().any(|oid| oid == OID_ANY_EKU || oid == OID_CLIENT_AUTH || oid == OID_SMARTCARD_LOGON),
         }
     }
 }
@@ -249,6 +252,18 @@ fn string_value(tag: u8, value: &[u8]) -> Option<String> {
     }
 }
 
+/// A name as a person reads it. Certificates are written by whoever made them, and the
+/// consent dialog shows this: no control characters to fake a line, and none of the
+/// invisible or direction-changing ones that make one name look like another.
+fn clean_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(*c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
+        })
+        .collect()
+}
+
 /// `CN=Someone, O=Company`, most specific first, as RFC 4514 orders it.
 fn name_string(value: &[u8]) -> Option<String> {
     let mut parts = Vec::new();
@@ -259,7 +274,7 @@ fn name_string(value: &[u8]) -> Option<String> {
             let mut attribute = Reader::new(set.expect(SEQUENCE)?);
             let oid = oid_string(attribute.expect(OID)?)?;
             let text = attribute.next()?;
-            let text = string_value(text.tag, text.value).unwrap_or_default();
+            let text = clean_text(&string_value(text.tag, text.value).unwrap_or_default());
             let label = attribute_name(&oid).map(str::to_string).unwrap_or(oid);
             let escaped = text.replace('\\', "\\\\").replace(',', "\\,");
             parts.push(format!("{label}={escaped}"));
@@ -434,7 +449,96 @@ pub fn parse_ec_spki(der: &[u8]) -> Option<(Curve, Vec<u8>, Vec<u8>)> {
     if unused != 0 || point.len() != 1 + 2 * size || point[0] != 0x04 {
         return None;
     }
-    Some((curve, point[1..1 + size].to_vec(), point[1 + size..].to_vec()))
+    let (x, y) = (&point[1..1 + size], &point[1 + size..]);
+    on_curve(curve, x, y).then(|| (curve, x.to_vec(), y.to_vec()))
+}
+
+/// Little-endian 64-bit limbs, wide enough for P-521 with room to add.
+type Wide = [u64; 9];
+
+fn wide_from_hex(hex: &str) -> Wide {
+    let bytes: Vec<u8> = (0..hex.len() / 2).map(|at| u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).unwrap_or(0)).collect();
+    wide_from_bytes(&bytes)
+}
+
+fn wide_from_bytes(big_endian: &[u8]) -> Wide {
+    let mut out = [0u64; 9];
+    for (index, byte) in big_endian.iter().rev().enumerate().take(9 * 8) {
+        out[index / 8] |= (*byte as u64) << (index % 8 * 8);
+    }
+    out
+}
+
+fn wide_less(a: &Wide, b: &Wide) -> bool {
+    a.iter().rev().lt(b.iter().rev())
+}
+
+fn wide_add_mod(a: &Wide, b: &Wide, p: &Wide) -> Wide {
+    let mut sum = [0u64; 9];
+    let mut carry = false;
+    for index in 0..9 {
+        let (partial, first) = a[index].overflowing_add(b[index]);
+        let (total, second) = partial.overflowing_add(carry as u64);
+        sum[index] = total;
+        carry = first || second;
+    }
+    if wide_less(&sum, p) {
+        return sum;
+    }
+    let mut out = [0u64; 9];
+    let mut borrow = false;
+    for index in 0..9 {
+        let (partial, first) = sum[index].overflowing_sub(p[index]);
+        let (total, second) = partial.overflowing_sub(borrow as u64);
+        out[index] = total;
+        borrow = first || second;
+    }
+    out
+}
+
+/// Double and add. Slow by bignum standards, and public values only, so no need for more.
+fn wide_mul_mod(a: &Wide, b: &Wide, p: &Wide) -> Wide {
+    let mut out = [0u64; 9];
+    for limb in b.iter().rev() {
+        for bit in (0..64).rev() {
+            out = wide_add_mod(&out, &out, p);
+            if limb >> bit & 1 == 1 {
+                out = wide_add_mod(&out, a, p);
+            }
+        }
+    }
+    out
+}
+
+/// y^2 = x^3 - 3x + b, with both below p. On the three NIST curves a = p - 3. The OS's
+/// provider would normally say this too, but a third-party provider or macOS might not,
+/// and an off-curve point is how an invalid-curve attack reads a private key.
+fn on_curve(curve: Curve, x: &[u8], y: &[u8]) -> bool {
+    let (p, b) = match curve {
+        Curve::P256 => (
+            "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff",
+            "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b",
+        ),
+        Curve::P384 => (
+            "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffeffffffff0000000000000000ffffffff",
+            "b3312fa7e23ee7e4988e056be3f82d19181d9c6efe8141120314088f5013875ac656398d8a2ed19d2a85c8edd3ec2aef",
+        ),
+        Curve::P521 => (
+            "01ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "0051953eb9618e1c9a1f929a21a0b68540eea2da725b99b315f3b8b489918ef109e156193951ec7e937b1652c0bd3bb1bf073573df883d2c34f1ef451fd46b503f00",
+        ),
+    };
+    let (p, b) = (wide_from_hex(p), wide_from_hex(b));
+    let (x, y) = (wide_from_bytes(x), wide_from_bytes(y));
+    if !wide_less(&x, &p) || !wide_less(&y, &p) {
+        return false;
+    }
+    let three_x = wide_add_mod(&wide_add_mod(&x, &x, &p), &x, &p);
+    let cube = wide_mul_mod(&wide_mul_mod(&x, &x, &p), &x, &p);
+    // Both sides moved so nothing has to subtract: y^2 + 3x = x^3 + b.
+    let left = wide_add_mod(&wide_mul_mod(&y, &y, &p), &three_x, &p);
+    let right = wide_add_mod(&cube, &b, &p);
+    left == right
 }
 
 fn push_length(out: &mut Vec<u8>, length: usize) {
@@ -477,6 +581,10 @@ pub fn ecdsa_raw_to_der(raw: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OID_CLIENT_AUTH: &str = "1.3.6.1.5.5.7.3.2";
+    const OID_SMARTCARD_LOGON: &str = "1.3.6.1.4.1.311.20.2.2";
+    const OID_CODE_SIGNING: &str = "1.3.6.1.5.5.7.3.3";
 
     #[test]
     fn a_reader_refuses_lengths_past_the_end() {
@@ -588,5 +696,106 @@ mod tests {
         assert!(certificate(None, Some(&[OID_ANY_EKU]), false).ask_each_use());
         assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_CLIENT_AUTH]), false).ask_each_use());
         assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_SMARTCARD_LOGON]), false).ask_each_use());
+    }
+
+    #[test]
+    fn only_a_key_for_mail_alone_gets_a_grant() {
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_CODE_SIGNING]), false).ask_each_use(), "code signing too");
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, "1.2.3.4"]), false).ask_each_use(), "something nobody here knows");
+        assert!(certificate(None, Some(&[OID_EMAIL_PROTECTION, OID_EMAIL_PROTECTION]), false).ask_each_use(), "not exactly the one");
+        assert!(certificate(None, Some(&[]), false).ask_each_use(), "an empty list");
+        assert!(!certificate(Some(KU_DIGITAL_SIGNATURE | KU_KEY_ENCIPHERMENT), Some(&[OID_EMAIL_PROTECTION]), false).ask_each_use());
+    }
+
+    #[test]
+    fn a_qualified_signing_key_asks_each_time() {
+        assert!(certificate(Some(KU_NON_REPUDIATION), Some(&[OID_EMAIL_PROTECTION]), false).ask_each_use());
+        assert!(certificate(Some(KU_DIGITAL_SIGNATURE | KU_NON_REPUDIATION), Some(&[OID_EMAIL_PROTECTION]), false).ask_each_use());
+    }
+
+    #[test]
+    fn names_lose_what_a_reader_cannot_see() {
+        assert_eq!(clean_text("Some\nOne\r\t\u{7f}\u{85}"), "SomeOne");
+        assert_eq!(clean_text("a\u{202e}b\u{200b}c\u{2066}d\u{feff}e\u{ad}f"), "abcdef");
+        assert_eq!(clean_text("J\u{fc}rgen \u{674e}"), "J\u{fc}rgen \u{674e}");
+    }
+
+    #[test]
+    fn a_subject_with_a_line_break_reads_as_one_line() {
+        // SEQUENCE { SET { SEQUENCE { CN, UTF8String "a\nIssuer: b" } } }
+        let text = b"a\nIssuer: b";
+        let mut attribute = vec![0x06, 0x03, 0x55, 0x04, 0x03, 0x0c, text.len() as u8];
+        attribute.extend_from_slice(text);
+        let mut sequence = vec![0x30, attribute.len() as u8];
+        sequence.extend_from_slice(&attribute);
+        let mut set = vec![0x31, sequence.len() as u8];
+        set.extend_from_slice(&sequence);
+        assert_eq!(name_string(&set).as_deref(), Some("CN=aIssuer: b"));
+    }
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len() / 2).map(|at| u8::from_str_radix(&hex[at * 2..at * 2 + 2], 16).unwrap()).collect()
+    }
+
+    const GENERATORS: [(Curve, &str, &str); 3] = [
+        (
+            Curve::P256,
+            "6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296",
+            "4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5",
+        ),
+        (
+            Curve::P384,
+            "aa87ca22be8b05378eb1c71ef320ad746e1d3b628ba79b9859f741e082542a385502f25dbf55296c3a545e3872760ab7",
+            "3617de4a96262c6f5d9e98bf9292dc29f8f41dbd289a147ce9da3113b5f0b8c00a60b1ce1d7e819d7a431d7c90ea0e5f",
+        ),
+        (
+            Curve::P521,
+            "00c6858e06b70404e9cd9e3ecb662395b4429c648139053fb521f828af606b4d3dbaa14b5e77efe75928fe1dc127a2ffa8de3348b3c1856a429bf97e7e31c2e5bd66",
+            "011839296a789a3bc0045c8a5fb42c7d1bd998f54449579b446817afbd17273e662c97ee72995ef42640c550b9013fad0761353c7086a272c24088be94769fd16650",
+        ),
+    ];
+
+    #[test]
+    fn a_point_has_to_be_on_its_curve() {
+        for (curve, x, y) in GENERATORS {
+            let (x, y) = (bytes(x), bytes(y));
+            assert!(on_curve(curve, &x, &y), "{} generator", curve.name());
+            let mut other = y.clone();
+            *other.last_mut().unwrap() ^= 1;
+            assert!(!on_curve(curve, &x, &other), "{} with y changed", curve.name());
+            assert!(!on_curve(curve, &vec![0; x.len()], &vec![0; y.len()]), "{} at zero", curve.name());
+            assert!(!on_curve(curve, &vec![0xff; x.len()], &y), "{} x past p", curve.name());
+        }
+    }
+
+    fn spki(oid: &[u8], x: &[u8], y: &[u8]) -> Vec<u8> {
+        // id-ecPublicKey, the curve, and the uncompressed point.
+        let mut algorithm = vec![0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, oid.len() as u8];
+        algorithm.extend_from_slice(oid);
+        let mut point = vec![0x00, 0x04];
+        point.extend_from_slice(x);
+        point.extend_from_slice(y);
+        let mut body = vec![0x30, algorithm.len() as u8];
+        body.extend_from_slice(&algorithm);
+        body.push(0x03);
+        push_length(&mut body, point.len());
+        body.extend_from_slice(&point);
+        let mut out = vec![0x30];
+        push_length(&mut out, body.len());
+        out.extend_from_slice(&body);
+        out
+    }
+
+    #[test]
+    fn an_spki_off_the_curve_is_refused() {
+        let oids: [&[u8]; 3] = [&[0x2a, 0x86, 0x48, 0xce, 0x3d, 0x03, 0x01, 0x07], &[0x2b, 0x81, 0x04, 0x00, 0x22], &[0x2b, 0x81, 0x04, 0x00, 0x23]];
+        for ((curve, x, y), oid) in GENERATORS.into_iter().zip(oids) {
+            let (x, y) = (bytes(x), bytes(y));
+            let parsed = parse_ec_spki(&spki(oid, &x, &y)).expect("a real point");
+            assert_eq!((parsed.0, parsed.1, parsed.2), (curve, x.clone(), y.clone()));
+            let mut other = y.clone();
+            other[0] ^= 1;
+            assert!(parse_ec_spki(&spki(oid, &x, &other)).is_none(), "{}", curve.name());
+        }
     }
 }

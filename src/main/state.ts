@@ -96,6 +96,8 @@ export interface ShellState {
   keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
+  /** The browser sign-in page's port per mail server, so what a password manager saved keeps matching. */
+  signInPorts?: Record<string, number>;
   /**
    * The client certificate remembered for a `host:port`, by fingerprint, and a hash of the account
    * it was chosen in. Gone at that account's sign-out, and all of them at the last one.

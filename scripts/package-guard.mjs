@@ -5,7 +5,7 @@
 // chunks: they mean nothing on a user's machine and name the developer. Warns if
 // the home folder is still in there.
 
-import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import path from 'node:path';
 
@@ -13,9 +13,11 @@ const FORBIDDEN_DIRS = new Set(['data', 'local-data', 'repos']);
 const FORBIDDEN_FILE = /^(\.env.*|plugin-signing\.key)$/i;
 // A key is a key wherever it is. An `.env.example` in a package isn't a secret, and
 // Next's own routes may be named `data`, but no other `.env` may be anywhere in a build.
-const FORBIDDEN_DEEP = /^(\.env(?!\.(example|sample|template)$)(\..+)?|plugin-signing\.key)$/i;
-const TEXT_FILE = /\.(js|cjs|mjs|json|rsc|html|map|txt)$/;
+const FORBIDDEN_DEEP = /^(\.env(?!\.(example|sample|template)$).*|plugin-signing\.key)$/i;
+const TEXT_FILE = /\.(js|cjs|mjs|json|rsc|html|map|txt|css)$/;
 const PLACEHOLDER = '/bulwark-build';
+/** What node-gyp leaves beside a Windows addon. electron-builder.yml keeps it out. */
+const BUILD_LEFTOVER = /\.(iobj|ipdb|lib|exp|tlog|vcxproj)$/i;
 
 function toPosix(p) {
   return p.split(path.sep).join('/');
@@ -61,7 +63,13 @@ export function findProblems(tree) {
 function spellings(root) {
   const forward = root.split('\\').join('/');
   const back = forward.split('/').join('\\');
-  return [...new Set([back.split('\\').join('\\\\'), back, forward])].filter((value) => value.length > 3);
+  const doubled = back.split('\\').join('\\\\');
+  // Twice escaped: a JSON string inside a JS string.
+  const quadrupled = doubled.split('\\').join('\\\\');
+  const plain = [quadrupled, doubled, back, forward];
+  // In a URL, as a whole value and as a path.
+  const encoded = [encodeURIComponent(back), encodeURIComponent(forward), encodeURI(forward)];
+  return [...new Set([...plain, ...encoded])].filter((value) => value.length > 3);
 }
 
 function replaceAll(text, from, to) {
@@ -135,10 +143,31 @@ export function asarFiles(file) {
  * The rest of resources/. app.asar holds the shell and nothing else, and only known
  * things sit next to it. This catches a config change that would sweep in the repo.
  */
-export function findResourceProblems(resources) {
+export function findResourceProblems(resources, platform = process.platform) {
   const problems = [];
-  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|LICENSE\.electron\.txt|LICENSES\.chromium\.html|.*\.lproj|.*\.icns|.*\.nib|.*\.plist)$/;
-  for (const name of readdirSync(resources)) if (!known.test(name)) problems.push(`resources/${name}`);
+  const known = /^(app\.asar|app\.asar\.unpacked|server\.asar|server\.asar\.unpacked|policies|app-update\.yml|bulwark-build\.json|package-type|apparmor-profile|LICENSE\.electron\.txt|LICENSES\.chromium\.html)$/;
+  for (const name of readdirSync(resources)) {
+    if (known.test(name)) continue;
+    // What a real macOS package has beside these. Language folders hold at most Electron's own file.
+    const lproj = platform === 'darwin' && /^[\w-]+\.lproj$/.test(name);
+    if (platform === 'darwin' && name === 'icon.icns') continue;
+    if (!lproj) {
+      problems.push(`resources/${name}`);
+      continue;
+    }
+    for (const inside of readdirSync(path.join(resources, name))) if (inside !== 'locale.pak') problems.push(`resources/${name}/${inside}`);
+  }
+  // These hold no webmail state and no secrets, whatever a config change sweeps in.
+  for (const name of ['app.asar.unpacked', 'server.asar.unpacked', 'policies']) {
+    const tree = path.join(resources, name);
+    if (existsSync(tree)) problems.push(...findProblems(tree).map((problem) => `${name}/${problem}`));
+  }
+  const unpacked = path.join(resources, 'app.asar.unpacked');
+  if (existsSync(unpacked)) {
+    for (const { full, entry } of walk(unpacked)) {
+      if (BUILD_LEFTOVER.test(entry.name)) problems.push(`app.asar.unpacked/${toPosix(path.relative(unpacked, full))}`);
+    }
+  }
   const asar = path.join(resources, 'app.asar');
   if (existsSync(asar)) {
     for (const file of asarFiles(asar)) {
@@ -157,6 +186,39 @@ export function findResourceProblems(resources) {
   return problems.sort();
 }
 
+/**
+ * Files others can change, or that are setuid or setgid, as `path (mode)`. Windows has no such
+ * modes: everything reads 0666 there. Links read 0777 everywhere and mean nothing.
+ */
+export function findLooseModes(tree, { stat = lstatSync, platform = process.platform } = {}) {
+  if (platform === 'win32') return [];
+  const found = [];
+  for (const { full } of walk(tree)) {
+    const info = stat(full);
+    if (info.isSymbolicLink()) continue;
+    const mode = info.mode & 0o7777;
+    if (mode & 0o6022) found.push(`${toPosix(path.relative(tree, full))} (${mode.toString(8).padStart(4, '0')})`);
+  }
+  return found.sort();
+}
+
+/**
+ * `chmod -R go-w`. electron-builder's zip extraction applies the modes stored in Electron's zip
+ * with chmod, past the umask, and those are 0777 and 0666 (app-builder-lib's electronGet.js).
+ */
+export function tightenModes(tree) {
+  if (process.platform === 'win32') return;
+  for (const { full } of walk(tree)) {
+    const info = lstatSync(full);
+    if (!info.isSymbolicLink() && info.mode & 0o022) chmodSync(full, info.mode & 0o7777 & ~0o022);
+  }
+}
+
+export function guardModes(tree, options) {
+  const found = findLooseModes(tree, options);
+  if (found.length > 0) throw new Error(`Do not ship this package, others can change these files:\n  ${found.slice(0, 30).join('\n  ')}`);
+}
+
 /** Nothing but Electron's own files goes next to the exe (`extraFiles`, a stray config). */
 export function guardExtraFiles(appOutDir) {
   const found = [];
@@ -166,8 +228,19 @@ export function guardExtraFiles(appOutDir) {
   if (found.length > 0) throw new Error(`Do not ship this package:\n  ${found.slice(0, 30).join('\n  ')}`);
 }
 
-export function guardResources(resources) {
-  const problems = findResourceProblems(resources);
+/** Windows Hello and the keystore there, and on macOS the check for forced preferences. */
+export function findHelperProblem(asarListing, platform) {
+  if (platform !== 'win32' && platform !== 'darwin') return null;
+  return asarListing.includes('native/bulwark-native.node') ? null : 'app.asar has no native/bulwark-native.node';
+}
+
+export function guardHelper(resources, platform) {
+  const problem = findHelperProblem(asarFiles(path.join(resources, 'app.asar')), platform);
+  if (problem) throw new Error(`Do not ship this package:\n  ${problem}`);
+}
+
+export function guardResources(resources, platform) {
+  const problems = findResourceProblems(resources, platform);
   if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
 }
 

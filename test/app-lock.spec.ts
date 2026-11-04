@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -59,6 +59,30 @@ test.describe('the gate, in plain Node', () => {
     expect(gate.enroll(proof(9))).toBe(false);
     expect(gate.prove(proof(9))).toBe(false);
     expect(gate.locked).toBe(true);
+  });
+
+  test('counts PIN guesses across a restart, waits after the free ones, and only the proof clears them', () => {
+    const gate = new AppLockGate();
+    gate.init(file);
+    const now = 1_000_000;
+    // Before there's a lock this is someone setting a PIN.
+    expect(gate.guess(now)).toBe(0);
+    expect(gate.guess(now)).toBe(0);
+    gate.enroll(proof(1));
+    for (let i = 0; i < 4; i += 1) expect(gate.guess(now)).toBe(0);
+    expect(gate.guess(now)).toBe(0);
+    const until = gate.guess(now);
+    expect(until).toBe(now + 30_000);
+    const again = new AppLockGate();
+    again.init(file);
+    expect(again.guess(now)).toBe(until);
+    expect(again.guess(until)).toBe(0);
+    expect(again.guess(until)).toBe(until + 60_000);
+    // A wrong proof clears nothing.
+    expect(again.prove(proof(2))).toBe(false);
+    expect(again.guess(until)).toBe(until + 60_000);
+    expect(again.prove(proof(1))).toBe(true);
+    expect(again.guess(until)).toBe(0);
   });
 
   test('keeps a hash, never the proof', () => {
@@ -307,14 +331,84 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
+  test('a frame gets neither wrap, unwrap nor a PIN step: those go to whoever claims first', async () => {
+    await run('yes', async (_app, page) => {
+      const answer = await page.evaluate(() => {
+        const bridge = (window as unknown as { bulwarkDesktop: { appLock: Record<string, unknown> & { claim(): Record<string, unknown> | null } } }).bulwarkDesktop.appLock;
+        const first = bridge.claim();
+        return {
+          onBridge: ['wrap', 'unwrap', 'pinStep', 'replaceRenderer'].filter((name) => name in bridge),
+          claimed: ['wrap', 'unwrap', 'pinStep', 'replaceRenderer'].filter((name) => first && name in first),
+          second: bridge.claim(),
+        };
+      });
+      expect(answer).toEqual({ onBridge: [], claimed: ['wrap', 'unwrap', 'pinStep', 'replaceRenderer'], second: null });
+    });
+  });
+
+  test('a PIN step takes a secret from main, the same for the same guess, and main counts it', async () => {
+    await run('yes', async (_app, page) => {
+      await call(page, 'enroll', 1);
+      const steps = await page.evaluate(async () => {
+        const bridge = (window as unknown as { bulwarkDesktop: { appLock: { claim(): { pinStep(data: Uint8Array): Promise<{ ok: boolean; bytes?: Uint8Array; blockedUntil?: number }> } } } }).bulwarkDesktop.appLock;
+        const held = window as unknown as { __controls?: ReturnType<typeof bridge.claim> };
+        held.__controls ??= bridge.claim();
+        const controls = held.__controls;
+        const out = [];
+        for (let i = 0; i < 7; i += 1) {
+          const answer = await controls.pinStep(new Uint8Array(32).fill(i < 2 ? 5 : i));
+          out.push({ ok: answer.ok, bytes: answer.bytes ? Array.from(answer.bytes).join() : null, blocked: Boolean(answer.blockedUntil) });
+        }
+        return out;
+      });
+      expect(steps[0].bytes).toBe(steps[1].bytes);
+      expect(steps[0].bytes).not.toBe(Array(32).fill(5).join());
+      expect(steps[2].bytes).not.toBe(steps[0].bytes);
+      // Four free, a fifth that sets the wait, and then refused.
+      expect(steps.map((step) => step.ok)).toEqual([true, true, true, true, true, false, false]);
+      expect(steps.at(-1)?.blocked).toBe(true);
+      expect(await call(page, 'prove', 1)).toBe(true);
+    });
+  });
+
+  test('a lock can replace the renderer: a new process, the page back, no crash counted. Not while unlocked', async () => {
+    await run('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      const pid = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getOSProcessId());
+      const ask = () => page.evaluate(() => {
+        const held = window as unknown as { __controls?: { replaceRenderer(): void } };
+        held.__controls ??= (window as unknown as { bulwarkDesktop: { appLock: { claim(): { replaceRenderer(): void } } } }).bulwarkDesktop.appLock.claim();
+        held.__controls.replaceRenderer();
+      });
+      const before = await pid();
+      await ask();
+      await page.waitForTimeout(800);
+      expect(await pid()).toBe(before);
+      await call(page, 'prove', 1);
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { gate: { lock(): void } } }).__bulwarkAppLock.gate.lock());
+      await ask().catch(() => undefined);
+      await expect.poll(pid, { timeout: 30_000 }).not.toBe(before);
+      await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isLoading()), { timeout: 30_000 }).toBe(false);
+      const shown = await app.evaluate(({ BrowserWindow }) => {
+        const [window] = BrowserWindow.getAllWindows();
+        return { count: BrowserWindow.getAllWindows().length, crashed: window.webContents.isCrashed(), url: window.webContents.getURL() };
+      });
+      expect(shown).toMatchObject({ count: 1, crashed: false });
+      expect(shown.url).toContain('/api/health');
+    });
+  });
+
   test('wrap and unwrap go through safeStorage, and only for this origin\'s own bytes', async () => {
     await run('yes', async (_app, page) => {
       const answer = await page.evaluate(async () => {
-        const bridge = (window as unknown as { bulwarkDesktop: { appLock: {
+        const member = (window as unknown as { bulwarkDesktop: { appLock: {
           status(): Promise<{ wrap?: boolean }>;
-          wrap(data: Uint8Array): Promise<Uint8Array | null>;
-          unwrap(data: Uint8Array): Promise<Uint8Array | null>;
+          claim(): {
+            wrap(data: Uint8Array): Promise<Uint8Array | null>;
+            unwrap(data: Uint8Array): Promise<Uint8Array | null>;
+          };
         } } }).bulwarkDesktop.appLock;
+        const bridge = { ...member.claim(), status: member.status };
         const data = new Uint8Array(40).fill(9);
         const wrapped = await bridge.wrap(data);
         const back = wrapped ? await bridge.unwrap(wrapped) : null;
@@ -330,23 +424,75 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('a local wipe takes the lock\'s folder and the DPAPI key along, and main lets go', async () => {
-    await run('yes', async (app, page) => {
+  test('a page\'s wipe through main: the steps run, the answer comes back, then the restart. A frame can\'t ask', async () => {
+    const profile = tempProfile('page-wipe');
+    writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({
+      corsOrigins: ['https://mail.example.test'],
+      approvedServers: [{ origin: 'https://lan.example.test', approvedAt: 1 }],
+      signInPorts: { 'https://mail.example.test': 1234 },
+    }));
+    process.env.BULWARK_TEST_OS_VERIFY = 'yes';
+    const launched = await launchStandalone(profile);
+    const { app, page } = launched;
+    try {
+      await page.goto(new URL('/api/health', page.url()).href);
+      await call(page, 'enroll', 1);
+      await call(page, 'osEnroll', 1, 7);
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const answers = await page.evaluate(async () => {
+        const held = window as unknown as { __controls: { localWipe(request: unknown): Promise<{ failed: string[] }> }; bulwarkDesktop: { appLock: Record<string, unknown> } };
+        const bridge = held.bulwarkDesktop.appLock;
+        const one = await held.__controls.localWipe({ reason: 'remote', account: 'a@example.test' });
+        const stillThere = (localStorage.setItem('kept', 'yes'), localStorage.getItem('kept'));
+        return { onBridge: 'localWipe' in bridge, one, stillThere };
+      });
+      expect(answers).toEqual({ onBridge: false, one: { failed: [] }, stillThere: 'yes' });
+      // One account of several leaves the lock and the servers.
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      const all = await page.evaluate(async () => (window as unknown as { __controls: { localWipe(request: unknown): Promise<{ failed: string[] }> } }).__controls.localWipe({ reason: 'settings', account: null }));
+      expect(all).toEqual({ failed: [] });
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(false);
+      const saved = readFileSync(path.join(profile, 'shell-state.json'), 'utf8');
+      for (const name of ['mail.example.test', 'lan.example.test', 'signInPorts']) expect(saved).not.toContain(name);
+      // The page is still there to tell the instance, and then asks to go.
+      expect(await page.evaluate(() => localStorage.getItem('kept'))).toBe('yes');
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      await page.evaluate(() => (window as unknown as { __controls: { finishLocalWipe(options: unknown): Promise<void> } }).__controls.finishLocalWipe({ keepLocalStorage: false })).catch(() => undefined);
+      await gone;
+    } finally {
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      await app.close().catch(() => undefined);
+      removeProfile(profile);
+    }
+  });
+
+  test('a local wipe takes the lock\'s folder and the DPAPI key along, and the next start has no lock', async () => {
+    const profile = tempProfile('app-lock-wipe');
+    process.env.BULWARK_TEST_OS_VERIFY = 'yes';
+    let launched = await launchStandalone(profile);
+    try {
+      const { app, page } = launched;
+      await page.goto(new URL('/api/health', page.url()).href);
       await call(page, 'enroll', 1);
       await call(page, 'osEnroll', 1, 7);
       await call(page, 'lock');
       await expect.poll(() => gateLocked(app)).toBe(true);
-      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe());
-      const after = await app.evaluate(({ app: electronApp }) => {
-        const { existsSync } = process.getBuiltinModule('node:fs');
-        const { join } = process.getBuiltinModule('node:path');
-        const gate = (globalThis as unknown as { __bulwarkAppLock: { gate: { locked: boolean; enrolled: boolean } } }).__bulwarkAppLock.gate;
-        return { folder: existsSync(join(electronApp.getPath('userData'), 'app-lock')), locked: gate.locked, enrolled: gate.enrolled };
-      });
-      expect(after).toEqual({ folder: false, locked: false, enrolled: false });
-      // A real wipe restarts the app. Its windows are on a blank page now, with nothing to answer a quit.
-      await app.evaluate(({ app: electronApp }) => electronApp.exit(0)).catch(() => undefined);
-    });
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(true);
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe()).catch(() => undefined);
+      await gone;
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(false);
+
+      launched = await launchStandalone(profile);
+      expect(await gateLocked(launched.app)).toBe(false);
+      expect((await call<{ enrolled: boolean; osEnrolled: boolean }>(launched.page, 'status'))).toMatchObject({ enrolled: false, osEnrolled: false });
+    } finally {
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      await launched.app.close().catch(() => undefined);
+      removeProfile(profile);
+    }
   });
 
   test('a new start with a lock set up is locked before any page speaks', async () => {

@@ -490,6 +490,9 @@ test.describe('the test root', () => {
     // Nothing in a real build can move the quick compose keys, or hold none.
     expect(withHooks).toContain('--bulwark-test-quick-compose-default=');
     expect(production).not.toContain('--bulwark-test-quick-compose-default=');
+    // Nor can it move where the app registers itself.
+    expect(withHooks).toContain('--bulwark-test-registry-root=');
+    expect(production).not.toContain('--bulwark-test-registry-root=');
     // Dev switches hang on the build, not on the exe's name.
     for (const name of ['bulwark-user-data', 'bulwark-server-dir', 'bulwark-test-wrong-pin']) expect(production).not.toContain(name);
     expect(withHooks).toContain('bulwark-user-data');

@@ -34,9 +34,28 @@ export interface GuardOptions {
   forced?: () => boolean;
 }
 
+/**
+ * window.open's features string sets window options wherever the handler doesn't name them, and
+ * anything with a pop-up writes it: a cross-origin frame with allow-popups could put a fake prompt
+ * on top of every app. `fullscreen: false` alone would take away macOS's full screen button, so
+ * `fullscreenable` puts that back.
+ */
+const NOT_FROM_FEATURES: BrowserWindowConstructorOptions = {
+  alwaysOnTop: false,
+  opacity: 1,
+  frame: true,
+  kiosk: false,
+  fullscreen: false,
+  fullscreenable: true,
+  skipTaskbar: false,
+  transparent: false,
+  title: 'Bulwark',
+};
+
 /** A pop-up without the bridge: print pages and blob previews. */
 function bareWindowOptions(preferences: WebPreferences): BrowserWindowConstructorOptions {
   return {
+    ...NOT_FROM_FEATURES,
     autoHideMenuBar: true,
     webPreferences: {
       sandbox: true,
@@ -75,7 +94,7 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
         // Keeps window.opener and the handle for a page without the bridge. did-create-window
         // below registers it with the manager.
         // Its place comes from us: a page's features string can ask for any size or spot.
-        return { action: 'allow', overrideBrowserWindowOptions: { ...windows.windowOptions(type), ...windows.placeFor(type) } };
+        return { action: 'allow', overrideBrowserWindowOptions: { ...NOT_FROM_FEATURES, ...windows.windowOptions(type), ...windows.placeFor(type) } };
       }
       windows.open({ type, key, url });
       return { action: 'deny' };

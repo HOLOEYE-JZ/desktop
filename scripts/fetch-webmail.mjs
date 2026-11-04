@@ -27,6 +27,8 @@ import { addNativePlatforms } from './server-natives.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WEBMAIL_REPO = process.env.BULWARK_WEBMAIL_REPO || 'https://github.com/bulwarkmail/webmail.git';
 const TRUST_MARKER = 'bulwark.desktop.trustedJmapOrigins';
+// Older webmail reads its secrets from the environment and would make its own.
+const SECRETS_MARKER = 'bulwark.desktop.serverSecrets';
 
 function fail(message) {
   console.error(`[fetch-webmail] ${message}`);
@@ -220,6 +222,9 @@ async function fromPath(source, destination, commit) {
   if (existsSync(path.join(destination, '.next', 'node_modules'))) fail('this is a Turbopack build. Build it with: npm run build:desktop');
   if (!containsMarker(path.join(destination, '.next', 'server'), TRUST_MARKER)) {
     fail('this is not a desktop build: the trust path is missing. Build it with: npm run build:desktop');
+  }
+  if (!containsMarker(path.join(destination, '.next', 'server'), SECRETS_MARKER)) {
+    fail('this webmail is too old: it does not read its secrets from the shell.');
   }
 
   // The webmail's own check. As a desktop build, the trust path is expected.
