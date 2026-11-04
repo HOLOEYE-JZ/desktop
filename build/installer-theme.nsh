@@ -12,8 +12,9 @@
 ;   --updated      "Updating Bulwark…"    "Bulwark restarts once it's updated."
 ;   uninstaller    "Removing Bulwark…"
 ;
-; The uninstaller used to run hidden after its question. Started by a person (no /S), it now
-; shows this window while it removes the files. Updates run it with /S and see nothing.
+; The uninstaller used to ask "Are you sure…?" and then run hidden. Started by a person (no
+; /S), it now asks nothing and shows this window while it removes the files. Updates run it
+; with /S and see nothing.
 ;
 ; NSIS's own "verifying installer" box still shows when the integrity check takes over a
 ; second. Only SilentInstall can hide it, and that also hides the "integrity check failed"
@@ -444,14 +445,53 @@ FunctionEnd
   FunctionEnd
   !define MUI_CUSTOMFUNCTION_UNGUIINIT un.bulwarkThemeGuiInit
 
-  ; The same check in the uninstaller, unchanged.
+  ; Started without /S, the uninstaller's "Are you sure…?" is left out: the one-click
+  ; installer asks nothing either, and Windows' Apps page has just asked the same. The
+  ; template asks it in un.onInit only when not silent, and the first thing un.onInit runs
+  ; is ${LogSet}, so un.onInit's ${LogSet} turns silent on for a moment. Not SilentUnInstall:
+  ; with it makensis leaves out the uninstaller's window.
+  !macro bulwarkLogSet SETTING
+    !insertmacro LogSetMacro ${SETTING}
+    !ifdef __UNINSTALL__
+      !if "${__FUNCTION__}" == "onInit"
+        Push $R0
+        Push $R1
+        ${GetParameters} $R0
+        ClearErrors
+        ${GetOptions} $R0 "/S" $R1
+        ${If} ${Errors}
+          SetSilent silent
+        ${EndIf}
+        Pop $R1
+        Pop $R0
+      !endif
+    !endif
+  !macroend
+  ; After common.nsh, which defines ${LogSet}, and before uninstaller.nsh, which uses it.
+  !macro customHeader
+    !undef LogSet
+    !define LogSet "!insertmacro bulwarkLogSet"
+  !macroend
+
+  ; The same check in the uninstaller. It runs right where the question was, and started
+  ; without /S it's out of silent again, so a running Bulwark is still asked about first.
   !macro customCheckAppRunning
+    Push $R0
+    Push $R1
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "/S" $R1
+    ${If} ${Errors}
+      SetSilent normal
+    ${EndIf}
+    Pop $R1
+    Pop $R0
     !insertmacro IS_POWERSHELL_AVAILABLE
     !insertmacro _CHECK_APP_RUNNING
   !macroend
 
-  ; electron-builder's one-click uninstaller asks, then goes silent. Started by a person, it
-  ; shows the window instead. With /S (updates, scripts) it stays silent.
+  ; electron-builder's one-click uninstaller goes silent after its check. Started by a person,
+  ; it shows the window instead. With /S (updates, scripts) it stays silent.
   !macro customUnInit
     Push $R0
     Push $R1
