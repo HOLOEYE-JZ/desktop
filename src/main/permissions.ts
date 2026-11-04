@@ -1,7 +1,7 @@
 /**
  * Denies every permission except what the app uses, for its own origin's top
- * frame only. Mail frames are sandboxed and opaque, so they have no origin to
- * match. A plugin frame can be same-origin, and is turned away for being a frame.
+ * frame only. A mail frame and a plugin frame can be same-origin (ipc.ts says which),
+ * and are turned away for being frames.
  * A service worker has no frame and goes by its origin.
  */
 
