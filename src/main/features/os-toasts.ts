@@ -14,6 +14,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { app, BrowserWindow, Notification } from 'electron';
 import type { OsNotification, OsNotifyResult } from '../../shared/bridge';
+import { LinkRateLimit } from '../deep-link';
 import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
@@ -29,6 +30,12 @@ const FOCUS_ASSIST_TTL_MS = 60 * 1000;
 const FOCUS_ASSIST_TIMEOUT_MS = 3000;
 /** Windows shows five at most. A typed reply takes one of them: buildToastXml. */
 const MAX_ACTIONS = 5;
+/**
+ * A toast shows under the app's name with whatever text the page gives, so a plugin that reaches
+ * the bridge can pretend to be the app. Mail comes in batches and reminders are few: this only
+ * stops a flood of them. Callers treat it as a toast that failed, and reminders hold for later.
+ */
+const TOASTS_PER_MINUTE = 12;
 
 export function setToastActivator(): void {
   app.setToastActivatorCLSID(app.isPackaged ? TOAST_CLSID : DEV_TOAST_CLSID);
@@ -110,6 +117,7 @@ function shortId(value: string): string {
 export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
   const win32 = process.platform === 'win32';
   const seen = new Map<string, number>();
+  const toastLimit = new LinkRateLimit(TOASTS_PER_MINUTE, 60_000);
   // A Notification without a reference is collected, and its events go with it.
   const live = new Set<Notification>();
   let focusCache: { value: FocusAssist; at: number } | null = null;
@@ -233,6 +241,11 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     // a message in a pop-out must not swallow it, and neither must a window on its way out.
     const focused = BrowserWindow.getFocusedWindow();
     if (focused && focused === hub.ctx.windows.mainWindow() && focused.isVisible()) return { shown: false, reason: 'focused', playSound };
+    if (!toastLimit.allow(Date.now())) {
+      // Not shown, so the same one may come again.
+      seen.delete(request.id);
+      return { shown: false, reason: 'failed', playSound: false };
+    }
     // In Do Not Disturb Windows keeps it in the Action Center without a banner.
     if (!(await present(request))) return { shown: false, reason: 'failed', playSound };
     if (request.attention && !quiet) attention();

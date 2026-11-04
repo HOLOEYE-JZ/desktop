@@ -4,15 +4,17 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { app, clipboard, dialog, powerMonitor } from 'electron';
 import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
-import { safeFileName } from '../menu-text';
+import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { Feature } from './index';
+import { writeMarkedFile } from './os-files';
+import { safeDragFileName } from './os-rules';
 
 /** In Electron, but left out of its types as experimental. */
 function writeClipboardBuffer(format: string, data: Buffer): void {
@@ -20,6 +22,8 @@ function writeClipboardBuffer(format: string, data: Buffer): void {
 }
 
 const MAX_TEXT = 2000;
+/** More than the page ever has open. Past this, a loop of questions gets "no" and no box. */
+const MAX_WAITING_QUESTIONS = 3;
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 /** Long enough to go and paste it. An attachment shouldn't sit around in the clear. */
 const CLIPBOARD_FILE_MS = 10 * 60_000;
@@ -76,23 +80,34 @@ export const dialogsFeature: Feature = {
     powerMonitor.on('lock-screen', emptyClipboardFolder);
     ctx.on(CHANNEL.clipboardClearFiles, () => emptyClipboardFolder());
 
+    let waitingQuestions = 0;
     ctx.handle(CHANNEL.dialogsConfirm, async (_event, window, options) => {
       const { message, detail, buttons, defaultId, type } = (options ?? {}) as Partial<ConfirmOptions>;
       if (typeof message !== 'string' || !Array.isArray(buttons)) throw new Error('Not a question');
       const labels = buttons.filter((b): b is string => typeof b === 'string').slice(0, 4).map((b) => b.slice(0, 80));
       if (labels.length === 0) throw new Error('Not a question');
+      if (waitingQuestions >= MAX_WAITING_QUESTIONS) return labels.length - 1;
+      // The page writes the rest of the box, so this is what tells it from the app's own
+      // questions. macOS shows no title, so there it goes under the text.
+      const from = strings().pageQuestionFrom.replaceAll('{caller}', new URL(ctx.origin).host);
+      const text = typeof detail === 'string' ? detail.slice(0, MAX_TEXT) : undefined;
       const settings: Electron.MessageBoxOptions = {
         type: type === 'info' || type === 'warning' || type === 'question' ? type : 'question',
-        title: 'Bulwark',
+        title: from,
         message: message.slice(0, MAX_TEXT),
-        detail: typeof detail === 'string' ? detail.slice(0, MAX_TEXT) : undefined,
+        detail: process.platform === 'darwin' ? [text, from].filter(Boolean).join('\n\n') : text,
         buttons: labels,
         defaultId: typeof defaultId === 'number' && defaultId >= 0 && defaultId < labels.length ? defaultId : labels.length - 1,
         cancelId: labels.length - 1,
         noLink: true,
       };
-      const answer = window ? await dialog.showMessageBox(window, settings) : await dialog.showMessageBox(settings);
-      return answer.response;
+      waitingQuestions += 1;
+      try {
+        const answer = window ? await dialog.showMessageBox(window, settings) : await dialog.showMessageBox(settings);
+        return answer.response;
+      } finally {
+        waitingQuestions -= 1;
+      }
     });
 
     ctx.handle(CHANNEL.clipboardCopyFile, async (_event, _window, name, data) => {
@@ -102,8 +117,8 @@ export const dialogsFeature: Feature = {
       // Its own folder, so two attachments with the same name don't overwrite each other.
       const folder = path.join(clipboardFolder(), randomBytes(8).toString('hex'));
       mkdirSync(folder, { recursive: true });
-      const file = path.join(folder, safeFileName(name));
-      writeFileSync(file, bytes);
+      const file = path.join(folder, safeDragFileName(name));
+      await writeMarkedFile(file, bytes);
       setTimeout(() => rmSync(folder, { recursive: true, force: true }), CLIPBOARD_FILE_MS).unref?.();
       return putFileOnClipboard(file);
     });
