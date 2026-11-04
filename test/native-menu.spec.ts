@@ -406,6 +406,50 @@ test.describe('the app menu and windows', () => {
     expect(await topLabels()).toContain('Message');
   });
 
+  test('each part of the app searches itself, only Mail has a Message menu, and File > Import has each app\'s import', async () => {
+    // Every top-level menu, hidden or not: a hidden one can still take a letter or show in a native bar.
+    const allLabels = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()!.items.map((item) => item.label.replace('&', '')));
+    const imports = { 'file.import': true, 'file.importCalendar': true, 'file.importContacts': true };
+    const searches = { mail: 'Search mail', calendar: 'Search events', contacts: 'Search contacts', files: 'Search files', settings: 'Search mail' } as const;
+    for (const [section, label] of Object.entries(searches)) {
+      await setState({ [`section.${section}`]: true, 'edit.search': true, ...imports });
+      await expect.soft.poll(async () => (await menuItem(app, 'edit.search'))?.label, { message: section, timeout: 5_000 }).toBe(label);
+      expect.soft(await menuItem(app, 'edit.search'), section).toMatchObject({ enabled: true });
+      if (section === 'mail') expect.soft(await allLabels()).toContain('Message');
+      else expect.soft(await allLabels(), section).not.toContain('Message');
+      expect.soft(await menuItem(app, 'message.reply'), section).toEqual(section === 'mail' ? expect.anything() : null);
+    }
+
+    const importMenu = await app.evaluate(({ Menu }) => {
+      const item = Menu.getApplicationMenu()?.getMenuItemById('file.importMenu');
+      return item ? { label: item.label, lines: item.submenu?.items.map((line) => ({ id: line.id, label: line.label, enabled: line.enabled })) } : null;
+    });
+    expect.soft(importMenu).toEqual({
+      label: 'Import',
+      lines: [
+        { id: 'file.import', label: 'Mail…', enabled: true },
+        { id: 'file.importCalendar', label: 'Calendar…', enabled: true },
+        { id: 'file.importContacts', label: 'Contacts…', enabled: true },
+      ],
+    });
+    // An older page that doesn't know the calendar and contacts import leaves them grey.
+    await setState({ 'file.import': true });
+    await expect.poll(async () => (await menuItem(app, 'file.importCalendar'))?.enabled).toBe(false);
+    expect(await menuItem(app, 'file.import')).toMatchObject({ enabled: true });
+
+    await page.evaluate(() => {
+      const g = window as unknown as { __imports: string[]; bulwarkDesktop: { menu: { onCommand: (l: (id: string) => void) => void } } };
+      g.__imports = [];
+      g.bulwarkDesktop.menu.onCommand((id) => { if (id.startsWith('file.import')) g.__imports.push(id); });
+    });
+    await setState(imports);
+    await expect.poll(async () => (await menuItem(app, 'file.importContacts'))?.enabled).toBe(true);
+    await clickMenuItem(app, 'file.importCalendar');
+    await clickMenuItem(app, 'file.importContacts');
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __imports: string[] }).__imports)).toEqual(['file.importCalendar', 'file.importContacts']);
+    await setState({});
+  });
+
   test('Settings opens in the main window, as the rail\'s button does: no second window', async () => {
     test.skip(process.platform === 'darwin', 'the app menu has it on a Mac');
     // What the shell sends the main window, read on the shell's side: a listener in the page would outlive this test.
