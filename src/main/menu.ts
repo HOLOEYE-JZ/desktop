@@ -19,7 +19,7 @@
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
 import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics, barItemsOf, findBarItem, type BarSourceItem } from './menu-text';
+import { assignMnemonics, barItemsOf, findBarItem, tidySeparators, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
 import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
@@ -460,7 +460,9 @@ export class MenuController {
       id: 'window',
       label: text.menuWindow,
       submenu: [
-        { role: 'minimize', label: text.menuMinimize },
+        // Windows and Linux apps don't minimise on Ctrl+M (Outlook checks for mail there):
+        // the role brings that key along, so only a Mac gets the role.
+        mac ? { role: 'minimize', label: text.menuMinimize } : { id: 'window.minimize', label: text.menuMinimize, click: onFocused((window) => window.minimize()) },
         ...(mac ? [{ role: 'zoom' } as MenuItemConstructorOptions] : []),
         {
           id: 'window.cycle',
@@ -506,6 +508,8 @@ export class MenuController {
     };
 
     const bar = [fileMenu, editMenu, viewMenu, messageMenu, goMenu, windowMenu, helpMenu];
+    // A hidden line (Reading pane outside Mail) leaves its lines around it: one is enough.
+    for (const menu of [appMenu, ...bar]) menu.submenu = tidySeparators(menu.submenu as MenuItemConstructorOptions[]);
     assignMnemonics(bar.map((item) => item.label as string)).forEach((label, index) => {
       bar[index].label = label;
     });

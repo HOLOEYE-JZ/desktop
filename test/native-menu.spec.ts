@@ -5,7 +5,7 @@ import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { appPathOfDeepLink, deepLinkFromArgv, LinkRateLimit, parseDeepLink } from '../src/main/deep-link';
 import { AltTracker } from '../src/main/features/window-input';
-import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, toMenuTemplate, type BarSourceItem } from '../src/main/menu-text';
+import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, tidySeparators, toMenuTemplate, type BarSourceItem } from '../src/main/menu-text';
 import { LABEL_KEY } from '../src/main/label-keys';
 import { accentHex, highContrastColours } from '../src/main/chrome-colours';
 import { nextInCycle, sumAnswers } from '../src/main/window-logic';
@@ -160,6 +160,17 @@ test.describe('the pure parts', () => {
     const [day, week] = toMenuTemplate([{ id: 'd', label: 'Day', accelerator: 'D' }, { id: 'w', label: 'Week', accelerator: 'not a key' }], () => {});
     if (process.platform !== 'darwin') expect(day).toMatchObject({ label: 'Day', accelerator: 'D', registerAccelerator: false });
     expect(week.accelerator).toBeUndefined();
+  });
+
+  test('no two lines in a row where a hidden line stood between them, and none at an end', () => {
+    const sep = { type: 'separator' };
+    const shown = (label: string): { label: string; type?: string; visible?: boolean } => ({ label });
+    const hidden = (label: string) => ({ label, visible: false });
+    const labels = (items: { type?: string; label?: string }[]) => items.map((item) => item.type === 'separator' ? '-' : item.label);
+    expect(labels(tidySeparators([shown('Refresh'), hidden('F5'), sep, hidden('Reading pane'), sep, shown('Zoom in')]))).toEqual(['Refresh', 'F5', '-', 'Reading pane', 'Zoom in']);
+    expect(labels(tidySeparators([sep, shown('A'), sep, sep, shown('B'), sep, hidden('C')]))).toEqual(['A', '-', 'B', 'C']);
+    const [withSub] = tidySeparators([{ label: 'Sub', submenu: [sep, shown('x'), sep] }]);
+    expect(labels(withSub.submenu as { label?: string }[])).toEqual(['x']);
   });
 
   test('a second launch finds its link among the arguments', () => {
@@ -404,6 +415,31 @@ test.describe('the app menu and windows', () => {
     await setState({});
     await expect.poll(async () => menuItem(app, 'compose.send')).toBeNull();
     expect(await topLabels()).toContain('Message');
+  });
+
+  test('outside Mail the View menu has no two lines in a row where Reading pane is hidden', async () => {
+    const viewLines = () => app.evaluate(({ Menu }) => {
+      const view = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'View')!;
+      return view.submenu!.items.filter((item) => item.visible).map((item) => item.type);
+    });
+    await setState({ 'section.settings': true });
+    try {
+      await expect.poll(() => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('view.readingPane')?.visible ?? false)).toBe(false);
+      expect((await viewLines()).join(',')).not.toContain('separator,separator');
+      expect((await viewLines())[0]).not.toBe('separator');
+    } finally {
+      await setState({});
+    }
+  });
+
+  test('Window > Minimise has no Ctrl+M off a Mac: Windows apps don\'t minimise on it', async () => {
+    test.skip(process.platform === 'darwin', 'a Mac minimises on Cmd+M');
+    const minimise = await app.evaluate(({ Menu }) => {
+      const windowMenu = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'Window')!;
+      const item = windowMenu.submenu!.items[0];
+      return { label: item.label, role: item.role ?? null, accelerator: item.accelerator ?? null, roleKey: (item as unknown as { getDefaultRoleAccelerator?: () => string | null }).getDefaultRoleAccelerator?.() ?? null };
+    });
+    expect(minimise).toMatchObject({ label: 'Minimize', role: null, accelerator: null, roleKey: null });
   });
 
   test('Settings opens in the main window, as the rail\'s button does: no second window', async () => {

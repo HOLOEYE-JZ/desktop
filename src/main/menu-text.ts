@@ -135,6 +135,36 @@ export function findBarItem<T extends BarSourceItem>(menus: readonly T[], key: s
   return labelParts(found.label ?? '').text === label ? found : null;
 }
 
+/**
+ * No line at the start or end of a menu, and none right after another, counting only what
+ * shows: a hidden item between two lines would leave them side by side. Hidden items stay,
+ * since some still answer their keys. Submenus too.
+ */
+export function tidySeparators<T extends { type?: string; visible?: boolean; submenu?: unknown }>(items: readonly T[]): T[] {
+  const out: T[] = [];
+  let lastShown: 'none' | 'item' | 'separator' = 'none';
+  for (const item of items) {
+    const submenu = Array.isArray(item.submenu) ? { ...item, submenu: tidySeparators(item.submenu as T[]) } : item;
+    if (item.type === 'separator') {
+      if (lastShown !== 'item') continue;
+      lastShown = 'separator';
+      out.push(submenu);
+      continue;
+    }
+    out.push(submenu);
+    if (item.visible !== false) lastShown = 'item';
+  }
+  // A line with nothing shown after it.
+  for (let at = out.length - 1; at >= 0; at--) {
+    if (out[at].type === 'separator') {
+      out.splice(at, 1);
+      continue;
+    }
+    if (out[at].visible !== false) break;
+  }
+  return out;
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');
