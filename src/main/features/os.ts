@@ -24,6 +24,7 @@ import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
 import { pageSetPause, settingsAllowedWithoutClick } from './os-rules';
+import { taskIconsDir } from './os-tasks';
 import { setupTray } from './os-tray';
 
 // Bundled into dist/main.mjs, so this is dist/.
@@ -91,9 +92,11 @@ function setup(ctx: FeatureContext): void {
     }
   });
 
-  const taskbar = setupTaskbar(hub, ICONS);
+  // The .ico files Windows reads itself: outside the asar in a package.
+  const taskIcons = taskIconsDir(app.isPackaged, process.resourcesPath, ICONS);
+  const taskbar = setupTaskbar(hub, ICONS, taskIcons);
   const toasts = setupToasts(hub, taskbar.attention);
-  const tray = setupTray(hub, ICONS);
+  const tray = setupTray(hub, ICONS, taskIcons);
   setupResilience(hub, toasts.showNotice);
   // With no tray to come back from, closing to it would be hiding into nothing. The Dock stays.
   windows.setCloseToBackground(() => hub.settings().closeToTray && (!!tray || process.platform === 'darwin'));

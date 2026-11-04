@@ -3,7 +3,9 @@ import { createRequire } from 'node:module';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { _electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
+import { APP_USER_MODEL_ID, TEST_APP_USER_MODEL_ID } from '../src/main/features/os-rules';
 import { launch, launchStandalone, removeOsTraces, removeProfile, shownPage, tempProfile, waitForLogin, type Launched } from './helpers';
+import { jumpListText } from './jump-list';
 
 /**
  * The real app, on its login page: the bridge and the OS calls don't need a sign-in or
@@ -74,6 +76,11 @@ const os = (page: Page, call: string) => page.evaluate(`window.bulwarkDesktop.os
  */
 async function takeOverFromPage(app: ElectronApplication): Promise<void> {
   await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked)).toBe(false);
+  await dropEmptySummaries(app);
+}
+
+/** The second half of the above, for a test that says it's open itself, whatever the page does. */
+async function dropEmptySummaries(app: ElectronApplication): Promise<void> {
   await app.evaluate(() => {
     const hub = (globalThis as unknown as { __bulwarkOs: { hub: { setSummary: (s: { unread: unknown[]; recent: unknown[]; nextEvent: unknown }) => void } } }).__bulwarkOs.hub;
     const real = hub.setSummary.bind(hub);
@@ -100,6 +107,14 @@ const clickTray = (app: ElectronApplication, label: string, sub?: string) =>
     const target = wantedSub ? item?.submenu?.find((i) => i.label === wantedSub) : item;
     target?.click?.();
   }, [label, sub] as const);
+
+/** Stands in for the Windows mode (taskbar) and the app mode, then says they changed. */
+const setTheme = (app: ElectronApplication, theme: { taskbarDark: boolean; appsDark: boolean }) =>
+  app.evaluate(({ nativeTheme }, { taskbarDark, appsDark }) => {
+    Object.defineProperty(nativeTheme, 'shouldUseDarkColorsForSystemIntegratedUI', { configurable: true, get: () => taskbarDark });
+    Object.defineProperty(nativeTheme, 'shouldUseDarkColors', { configurable: true, get: () => appsDark });
+    nativeTheme.emit('updated');
+  }, theme);
 
 const mainVisible = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => w.isVisible()));
 
@@ -645,7 +660,7 @@ test.describe('OS integration', () => {
     expect(result).toMatchObject({ shown: true });
 
     const script = path.join(ROOT, 'test', 'support', 'toast-readback.ps1');
-    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', tag], { encoding: 'utf8', windowsHide: true });
+    const readback = (tag = 'os-spec-real-toast') => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', tag], { encoding: 'utf8', windowsHide: true });
     let xml = '';
     await expect.poll(() => {
       xml = readback();
@@ -685,11 +700,11 @@ test.describe('OS integration', () => {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
     const activate = path.join(ROOT, 'test', 'support', 'toast-activate.ps1');
     const args = `bulwark:reply:${encodeURIComponent(context)}`;
-    expect(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', 'org.bulwarkmail.desktop', '-Arguments', args, '-Reply', 'On my way'], { encoding: 'utf8', windowsHide: true })).toContain('activated');
+    expect(execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', activate, '-Clsid', DEV_CLSID, '-Aumid', TEST_APP_USER_MODEL_ID, '-Arguments', args, '-Reply', 'On my way'], { encoding: 'utf8', windowsHide: true })).toContain('activated');
     await expect.poll(async () => (await commands(page)).at(-1)).toEqual({ type: 'notification', action: 'reply', context, reply: 'On my way' });
     await expect.poll(() => mainVisible(app)).toBe(true);
 
-    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', 'org.bulwarkmail.desktop', '-Tag', 'os-spec-real-toast', '-Clear'], { encoding: 'utf8', windowsHide: true });
+    execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Aumid', TEST_APP_USER_MODEL_ID, '-Tag', 'os-spec-real-toast', '-Clear'], { encoding: 'utf8', windowsHide: true });
   });
 
   test('badge, progress and thumbnail toolbar on the real window, jump list read back', async () => {
@@ -739,6 +754,101 @@ test.describe('OS integration', () => {
     await page.waitForTimeout(2500);
     expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
 
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("a test run's jump list goes under its own ID, never the installed app's", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    const marker = `Jump list run ${Date.now()}`;
+    await os(page, `setSummary({ unread: [], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: '${marker}' }], nextEvent: null })`);
+    await page.waitForTimeout(2500);
+    expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { taskbar: { jumpListResult: () => string } } }).__bulwarkOs.taskbar.jumpListResult())).toBe('ok');
+    expect(jumpListText(APP_USER_MODEL_ID)).not.toContain(marker);
+    await expect.poll(() => jumpListText(TEST_APP_USER_MODEL_ID)).toContain(marker);
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("the jump list: each task its own icon, as a file Windows can read, in the taskbar's light or dark and the app's language", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    const icons = path.join(ROOT, 'dist', 'os-icons');
+    const list = () => jumpListText(TEST_APP_USER_MODEL_ID);
+
+    // A dark taskbar: white glyphs.
+    await setTheme(app, { taskbarDark: true, appsDark: false });
+    await os(page, `setSummary({ unread: [], recent: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Icons, dark' }], nextEvent: null })`);
+    await expect.poll(list, { timeout: 15_000 }).toContain('Icons, dark');
+    for (const name of ['compose', 'inbox', 'calendar', 'contacts', 'message']) {
+      expect(list()).toContain(`task-${name}-light.ico`);
+      expect(existsSync(path.join(icons, `task-${name}-light.ico`))).toBe(true);
+    }
+    expect(list()).not.toContain('-dark.ico');
+    expect(list()).toContain('New message');
+
+    // Switched to a light one: set again, near-black glyphs.
+    await setTheme(app, { taskbarDark: false, appsDark: true });
+    await expect.poll(list).toContain('task-compose-dark.ico');
+    for (const name of ['compose', 'inbox', 'calendar', 'contacts', 'message']) expect(list()).toContain(`task-${name}-dark.ico`);
+    expect(list()).not.toContain('-light.ico');
+
+    // The page says it shows German.
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { shell: { setLanguages: (l: object) => void } } }).bulwarkDesktop.shell.setLanguages({ ui: 'de' }));
+    await expect.poll(list).toContain('Neue Nachricht');
+    for (const title of ['Posteingang', 'Kalender', 'Kontakte']) expect(list()).toContain(title);
+    expect(list()).toContain('task-compose-dark.ico');
+
+    await app.evaluate(({ app: a }) => a.setJumpList(null));
+  });
+
+  test("the thumbnail toolbar and the tray menu: the webmail's glyphs, in the light or dark they sit on", async () => {
+    test.skip(!win);
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await dropEmptySummaries(app);
+    await os(page, 'setLocked(false)');
+    await os(page, `setSummary({ unread: [], recent: [], nextEvent: { title: 'Standup', when: '09:30' } })`);
+    await expect.poll(async () => (await trayItems(app)).map((i) => i.label)).toContain('Next: Standup, 09:30');
+    await app.evaluate(({ BrowserWindow }) => {
+      const g = globalThis as unknown as { __thumbs: string[][] };
+      g.__thumbs = [];
+      const window = BrowserWindow.getAllWindows()[0];
+      const real = window.setThumbarButtons.bind(window);
+      window.setThumbarButtons = (buttons) => {
+        g.__thumbs.push(buttons.map((button) => button.icon.toDataURL()));
+        return real(buttons);
+      };
+    });
+    const icons = path.join(ROOT, 'dist', 'os-icons');
+    const ico = (name: string, variant: string) => app.evaluate(({ nativeImage }, file) => nativeImage.createFromPath(file).toDataURL(), path.join(icons, `task-${name}-${variant}.ico`));
+    const trayIcon = (label: string) => app.evaluate((_e, wanted) => {
+      const items = (globalThis as unknown as { __bulwarkOs: { tray: { template: () => { label?: string; icon?: Electron.NativeImage }[] } } }).__bulwarkOs.tray.template();
+      return items.find((item) => item.label === wanted)?.icon?.toDataURL() ?? null;
+    }, label);
+    const thumbs = () => app.evaluate(() => (globalThis as unknown as { __thumbs: string[][] }).__thumbs);
+    expect(await ico('compose', 'light')).not.toBe(await ico('compose', 'dark'));
+    expect((await ico('compose', 'light')).length).toBeGreaterThan(100);
+
+    // The thumbnails follow the taskbar, the tray's menu the apps' light or dark.
+    await setTheme(app, { taskbarDark: true, appsDark: false });
+    await app.evaluate(({ BrowserWindow }) => (globalThis as unknown as { __bulwarkOs: { taskbar: { applyThumbar: (w: unknown) => boolean } } }).__bulwarkOs.taskbar.applyThumbar(BrowserWindow.getAllWindows()[0]));
+    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'light'), await ico('inbox', 'light')]);
+    expect(await trayIcon('New message')).toBe(await ico('compose', 'dark'));
+    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'dark'));
+
+    // Both switch: set again without being asked.
+    const before = (await thumbs()).length;
+    await setTheme(app, { taskbarDark: false, appsDark: true });
+    await expect.poll(async () => (await thumbs()).length).toBe(before + 1);
+    expect((await thumbs()).at(-1)).toEqual([await ico('compose', 'dark'), await ico('inbox', 'dark')]);
+    expect(await trayIcon('New message')).toBe(await ico('compose', 'light'));
+    expect(await trayIcon('Next: Standup, 09:30')).toBe(await ico('calendar', 'light'));
     await app.evaluate(({ app: a }) => a.setJumpList(null));
   });
 

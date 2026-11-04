@@ -532,6 +532,19 @@ export function buildToastXml(toast: ToastContent, secret: string, inlineReply: 
 }
 
 export const WINDOWS_APP_NAME = 'Bulwark';
+/** The installed app's, on its Start menu shortcut (electron-builder.yml appId). */
+export const APP_USER_MODEL_ID = 'org.bulwarkmail.desktop';
+/**
+ * A test build's. Windows keeps one jump list, taskbar group and notification list per ID:
+ * with the installed app's, a test run's jump list, pointing at its own electron.exe, would
+ * replace the user's.
+ */
+export const TEST_APP_USER_MODEL_ID = 'org.bulwarkmail.desktop.test';
+
+export function appUserModelId(testBuild: boolean): string {
+  return testBuild ? TEST_APP_USER_MODEL_ID : APP_USER_MODEL_ID;
+}
+
 export const WINDOWS_CAPABILITIES = 'Software\\Bulwark\\Capabilities';
 
 export interface RegistryValue {

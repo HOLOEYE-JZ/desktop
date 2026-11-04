@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { asarFiles, findProblems, findResourceProblems, guardExtraFiles, scrubPaths } from '../scripts/package-guard.mjs';
+import { asarFiles, findPackagedTaskIconProblems, findProblems, findResourceProblems, guardExtraFiles, scrubPaths } from '../scripts/package-guard.mjs';
 import { sharpTargets, trimServer } from '../scripts/server-natives.mjs';
 
 /**
@@ -37,6 +37,8 @@ function makeProject(probe: string | null): Project {
   for (const file of ['electron-builder.yml']) copyFileSync(path.join(ROOT, file), path.join(dir, file));
   cpSync(path.join(ROOT, 'scripts'), path.join(dir, 'scripts'), { recursive: true });
   cpSync(path.join(ROOT, 'build'), path.join(dir, 'build'), { recursive: true });
+  // The jump list's icons, which a Windows package takes from here.
+  cpSync(path.join(ROOT, 'assets', 'os'), path.join(dir, 'assets', 'os'), { recursive: true });
 
   const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
   pkg.main = 'dist/main.cjs';
@@ -129,6 +131,19 @@ test.describe('the package guard in the real flow', () => {
     }
   });
 
+  test("a Windows package without the jump list's icons does not ship", () => {
+    test.skip(process.platform !== 'win32', 'only Windows reads them from a file');
+    const project = makeProject(findProbeModule());
+    try {
+      rmSync(path.join(project.dir, 'assets', 'os', 'task-compose-light.ico'));
+      const { status, output } = pack(project);
+      expect(status).not.toBe(0);
+      expect(output).toContain('resources/os-icons/task-compose-light.ico (missing)');
+    } finally {
+      project.remove();
+    }
+  });
+
   test('a clean tree packs: the control, or the two below would prove nothing', async () => {
     const probe = process.platform === 'win32' ? findProbeModule() : null;
     const project = makeProject(probe);
@@ -146,6 +161,9 @@ test.describe('the package guard in the real flow', () => {
       const resources = path.join(unpacked, 'resources');
       expect(findResourceProblems(resources)).toEqual([]);
       expect(asarFiles(path.join(resources, 'app.asar'))).toContain('dist/main.cjs');
+      // The jump list's icons, as real files where the app looks for them.
+      expect(findPackagedTaskIconProblems(resources, 'win32')).toEqual([]);
+      expect(readdirSync(path.join(resources, 'os-icons')).length).toBe(10);
 
       expect(asarFiles(path.join(resources, 'server.asar'))).toContain('server.js');
       expect(existsSync(path.join(resources, 'server.asar.unpacked', 'public', 'a.txt'))).toBe(true);
