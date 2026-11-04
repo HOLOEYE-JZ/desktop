@@ -175,9 +175,9 @@ test.describe('the pure parts', () => {
 
   test('Window menu names: as the page gives them, cut with an ellipsis, numbered when two read alike, only kinds while locked', () => {
     const kinds = { main: 'Bulwark', message: 'Message', composer: 'New message', settings: 'Settings' };
-    const subject = 'Invoice 2026-118 (3) - dso-ux-desktop@example.org - Bulwark';
+    const subject = 'Invoice 2026-118 (3) - alice@example.org - Bulwark';
     const list = [
-      { type: 'main', title: subject, menuName: 'Inbox - dso-ux-desktop@example.org' },
+      { type: 'main', title: subject, menuName: 'Inbox - alice@example.org' },
       { type: 'message', title: subject, menuName: 'Invoice 2026-118 (3)' },
       { type: 'message', title: 'x', menuName: 'Invoice 2026-118 (3)' },
       { type: 'composer', title: 'New message - a@example.org - Bulwark', menuName: 'New message' },
@@ -186,7 +186,7 @@ test.describe('the pure parts', () => {
       { type: 'message', title: '', menuName: 'A subject that goes on and on and on, far longer than any menu should be' },
     ];
     const names = windowMenuNames(list, kinds);
-    expect(names.slice(0, 6)).toEqual(['Inbox - dso-ux-desktop@example.org', 'Invoice 2026-118 (3)', 'Invoice 2026-118 (3) (2)', 'New message', 'New message (2)', 'An older page']);
+    expect(names.slice(0, 6)).toEqual(['Inbox - alice@example.org', 'Invoice 2026-118 (3)', 'Invoice 2026-118 (3) (2)', 'New message', 'New message (2)', 'An older page']);
     expect(Array.from(names[6]).length).toBeLessThanOrEqual(50);
     expect(names[6].endsWith('…')).toBe(true);
     expect(new Set(names).size).toBe(names.length);
