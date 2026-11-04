@@ -195,6 +195,66 @@ test.describe('OS integration', () => {
     expect(JSON.stringify(await trayItems(app))).not.toContain('Lunch');
   });
 
+  test('the app lock: main decides, the tray locks, and no page lifts it, not after a restart either', async () => {
+    const own = tempProfile('os-app-lock');
+    const proof = (seed: number) => `new Uint8Array(32).fill(${seed})`;
+    const gateCall = (app: ElectronApplication, call: string) =>
+      app.evaluate((_electron, source) => {
+        const gate = (globalThis as unknown as { __bulwarkOs: { gate: unknown } }).__bulwarkOs.gate;
+        return new Function('gate', `return gate.${source}`)(gate) as boolean;
+      }, call);
+    const hubLocked = (app: ElectronApplication) =>
+      app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { locked: boolean } } }).__bulwarkOs.hub.locked);
+    let launched = await launchStandalone(own);
+    try {
+      expect((await trayItems(launched.app)).map((i) => i.label)).not.toContain('Lock now');
+      await gateCall(launched.app, `enroll(${proof(1)})`);
+      await os(launched.page, 'setLocked(false)');
+      await os(launched.page, `setSummary({ unread: [{ emailId: 'e1', accountId: 'a1', sender: 'Alice', subject: 'Lunch?' }], recent: [], nextEvent: null })`);
+      await expect.poll(async () => JSON.stringify(await trayItems(launched.app))).toContain('Lunch');
+      await expect.poll(async () => (await trayItems(launched.app)).map((i) => i.label)).toContain('Lock now');
+
+      await launched.app.evaluate(() => {
+        const { tray } = (globalThis as unknown as { __bulwarkOs: { tray: { template(): Array<{ label?: string; click?: () => void }> } } }).__bulwarkOs;
+        tray.template().find((item) => item.label === 'Lock now')?.click?.();
+      });
+      expect(await gateCall(launched.app, 'locked')).toBe(true);
+      await expect.poll(async () => JSON.stringify(await trayItems(launched.app))).not.toContain('Lunch');
+      expect(await hubLocked(launched.app)).toBe(true);
+
+      await os(launched.page, 'setLocked(false)');
+      await launched.page.waitForTimeout(300);
+      expect(await hubLocked(launched.app), 'a page\'s word').toBe(true);
+
+      await launched.app.close();
+      launched = await launchStandalone(own);
+      expect(await hubLocked(launched.app), 'a new start').toBe(true);
+      await os(launched.page, 'setLocked(false)');
+      await launched.page.waitForTimeout(300);
+      expect(await hubLocked(launched.app), 'a page\'s word after a new start').toBe(true);
+
+      expect(await gateCall(launched.app, `prove(${proof(1)})`)).toBe(true);
+      expect(await hubLocked(launched.app)).toBe(false);
+    } finally {
+      await launched.app.close().catch(() => undefined);
+      removeProfile(own);
+    }
+  });
+
+  test('what already waits for the page and names a message goes when it locks', async () => {
+    running = await launchStandalone(profile);
+    const left = await running.app.evaluate(() => {
+      const { hub } = (globalThis as unknown as { __bulwarkOs: { hub: { pending: Array<{ type: string }>; setLockedByMain(locked: boolean): void } } }).__bulwarkOs;
+      hub.pending.push({ type: 'notification' }, { type: 'open-message' }, { type: 'new-message' });
+      hub.setLockedByMain(true);
+      const kept = hub.pending.map((command) => command.type);
+      hub.pending.length = 0;
+      hub.setLockedByMain(false);
+      return kept;
+    });
+    expect(left).toEqual(['new-message']);
+  });
+
   test('tray and jump list items reach the page as commands, in order, shown or not', async () => {
     running = await launchStandalone(profile);
     const { app, page } = running;

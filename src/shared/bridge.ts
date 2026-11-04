@@ -80,6 +80,21 @@ export interface PolicyBridge {
 
 export type MenuState = Record<string, boolean | { enabled?: boolean; checked?: boolean }>;
 
+export type OsUnlockKind = 'hello' | 'touchid';
+
+export interface AppLockStatus {
+  locked: boolean;
+  enrolled: boolean;
+  os: OsUnlockKind | null;
+  osEnrolled: boolean;
+  /** The OS has a real key store, so `wrap` and `unwrap` work. */
+  wrap: boolean;
+}
+
+export type OsUnlockAnswer =
+  | { ok: true; key: Uint8Array }
+  | { ok: false; reason: 'unavailable' | 'denied' | 'failed' | 'not-locked' };
+
 /** A native menu built by the page: an HTML menu read back, so the two can't drift. */
 export interface NativeMenuItem {
   /** Handed back when this item is chosen. Left out of separators and submenus. */
@@ -477,6 +492,18 @@ export const CHANNEL = {
   editClaim: 'bulwark:edit.claim',
   editChanged: 'bulwark:edit.changed',
   welcomeChoose: 'bulwark:welcome.choose',
+  appLockStatus: 'bulwark:appLock.status',
+  appLockLock: 'bulwark:appLock.lock',
+  appLockEnroll: 'bulwark:appLock.enroll',
+  appLockProve: 'bulwark:appLock.prove',
+  appLockDisable: 'bulwark:appLock.disable',
+  appLockForget: 'bulwark:appLock.forget',
+  appLockOsEnroll: 'bulwark:appLock.osEnroll',
+  appLockOsRemove: 'bulwark:appLock.osRemove',
+  appLockOsUnlock: 'bulwark:appLock.osUnlock',
+  appLockWrap: 'bulwark:appLock.wrap',
+  appLockUnwrap: 'bulwark:appLock.unwrap',
+  appLockRequest: 'bulwark:appLock.request',
   updatesState: 'bulwark:updates.state',
   updatesCheck: 'bulwark:updates.check',
   updatesSetChannel: 'bulwark:updates.setChannel',

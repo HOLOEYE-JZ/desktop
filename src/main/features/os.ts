@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, autoUpdater, BrowserWindow, powerMonitor } from 'electron';
 import { CHANNEL, type OsSummary, type OsTrayMessage } from '../../shared/bridge';
+import { appLockGate } from '../app-lock-gate';
 import { strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 import { setupDefaultApp } from './os-default-app';
@@ -121,6 +122,12 @@ function setup(ctx: FeatureContext): void {
   });
   ctx.on(CHANNEL.osSetSummary, (_event, _window, summary) => hub.setSummary(cleanSummary(summary)));
   ctx.on(CHANNEL.osSetProgress, (_event, _window, progress, mode) => taskbar.setProgress(progress, mode));
+  // The app lock's verdict is main's own (app-lock-gate.ts). Set up, it stands over anything a
+  // page says from the first moment of a start. With no lock, the page's word decides.
+  appLockGate.initForProfile(app.getPath('userData'), ctx.origin);
+  if (appLockGate.locked) hub.setLockedByMain(true);
+  appLockGate.on('locked', (locked) => hub.setLockedByMain(locked));
+
   ctx.on(CHANNEL.osSetLocked, (event, _window, locked) => hub.setLockedByPage(locked !== false, event.sender));
   ctx.on(CHANNEL.osClearSurfaces, () => hub.clearSurfaces());
   ctx.handle(CHANNEL.osNotify, (_event, _window, notification) => toasts.notify(notification));
@@ -133,6 +140,7 @@ function setup(ctx: FeatureContext): void {
   if (!app.isPackaged) {
     (globalThis as unknown as { __bulwarkOs: unknown }).__bulwarkOs = {
       hub,
+      gate: appLockGate,
       tray,
       taskbar,
       toasts,

@@ -41,6 +41,11 @@ export class SecretStore {
     }
   }
 
+  /** Whether one is stored, with nothing decrypted: on macOS reading can ask the user. */
+  has(name: string): boolean {
+    return existsSync(this.file(name));
+  }
+
   /** Null when there's none yet. Throws when there is one and it can't be read. */
   async get(name: string): Promise<string | null> {
     if (!existsSync(this.file(name))) return null;
