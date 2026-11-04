@@ -386,7 +386,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
         launchSecret,
         mainSecret,
         tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
-        secretEnv: { SESSION_SECRET: sessionSecret, ADMIN_PASSWORD: adminPassword },
+        secrets: { sessionSecret, adminPassword },
         trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
         policy: policies.serverPolicy(),
         privacy: privacy.serverView('standalone'),

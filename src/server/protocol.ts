@@ -43,8 +43,8 @@ export interface InitMessage {
   launchSecret: string;
   mainSecret: string;
   tls: { key: string; cert: string };
-  /** Set on process.env in the utilityProcess before Next loads. */
-  secretEnv: Record<string, string>;
+  /** On globalThis in the utilityProcess before Next loads. Never in its environment. */
+  secrets: { sessionSecret: string; adminPassword: string };
   trustedOrigins: string[];
   privacy: PrivacyMessage['privacy'];
   /** What OS policies say the server has to enforce. */

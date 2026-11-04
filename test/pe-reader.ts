@@ -7,6 +7,8 @@ export interface PeFacts {
   imports: string[];
   /** IMAGE_LOAD_CONFIG_DIRECTORY64.DependentLoadFlags. */
   dependentLoadFlags: number | null;
+  /** IMAGE_DLLCHARACTERISTICS_GUARD_CF: built with Control Flow Guard. */
+  controlFlowGuard: boolean;
 }
 
 export function readPe(file: string): PeFacts {
@@ -49,5 +51,5 @@ export function readPe(file: string): PeFacts {
     const at = offset(config.rva);
     dependentLoadFlags = data.readUInt32LE(at) >= 80 ? data.readUInt16LE(at + 78) : null;
   }
-  return { imports: [...new Set(imports)].sort(), dependentLoadFlags };
+  return { imports: [...new Set(imports)].sort(), dependentLoadFlags, controlFlowGuard: (data.readUInt16LE(optional + 70) & 0x4000) !== 0 };
 }

@@ -24,30 +24,38 @@ function setHeader(req: IncomingMessage, name: string, value: string): void {
 }
 
 /**
- * Next's image optimizer caches under .next/cache, in the install folder, which a
- * per-machine install can't write to. Nothing in the webmail uses it (no next/image).
+ * The route a request's target ends up on, lowercased. Next resolves dot segments and takes
+ * absolute targets, so comparing the text as it came in misses `/api/admin/./auth`.
  */
-export function isImageOptimizer(url: string | undefined): boolean {
-  if (!url) return false;
-  let pathname = url.split(/[?#]/)[0];
+function routedPath(url: string): string {
+  let pathname = url.split(/[?#]/)[0].replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, '');
   try {
     pathname = decodeURIComponent(pathname);
   } catch {
     // Not decodable, compared as it is.
   }
-  return pathname.replace(/\/{2,}/g, '/').replace(/\/$/, '').toLowerCase() === '/_next/image';
+  // Slashes first: `//api/x` would read as a host called api.
+  pathname = pathname.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+  try {
+    pathname = new URL(pathname, 'https://app.invalid').pathname;
+  } catch {
+    // Not a path a URL can hold, compared as it is.
+  }
+  return pathname.toLowerCase().replace(/\/$/, '');
+}
+
+/**
+ * Next's image optimizer caches under .next/cache, in the install folder, which a
+ * per-machine install can't write to. Nothing in the webmail uses it (no next/image).
+ */
+export function isImageOptimizer(url: string | undefined): boolean {
+  return !!url && routedPath(url) === '/_next/image';
 }
 
 /** POST /api/admin/auth, however it's spelled. Reading its status stays open. */
 export function isAdminLogin(method: string | undefined, url: string | undefined): boolean {
   if (!url || method === 'GET' || method === 'HEAD') return false;
-  let pathname = url.split(/[?#]/)[0];
-  try {
-    pathname = decodeURIComponent(pathname);
-  } catch {
-    // Not decodable, compared as it is.
-  }
-  return pathname.toLowerCase().replace(/\/+/g, '/').replace(/\/$/, '') === '/api/admin/auth';
+  return routedPath(url) === '/api/admin/auth';
 }
 
 export function sanitizeRequest(req: IncomingMessage): void {

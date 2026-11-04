@@ -54,6 +54,19 @@ test.describe('what the binary needs from Windows', () => {
   test('what it loads comes from System32 only, not from a folder beside the app', () => {
     expect(readPe(FILE).dependentLoadFlags).toBe(0x800);
   });
+
+  test('built with Control Flow Guard', () => {
+    expect(readPe(FILE).controlFlowGuard).toBe(true);
+  });
+});
+
+test.describe('the policy watcher', () => {
+  const watcher = path.join(ROOT, '.native-modules', `win32-${process.arch}`, 'vscode-policy-watcher.node');
+  test.skip(process.platform !== 'win32' || !existsSync(watcher), 'needs scripts/build-policy-watcher.mjs on Windows');
+
+  test('built with Control Flow Guard', () => {
+    expect(readPe(watcher).controlFlowGuard).toBe(true);
+  });
 });
 
 test.describe('Hello, without a prompt', () => {
