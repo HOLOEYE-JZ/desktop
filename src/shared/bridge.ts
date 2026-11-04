@@ -482,6 +482,30 @@ export interface DevToolsState {
   locked: boolean;
 }
 
+/** One of the user's recently used files, as the Attach menu shows it. Nothing more of it reaches the page. */
+export interface RecentFile {
+  /** Opaque. `attach` takes it, from the window that listed it, until that window lists again. */
+  id: string;
+  name: string;
+  /** The folder it's in, for display. */
+  folder: string;
+  /** The whole path, for a tooltip. */
+  path: string;
+  /** When it was last used, in milliseconds since 1970. */
+  usedAt: number;
+  /** A small icon as a data: URL, when the OS gave one in time. */
+  icon?: string;
+}
+
+/** `gesture`: no click or key press just now. `policy`: RecentFilesInAttach is off. */
+export type RecentFilesResult =
+  | { ok: true; files: RecentFile[] }
+  | { ok: false; reason: 'policy' | 'locked' | 'gesture' };
+
+export type RecentFileAttachResult =
+  | { ok: true; file: OsFile }
+  | { ok: false; reason: 'policy' | 'locked' | 'gesture' | 'unknown' | 'missing' | 'too-large' | 'failed' };
+
 /** An attachment copied to a private folder and open in its default program. */
 export interface EditSession {
   id: string;
@@ -678,6 +702,8 @@ export const CHANNEL = {
   devToolsGet: 'bulwark:devTools.get',
   devToolsSet: 'bulwark:devTools.set',
   devToolsChanged: 'bulwark:devTools.changed',
+  recentFilesList: 'bulwark:recentFiles.list',
+  recentFilesAttach: 'bulwark:recentFiles.attach',
 } as const;
 
 /** What main passes to the preload through additionalArguments. */

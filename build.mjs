@@ -42,6 +42,7 @@ await build({ ...common, entryPoints: ['src/preload/index.ts'], outfile: 'dist/p
 await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist/welcome-preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
 await build({ ...common, entryPoints: ['src/main/import-worker.ts'], outfile: 'dist/import-worker.cjs', format: 'cjs', external: ['electron'] });
+await build({ ...common, entryPoints: ['src/main/recent-files-worker.ts'], outfile: 'dist/recent-files-worker.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/main/crash-scrub-host.ts'], outfile: 'dist/crash-scrub-host.cjs', format: 'cjs', external: ['electron'] });
 
 // Main loads this as a data: page, so the script goes inside it, allowed by its hash.

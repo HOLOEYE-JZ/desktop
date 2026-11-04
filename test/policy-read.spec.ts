@@ -816,6 +816,7 @@ test.describe('what a page gets', () => {
     AppLockRequired: 1,
     AppLockTimeoutMinutes: 7,
     CrashReportsAllowed: 0,
+    RecentFilesInAttach: 0,
   }, { InstanceUrl: 'https://mail.corp.example.com' });
 
   test('no internal hosts, no wipe code, no recommended server and no raw value', () => {
@@ -837,6 +838,8 @@ test.describe('what a page gets', () => {
     expect(page.AppLockRequired).toMatchObject({ value: true, locked: true });
     expect(page.AppLockTimeoutMinutes).toMatchObject({ value: 7, locked: true });
     expect(page.CrashReportsAllowed).toMatchObject({ value: false, locked: true });
+    // The Attach menu hides its recent files by it.
+    expect(page.RecentFilesInAttach).toMatchObject({ value: false, locked: true });
   });
 });
 

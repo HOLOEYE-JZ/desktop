@@ -20,6 +20,7 @@ import { addWipeStep } from './local-wipe';
 import { applyLoginItem, readLoginItem, setupLogin } from './os-login';
 import { setupPower } from './os-power';
 import { setupQuickCompose } from './os-quick-compose';
+import { setupRecentFiles } from './os-recent';
 import { setupResilience } from './os-resilience';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
@@ -104,6 +105,7 @@ function setup(ctx: FeatureContext): void {
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));
   const edit = setupEdit(hub);
+  const recent = setupRecentFiles(hub);
   hub.on('cleared', files.clear);
   hub.on('locked', (locked) => {
     if (locked && hub.lockIsReal) files.clear();
@@ -157,6 +159,7 @@ function setup(ctx: FeatureContext): void {
       defaultApp,
       files,
       edit,
+      recent,
       power,
       quickCompose,
       applyLoginItem,
