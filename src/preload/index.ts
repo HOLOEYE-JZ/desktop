@@ -29,6 +29,8 @@ import {
   type BrowserSignInControls,
   type BrowserSignInRequest,
   type ConfirmOptions,
+  type DialogWindowAnswer,
+  type DialogWindowRequest,
   type FlushAnswer,
   type LanguagesUpdate,
   type MenuBarEntry,
@@ -242,6 +244,13 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     dialogs: {
       /** A native question. Answers with the index of the button chosen. */
       confirm: (options: ConfirmOptions): Promise<number> => ipcRenderer.invoke(CHANNEL.dialogsConfirm, options),
+      /**
+       * A short question in a window of the app's own, modal to this one and drawn like the
+       * page's dialogs. One at a time per page; the next waits. Null: closed unanswered.
+       */
+      show: (request: DialogWindowRequest): Promise<DialogWindowAnswer> => ipcRenderer.invoke(CHANNEL.dialogsShow, request),
+      /** Takes back a question asked with `show`, showing or waiting. */
+      cancel: (id: string) => ipcRenderer.send(CHANNEL.dialogsCancel, id),
     },
     clipboard: {
       /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */

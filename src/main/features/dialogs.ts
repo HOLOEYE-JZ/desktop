@@ -1,6 +1,7 @@
 /**
- * Native questions and files on the clipboard. Save, open and pick-a-folder need
- * nothing here: Chromium's own file pickers already are the OS's.
+ * Questions and files on the clipboard. Save, open and pick-a-folder need nothing
+ * here: Chromium's own file pickers already are the OS's. `confirm` is the OS's own
+ * message box; `show` is a window of the app's own (dialog-window.ts).
  */
 
 import { spawn } from 'node:child_process';
@@ -10,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import { app, clipboard, dialog, powerMonitor } from 'electron';
 import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
+import { DialogWindows } from '../dialog-window';
 import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { Feature } from './index';
@@ -112,6 +114,10 @@ export const dialogsFeature: Feature = {
         waitingQuestions -= 1;
       }
     });
+
+    const windows = new DialogWindows();
+    ctx.handle(CHANNEL.dialogsShow, (event, window, request) => windows.ask(event.sender, window, request));
+    ctx.on(CHANNEL.dialogsCancel, (event, _window, id) => windows.cancel(event.sender, id));
 
     ctx.handle(CHANNEL.clipboardCopyFile, async (_event, _window, name, data) => {
       if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) return false;
