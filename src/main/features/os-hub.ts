@@ -10,7 +10,7 @@ import type { WebContents } from 'electron';
 import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary, type QuickComposeStatus } from '../../shared/bridge';
 import { LinkRateLimit } from '../deep-link';
 import type { FeatureContext } from './index';
-import { cleanSettingsPatch, defaultSettings } from './os-rules';
+import { cleanSettingsPatch, currentOsSettings, defaultSettings } from './os-rules';
 
 const EMPTY_SUMMARY: OsSummary = { unread: [], recent: [], nextEvent: null };
 
@@ -59,7 +59,7 @@ export class OsHub extends EventEmitter<{
   }
 
   settings(): OsSettings {
-    return { ...this.defaults, ...this.ctx.state.data.os };
+    return currentOsSettings({ ...this.defaults, ...this.ctx.state.data.os }, process.platform);
   }
 
   status(): OsStatus {
