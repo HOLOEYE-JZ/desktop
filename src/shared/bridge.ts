@@ -426,6 +426,60 @@ export type CrashSendResult =
   | { ok: true }
   | { ok: false; reason: 'no-consent' | 'no-url' | 'not-found' | 'cancelled' | 'failed' };
 
+/** An attachment copied to a private folder and open in its default program. */
+export interface EditSession {
+  id: string;
+  name: string;
+  type: string;
+  /** The local account it belongs to. */
+  account: string;
+  /** What the page said it came from. Main only keeps it. */
+  source: string;
+  /** Saved differently from what the page last took. */
+  changed: boolean;
+  /** Goes up with each save. */
+  version: number;
+  /** What the file holds now: a chip holding this version has nothing to update. */
+  hash: string;
+  /** A composer has it and offers the update itself. */
+  claimed: boolean;
+  /** Wanted gone, and another program has it open. */
+  held: boolean;
+  /** Saved under a new name in that program. */
+  savedAs: boolean;
+  /** Not used for 30 days: this offer is the last. */
+  lastChance: boolean;
+}
+
+/** What couldn't be deleted because another program has it open, by file name. `refused`: nothing happened. */
+export interface EditClearResult {
+  held: string[];
+  refused?: boolean;
+}
+
+export interface EditFile {
+  /** One session per key: Edit on the same attachment opens the same file. */
+  key: string;
+  name: string;
+  type: string;
+  data: Uint8Array;
+  account: string;
+  source: string;
+}
+
+export type EditBeginResult =
+  /** One click, one ticket, for that key. A session for it exists: reopen this one. */
+  | { ok: true; ticket: string; open?: string }
+  | { ok: false; reason: 'locked' | 'gesture' };
+
+export type EditOpenResult =
+  | { ok: true; id: string }
+  | { ok: false; reason: 'locked' | 'ticket' | 'type' | 'too-large' | 'full' | 'no-app' | 'failed' };
+
+export type EditReadResult =
+  | { ok: true; name: string; type: string; data: Uint8Array; hash: string }
+  | { ok: false; reason: 'locked' | 'missing' | 'busy' | 'too-large' };
+
 /** IPC channels, all checked against the sender's origin in main (ipc.ts). */
 export const CHANNEL = {
   windowsOpen: 'bulwark:windows.open',
@@ -491,6 +545,23 @@ export const CHANNEL = {
   osCopyFiles: 'bulwark:os.copyFiles',
   osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
   osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
+  editBegin: 'bulwark:edit.begin',
+  editOpen: 'bulwark:edit.open',
+  editReopen: 'bulwark:edit.reopen',
+  editList: 'bulwark:edit.list',
+  editSettle: 'bulwark:edit.settle',
+  editRead: 'bulwark:edit.read',
+  editTaken: 'bulwark:edit.taken',
+  editRelease: 'bulwark:edit.release',
+  editDiscard: 'bulwark:edit.discard',
+  editForceDiscard: 'bulwark:edit.forceDiscard',
+  editAskClear: 'bulwark:edit.askClear',
+  editClear: 'bulwark:edit.clear',
+  editWipe: 'bulwark:edit.wipe',
+  editShown: 'bulwark:edit.shown',
+  editSetSource: 'bulwark:edit.setSource',
+  editClaim: 'bulwark:edit.claim',
+  editChanged: 'bulwark:edit.changed',
   welcomeChoose: 'bulwark:welcome.choose',
   appLockStatus: 'bulwark:appLock.status',
   appLockLock: 'bulwark:appLock.lock',
