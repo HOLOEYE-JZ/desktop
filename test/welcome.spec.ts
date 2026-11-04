@@ -37,10 +37,19 @@ test.describe('the first run, as people see it', () => {
         await expect(page.locator('#email')).toHaveAttribute('aria-invalid', 'true');
         await page.click('#email-error-link');
         await expect.poll(() => opened(app)).toEqual(['https://bulwarkmail.org/docs/getting-started/introduction']);
-        await page.fill('#email', 'mail.example.com');
+        await page.fill('#email', 'sam');
         await expect(page.locator('#email-error')).toBeHidden();
         await page.click('#standalone');
         await expect(page.locator('#email-error-text')).toHaveText(text.emailInvalid);
+        // A web address there: the organisation step is offered, with it filled in, and Back clears the line.
+        await page.fill('#email', 'mail.example.com');
+        await page.click('#standalone');
+        await expect(page.locator('#email-error-text')).toHaveText(text.webAddress);
+        await page.click('#email-error-link');
+        await expect(page.locator('#url')).toHaveValue('mail.example.com');
+        await page.click('#org-back');
+        await expect(page.locator('#email-error')).toBeHidden();
+        await page.fill('#email', '');
 
         // The organisation's address is a step of its own, with Back.
         await page.click('#instance');

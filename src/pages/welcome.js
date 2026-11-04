@@ -29,7 +29,7 @@ for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
 document.title = text.title;
 
 const { allowStandalone, instanceUrl, urlLocked, askTelemetry, askCrashReports } = window.bulwarkWelcome.options;
-const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark', email_invalid: 'emailInvalid' };
+const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark', email_invalid: 'emailInvalid', web_address: 'webAddress' };
 /** The latest choice sent to main: an earlier answer arriving late is ignored. */
 let request = 0;
 
@@ -46,6 +46,11 @@ function setHidden(id, hidden) {
   if (element) element.hidden = hidden;
 }
 function show(name) {
+  // A line under a field is about what was typed on that step, not the next time it shows.
+  if (name !== screen) {
+    setError('email', null);
+    setError('url', null);
+  }
   screen = name;
   setHidden('connection', name !== 'connection');
   setHidden('org', name !== 'org');
@@ -82,11 +87,21 @@ const ERROR_BOX = { email: 'email-error', url: 'error' };
 /** What an error offers next to its text: Gmail and the like get where to read what works. */
 const ERROR_LINKS = {
   noJmap: { label: 'learnMore', run: () => window.bulwarkWelcome.openLink('providers') },
+  // A web address in the email field: the organisation's step, with it filled in.
+  webAddress: {
+    label: 'webAddressLink',
+    run: () => {
+      if (!urlLocked) byId('url').value = byId('email').value.trim();
+      show('org');
+    },
+  },
 };
 
 /** The line under a field, with its link if it has one. Null clears it. */
 function setError(field, key) {
   const box = ERROR_BOX[field];
+  // Without the email step (a policy), its field isn't there.
+  if (!byId(box)) return;
   byId(`${box}-text`).textContent = key ? text[key] : '';
   const link = key ? ERROR_LINKS[key] : undefined;
   const button = byId(`${box}-link`);

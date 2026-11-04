@@ -44,8 +44,14 @@ test.describe('the first-run email field', () => {
   });
 
   test('anything else asks for an email address', () => {
-    for (const typed of ['', 'sam', 'mail.example.com', 'https://mail.example.com', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 42])
+    for (const typed of ['', 'sam', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 'mail example.com', 42])
       expect(parseWelcomeEmail(typed), String(typed)).toEqual({ ok: false, error: 'email_invalid' });
+  });
+
+  test('a web address is told apart, so the page can offer the organisation step', () => {
+    for (const typed of ['mail.example.com', ' https://mail.example.com ', 'http://mail.example.com:8443/webmail', 'MAIL.Example.org/'])
+      expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'web_address' });
+    for (const typed of ['gmail.com', 'https://outlook.live.com/mail']) expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'no_jmap' });
   });
 });
 

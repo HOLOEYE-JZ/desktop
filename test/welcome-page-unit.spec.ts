@@ -63,4 +63,32 @@ test.describe('the first-run page', () => {
     await expect(page.locator('#email-error')).toBeHidden();
     await expect(page.locator('#email')).not.toHaveAttribute('aria-invalid', 'true');
   });
+
+  test('a web address in the email field leads to the organisation step, with it filled in', async ({ page }) => {
+    await open(page, { emailAnswer: { ok: false, error: 'web_address' } });
+    await page.fill('#email', 'mail.example.com');
+    await page.click('#standalone');
+    await expect(page.locator('#email-error-text')).toHaveText(text.webAddress);
+    await expect(page.locator('#email-error-link')).toHaveText(text.webAddressLink);
+    await page.click('#email-error-link');
+    await expect(page.locator('#url')).toBeVisible();
+    await expect(page.locator('#url')).toHaveValue('mail.example.com');
+    await expect(page.locator('#url')).toBeFocused();
+    // Back: the old line under Email is gone.
+    await page.click('#org-back');
+    await expect(page.locator('#email')).toBeVisible();
+    await expect(page.locator('#email-error')).toBeHidden();
+    await expect(page.locator('#email')).not.toHaveAttribute('aria-invalid', 'true');
+  });
+
+  test('going to the organisation step and back clears the old line under Email', async ({ page }) => {
+    await open(page, { emailAnswer: { ok: false, error: 'email_invalid' } });
+    await page.fill('#email', 'sam');
+    await page.click('#standalone');
+    await expect(page.locator('#email-error-text')).toHaveText(text.emailInvalid);
+    await page.click('#instance');
+    await page.click('#org-back');
+    await expect(page.locator('#email-error')).toBeHidden();
+    await expect(page.locator('#email')).not.toHaveAttribute('aria-invalid', 'true');
+  });
 });

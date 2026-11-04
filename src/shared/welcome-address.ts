@@ -64,7 +64,10 @@ export function welcomeLinkUrl(name: unknown): string | null {
   return typeof name === 'string' && Object.hasOwn(WELCOME_LINKS, name) ? WELCOME_LINKS[name] : null;
 }
 
-export type WelcomeEmailError = 'email_invalid' | 'no_jmap';
+export type WelcomeEmailError = 'email_invalid' | 'no_jmap' | 'web_address';
+
+/** mail.example.com, https://mail.example.com/webmail: a web address, not an email address. */
+const WEB_ADDRESS = /^(?:https?:\/\/)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)(?::\d+)?(?:[/?#]\S*)?$/i;
 
 /**
  * The first screen's email address. It catches Gmail, Outlook.com and iCloud, and
@@ -75,7 +78,12 @@ export function parseWelcomeEmail(raw: unknown): { ok: true; email: string } | {
   if (typeof raw !== 'string') return { ok: false, error: 'email_invalid' };
   const text = raw.trim();
   const email = /^[^\s@/]+@([^\s@/]+\.[^\s@/.]+)$/.exec(text);
-  if (!email) return { ok: false, error: 'email_invalid' };
+  if (!email) {
+    // Someone with the organisation's address in hand: the page offers that step.
+    const web = text.includes('@') ? null : WEB_ADDRESS.exec(text);
+    if (web) return { ok: false, error: isNoJmapDomain(web[1]) ? 'no_jmap' : 'web_address' };
+    return { ok: false, error: 'email_invalid' };
+  }
   return isNoJmapDomain(email[1]) ? { ok: false, error: 'no_jmap' } : { ok: true, email: text };
 }
 
