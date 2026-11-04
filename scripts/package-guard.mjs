@@ -228,6 +228,17 @@ export function guardExtraFiles(appOutDir) {
   if (found.length > 0) throw new Error(`Do not ship this package:\n  ${found.slice(0, 30).join('\n  ')}`);
 }
 
+/** Windows Hello and the keystore there, and on macOS the check for forced preferences. */
+export function findHelperProblem(asarListing, platform) {
+  if (platform !== 'win32' && platform !== 'darwin') return null;
+  return asarListing.includes('native/bulwark-native.node') ? null : 'app.asar has no native/bulwark-native.node';
+}
+
+export function guardHelper(resources, platform) {
+  const problem = findHelperProblem(asarFiles(path.join(resources, 'app.asar')), platform);
+  if (problem) throw new Error(`Do not ship this package:\n  ${problem}`);
+}
+
 export function guardResources(resources, platform) {
   const problems = findResourceProblems(resources, platform);
   if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
