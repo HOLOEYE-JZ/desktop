@@ -13,11 +13,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, session as electronSession } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, session as electronSession, shell } from 'electron';
 import { APP_HOST, APP_ORIGIN } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
-import { firstPageUrl, parseWelcomeAddress, parseWelcomeEmail } from '../shared/welcome-address';
+import { firstPageUrl, parseWelcomeAddress, parseWelcomeEmail, welcomeLinkUrl } from '../shared/welcome-address';
 import { APP_PARTITION, instancePartition, keepSignInsOnDisk, setupAppSession } from './app-session';
 import { certificateFitsKey, fingerprintOf, generateCertificate } from './cert';
 import { CorsInjector } from './cors';
@@ -556,6 +556,14 @@ function showWelcome(theme: ThemeController, decision: Extract<StartDecision, { 
   useWelcomeMenu(window, () => menu?.rebuild());
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  // "Learn more": only a page main has by name goes to the browser.
+  ipcMain.removeAllListeners(CHANNEL.welcomeOpenLink);
+  ipcMain.on(CHANNEL.welcomeOpenLink, (event, name: unknown) => {
+    if (event.sender !== window.webContents || !event.senderFrame?.url.startsWith('data:')) return;
+    const url = welcomeLinkUrl(name);
+    if (url) void shell.openExternal(url).catch(() => {});
+  });
+  window.once('closed', () => ipcMain.removeAllListeners(CHANNEL.welcomeOpenLink));
 
   let latestChoice = 0;
   ipcMain.handle(CHANNEL.welcomeChoose, async (event, choice: { mode?: unknown; url?: unknown; email?: unknown }) => {

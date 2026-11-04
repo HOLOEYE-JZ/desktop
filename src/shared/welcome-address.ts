@@ -51,6 +51,19 @@ export function parseWelcomeAddress(raw: unknown, allowInsecure: boolean): { ok:
   return { ok: false, error: parsed.reason === 'insecure' ? 'insecure' : 'invalid_url' };
 }
 
+/**
+ * The pages the first-run window may open in the browser, by name. The page only names
+ * one: an address from it is never opened.
+ */
+const WELCOME_LINKS: Record<string, string> = {
+  // What Bulwark works with. No page lists mail services yet; this one says what it needs.
+  providers: 'https://bulwarkmail.org/docs/getting-started/introduction',
+};
+
+export function welcomeLinkUrl(name: unknown): string | null {
+  return typeof name === 'string' && Object.hasOwn(WELCOME_LINKS, name) ? WELCOME_LINKS[name] : null;
+}
+
 export type WelcomeEmailError = 'email_invalid' | 'no_jmap';
 
 /**

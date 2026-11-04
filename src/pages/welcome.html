@@ -17,7 +17,10 @@
       input { width: 100%; box-sizing: border-box; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: transparent; color: inherit; user-select: text; }
       .connect { display: inline-block; width: auto; margin-top: 10px; padding: 8px 18px; }
       .error { color: #d43; margin-top: 6px; }
-      .error:empty, .status:empty { display: none; }
+      .status:empty { display: none; }
+      .inline-link { display: inline; width: auto; margin: 0 0 0 4px; padding: 0; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+      html[dir="rtl"] .inline-link { margin: 0 4px 0 0; }
+      .inline-link:hover { background: transparent; }
       .status { margin-top: 6px; opacity: .75; }
       .connect:disabled { opacity: .6; }
       .link { display: inline; width: auto; margin: 22px 0 0; padding: 0; border: 0; border-radius: 0; text-decoration: underline; text-underline-offset: 3px; opacity: .85; }
@@ -40,7 +43,7 @@
       <form id="email-form">
         <label for="email" id="email-label"></label>
         <input id="email" type="text" inputmode="email" placeholder="name@example.com" autocomplete="email" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="email-error" />
-        <div id="email-error" class="error" role="alert"></div>
+        <div id="email-error" class="error" role="alert" hidden><span id="email-error-text"></span><button id="email-error-link" class="inline-link" type="button" hidden></button></div>
         <button id="standalone" class="connect" type="submit"></button>
       </form>
       <button id="instance" class="link" type="button"></button>
@@ -51,7 +54,7 @@
       <form id="form">
         <label for="url" id="url-label"></label>
         <input id="url" type="text" inputmode="url" placeholder="mail.example.com" autocomplete="url" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="error" />
-        <div id="error" class="error" role="alert"></div>
+        <div id="error" class="error" role="alert" hidden><span id="error-text"></span><button id="error-link" class="inline-link" type="button" hidden></button></div>
         <div id="status" class="status" role="status"></div>
         <div class="actions"><button id="org-back" class="connect" type="button"></button><button id="connect" class="connect" type="submit"></button></div>
       </form>

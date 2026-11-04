@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { launch, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
+import { fakeOsIntegration, launch, opened, removeProfile, SCREENSHOTS, shownPage, tempProfile } from './helpers';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STRINGS = JSON.parse(readFileSync(path.join(ROOT, 'src/pages/welcome-strings.json'), 'utf8')) as Record<string, Record<string, string>>;
@@ -17,6 +17,8 @@ test.describe('the first run, as people see it', () => {
       // Last --lang wins over the helper's en-US.
       const app = await launch(profile, `--lang=${lang}`);
       try {
+        // Learn more goes to a list here, never to a browser.
+        await fakeOsIntegration(app);
         const page = await shownPage(app);
         await page.locator('#email').waitFor();
         await expect(page.locator('html')).toHaveAttribute('lang', code);
@@ -31,12 +33,14 @@ test.describe('the first run, as people see it', () => {
         // The email field: Gmail and the like get the note, a web address a hint.
         await page.fill('#email', 'sam@gmail.com');
         await page.click('#standalone');
-        await expect(page.locator('#email-error')).toHaveText(text.noJmap);
+        await expect(page.locator('#email-error-text')).toHaveText(text.noJmap);
         await expect(page.locator('#email')).toHaveAttribute('aria-invalid', 'true');
+        await page.click('#email-error-link');
+        await expect.poll(() => opened(app)).toEqual(['https://bulwarkmail.org/docs/getting-started/introduction']);
         await page.fill('#email', 'mail.example.com');
-        await expect(page.locator('#email-error')).toBeEmpty();
+        await expect(page.locator('#email-error')).toBeHidden();
         await page.click('#standalone');
-        await expect(page.locator('#email-error')).toHaveText(text.emailInvalid);
+        await expect(page.locator('#email-error-text')).toHaveText(text.emailInvalid);
 
         // The organisation's address is a step of its own, with Back.
         await page.click('#instance');
@@ -47,16 +51,16 @@ test.describe('the first run, as people see it', () => {
         await expect(page.locator('#url')).toHaveAttribute('type', 'text');
         await page.fill('#url', 'sam@gmail.com');
         await page.click('#connect');
-        await expect(page.locator('#error')).toHaveText(text.noJmap);
+        await expect(page.locator('#error-text')).toHaveText(text.noJmap);
         await expect(page.locator('#url')).toHaveAttribute('aria-invalid', 'true');
         await page.screenshot({ path: path.join(SCREENSHOTS, `after-desk-02-address-gmail-${code}.png`) });
         await page.fill('#url', 'sam@example.org');
         await page.click('#connect');
-        await expect(page.locator('#error')).toHaveText(text.email);
+        await expect(page.locator('#error-text')).toHaveText(text.email);
         await page.fill('#url', 'http://mail.example.org');
-        await expect(page.locator('#error')).toBeEmpty();
+        await expect(page.locator('#error')).toBeHidden();
         await page.click('#connect');
-        await expect(page.locator('#error')).toHaveText(text.insecure);
+        await expect(page.locator('#error-text')).toHaveText(text.insecure);
         await page.screenshot({ path: path.join(SCREENSHOTS, `after-desk-03-address-http-${code}.png`) });
 
         await page.click('#org-back');

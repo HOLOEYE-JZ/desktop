@@ -21,4 +21,6 @@ contextBridge.exposeInMainWorld('bulwarkWelcome', {
     ipcRenderer.invoke(CHANNEL.welcomeChoose, choice),
   answerPrivacy: (answers: { telemetry: boolean; crashReports: boolean }): Promise<{ ok: boolean }> =>
     ipcRenderer.invoke(CHANNEL.welcomePrivacy, answers),
+  /** A page main knows by this name, in the browser: "providers". */
+  openLink: (name: string): void => ipcRenderer.send(CHANNEL.welcomeOpenLink, name),
 });

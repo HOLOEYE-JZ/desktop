@@ -77,21 +77,36 @@ byId('privacy').addEventListener('submit', (event) => {
   });
 });
 
+/** Each field's line under it. */
+const ERROR_BOX = { email: 'email-error', url: 'error' };
+/** What an error offers next to its text: Gmail and the like get where to read what works. */
+const ERROR_LINKS = {
+  noJmap: { label: 'learnMore', run: () => window.bulwarkWelcome.openLink('providers') },
+};
+
+/** The line under a field, with its link if it has one. Null clears it. */
+function setError(field, key) {
+  const box = ERROR_BOX[field];
+  byId(`${box}-text`).textContent = key ? text[key] : '';
+  const link = key ? ERROR_LINKS[key] : undefined;
+  const button = byId(`${box}-link`);
+  button.hidden = !link;
+  button.textContent = link ? text[link.label] : '';
+  button.onclick = link ? () => link.run(field) : null;
+  byId(box).hidden = !key;
+  if (key) byId(field).setAttribute('aria-invalid', 'true');
+  else byId(field).removeAttribute('aria-invalid');
+}
+
 /** An answer from main: the text under the field, or on to the next step. */
-function answer(result, field, error) {
+function answer(result, field) {
   if (!result.ok) {
-    byId(error).textContent = text[ERRORS[result.error] ?? 'invalid'];
-    byId(field).setAttribute('aria-invalid', 'true');
+    setError(field, ERRORS[result.error] ?? 'invalid');
     byId(field).focus();
   } else next(result);
 }
 
-for (const [field, error] of [['email', 'email-error'], ['url', 'error']]) {
-  byId(field).addEventListener('input', () => {
-    byId(error).textContent = '';
-    byId(field).removeAttribute('aria-invalid');
-  });
-}
+for (const field of ['email', 'url']) byId(field).addEventListener('input', () => setError(field, null));
 
 if (instanceUrl) byId('url').value = instanceUrl;
 if (urlLocked) byId('url').readOnly = true;
@@ -99,10 +114,10 @@ if (urlLocked) byId('url').readOnly = true;
 if (allowStandalone) {
   byId('email-form').addEventListener('submit', async (event) => {
     event.preventDefault();
-    byId('email-error').textContent = '';
+    setError('email', null);
     const mine = ++request;
     const result = await window.bulwarkWelcome.choose({ mode: 'standalone', email: byId('email').value });
-    if (mine === request) answer(result, 'email', 'email-error');
+    if (mine === request) answer(result, 'email');
   });
   byId('instance').addEventListener('click', () => show('org'));
   byId('org-back').addEventListener('click', () => {
@@ -120,7 +135,7 @@ if (allowStandalone) {
 byId('form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (byId('connect').disabled) return;
-  byId('error').textContent = '';
+  setError('url', null);
   const mine = ++request;
   // Main asks the server first, for up to five seconds.
   byId('status').textContent = text.checking;
@@ -131,5 +146,5 @@ byId('form').addEventListener('submit', async (event) => {
   });
   // The user went back meanwhile, or chose the other way.
   if (mine !== request || result.error === 'superseded') return;
-  answer(result, 'url', 'error');
+  answer(result, 'url');
 });
