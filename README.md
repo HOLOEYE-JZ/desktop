@@ -60,6 +60,9 @@ npm run dist:linux   # AppImage, deb, rpm. Run on Linux.
 - **Native modules** in the asar are unpacked next to it (`asarUnpack`). ASAR integrity stays on, and covers `server.asar` too. Unpacked files aren't covered by it: that's what signing is for.
 - **macOS** is configured but has only been read, not run. Hardened runtime and notarization are driven by env, see the comments in `electron-builder.yml` and `build/entitlements.mac.plist`.
 - **Icons** are in `build/`, made from the branding repo by `scripts/make-icons.mjs` and committed.
+- **The Windows installer's window** is the app's: its background, text colours and logo, and the progress bar in its accent colour, dark or light as Windows' app mode is set, Windows' own colours with High Contrast on. It says "Installing Bulwark…", "Updating Bulwark…" when the app updates itself, and "Removing Bulwark…" in the uninstaller, which now shows a window when a person starts it (with `/S` it stays silent). `build/installer-theme.nsh` draws it, `build/installer-strings.nsh` has the words for every installer language, `test/installer-look.spec.ts` checks both and builds an installer from them. It takes no part in what gets installed.
+- **The DMG's background** is `assets/dmg-background.svg`, rendered to `build/dmg-background.png` and `@2x` by `scripts/make-dmg-background.mjs`. The names under the icons are black in light mode and white in dark mode, so the field is a grey both read on.
+- **The MSI** has no dialogs of its own: double-clicked, it shows Windows Installer's plain progress box, and IT runs it with `/qn`. There's nothing of ours to style there.
 
 ## Updates
 
