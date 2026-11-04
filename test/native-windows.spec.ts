@@ -230,16 +230,16 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => page.url(), { timeout: 30_000 }).not.toMatch(/sent/i);
   });
 
-  test('Settings opens in a window of its own, and its switch reaches the shell and the other windows', async () => {
+  test('Settings opens as a page of the main window, with no second window, and its switch reaches the shell', async () => {
     await app.evaluate(({ Menu }) => {
       Menu.getApplicationMenu()!.getMenuItemById('help.settings')!.click();
     });
-    const settings = await pageWith(app, '/settings');
+    await expect.poll(() => page.url(), { timeout: 30_000 }).toContain('/settings');
     const list = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<{ type: string }[]> } } }).bulwarkDesktop.windows.list());
-    expect(list.map((w) => w.type).sort()).toEqual(['main', 'settings']);
-    await settings.goto(new URL('/settings/general', settings.url()).toString());
-    await settings.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
-    const flip = () => settings.evaluate(() => {
+    expect(list.map((w) => w.type)).toEqual(['main']);
+    await page.goto(new URL('/settings/general', page.url()).toString());
+    await page.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
+    const flip = () => page.evaluate(() => {
       const label = [...document.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent === 'Reopen windows at start');
       let box: Element | null = label ?? null;
       const control = '[role="switch"], button[aria-checked], input[type="checkbox"]';
@@ -252,10 +252,9 @@ test.describe('windows, signed in', () => {
     await expect.poll(shellHas, { timeout: 10_000 }).toBe(false);
     await flip();
     await expect.poll(shellHas, { timeout: 10_000 }).toBe(true);
-    await app.evaluate(({ BrowserWindow }) => {
-      BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/settings'))!.close();
-    });
-    await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+    await sendCommand(app, '/', 'go.inbox');
+    await expect.poll(() => page.url(), { timeout: 30_000 }).not.toContain('/settings');
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
   });
 
   test('a link to a folder goes there, without reloading the window', async () => {
