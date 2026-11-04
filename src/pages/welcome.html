@@ -19,7 +19,9 @@
       input { width: 100%; box-sizing: border-box; font: inherit; padding: 9px 11px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 30%, transparent); background: transparent; color: inherit; user-select: text; }
       .connect { display: inline-block; width: auto; margin-top: 10px; padding: 8px 18px; }
       .error { color: #d43; margin-top: 6px; }
-      .error:empty { display: none; }
+      .error:empty, .status:empty { display: none; }
+      .status { margin-top: 6px; opacity: .75; }
+      .connect:disabled { opacity: .6; }
       html[dir="rtl"] #url { text-align: right; }
       .actions { display: flex; gap: 10px; }
       .actions .connect { margin-bottom: 0; }
@@ -41,6 +43,7 @@
       <label for="url" id="url-label"></label>
       <input id="url" type="text" inputmode="url" placeholder="mail.example.com" autocomplete="url" spellcheck="false" autocapitalize="off" dir="ltr" aria-describedby="error" />
       <div id="error" class="error" role="alert"></div>
+      <div id="status" class="status" role="status"></div>
       <button id="connect" class="connect" type="submit"></button>
     </form>
     </div>

@@ -29,7 +29,9 @@ for (const [id, key] of Object.entries(fill)) byId(id).textContent = text[key];
 document.title = text.title;
 
 const { allowStandalone, instanceUrl, urlLocked, askTelemetry, askCrashReports } = window.bulwarkWelcome.options;
-const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap' };
+const ERRORS = { policy: 'policy', insecure: 'insecure', email: 'email', no_jmap: 'noJmap', unreachable: 'unreachable', not_bulwark: 'notBulwark' };
+/** The latest choice sent to main: an earlier answer arriving late is ignored. */
+let request = 0;
 
 if (!askTelemetry) byId('telemetry-row').remove();
 if (!askCrashReports) byId('crash-row').remove();
@@ -66,6 +68,8 @@ if (!allowStandalone || instanceUrl) byId('form').classList.add('open');
 // Not `hidden`: the page's own `button { display: block }` would win.
 if (allowStandalone) {
   byId('standalone').addEventListener('click', () => {
+    request += 1;
+    byId('status').textContent = '';
     void window.bulwarkWelcome.choose({ mode: 'standalone' }).then(next);
   });
 } else {
@@ -81,8 +85,18 @@ byId('url').addEventListener('input', () => {
 });
 byId('form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (byId('connect').disabled) return;
   byId('error').textContent = '';
-  const result = await window.bulwarkWelcome.choose({ mode: 'instance', url: byId('url').value });
+  const mine = ++request;
+  // Main asks the server first, for up to five seconds.
+  byId('status').textContent = text.checking;
+  byId('connect').disabled = true;
+  const result = await window.bulwarkWelcome.choose({ mode: 'instance', url: byId('url').value }).finally(() => {
+    byId('connect').disabled = false;
+    if (mine === request) byId('status').textContent = '';
+  });
+  // The standalone choice came in meanwhile, and is the one that counts.
+  if (mine !== request || result.error === 'superseded') return;
   if (!result.ok) {
     byId('error').textContent = text[ERRORS[result.error] ?? 'invalid'];
     byId('url').setAttribute('aria-invalid', 'true');
