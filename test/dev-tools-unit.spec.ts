@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test';
 import { DEVTOOLS_TEXT, devToolsTextFor } from '../src/main/devtools-strings';
 import { KEYSTORE_TEXT } from '../src/main/keystore-strings';
 import { devToolsForcedOffBy, devToolsUsable, isDevToolsKey } from '../src/main/features/dev-tools-rules';
+import { EMPTY_POLICY_LAYERS, resolvePolicies } from '../src/shared/policy-schema';
 
 test.describe('the developer tools switch', () => {
   const key = (patch: Partial<Parameters<typeof isDevToolsKey>[0]>) => ({ type: 'keyDown' as const, key: 'I', code: 'KeyI', control: false, meta: false, shift: false, alt: false, ...patch });
@@ -24,6 +25,15 @@ test.describe('the developer tools switch', () => {
     expect(devToolsForcedOffBy({ value: 1, locked: true })).toBe(false);
     expect(devToolsForcedOffBy({ value: null, locked: true })).toBe(true);
     expect(devToolsForcedOffBy({ value: null, locked: false })).toBe(false);
+  });
+
+  test('a forced policy value nobody can read, as the policy reader gives it, forces them off', () => {
+    const forced = (value: unknown) => resolvePolicies({ ...EMPTY_POLICY_LAYERS, forcedMachine: { DeveloperToolsAvailability: value } }).DeveloperToolsAvailability;
+    expect(devToolsForcedOffBy(forced(7))).toBe(true);
+    expect(devToolsForcedOffBy(forced('off'))).toBe(true);
+    expect(devToolsForcedOffBy(forced(-1))).toBe(true);
+    expect(devToolsForcedOffBy(forced(2))).toBe(true);
+    expect(devToolsForcedOffBy(forced(1))).toBe(false);
   });
 
   test('usable only when turned on, not forced off and not locked', () => {
