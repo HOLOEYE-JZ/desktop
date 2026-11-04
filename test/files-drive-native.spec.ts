@@ -8,6 +8,7 @@ import type { FilesDriveState, FilesFetchRequest, FilesPlaceholder } from '../sr
 import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
 import { FilesDisk } from '../src/main/files/disk';
 import { substLetters } from '../src/main/files/drive-letter';
+import { claimLetterLabel, DRIVES_KEY, registryLetterLabels, releaseLetterLabel } from '../src/main/files/drive-letter-label';
 import { fileIdOf, mtimeMsOf } from '../src/main/files/drive-places';
 import type { RegisteredRoot } from '../src/main/files/registry';
 import { helperFile, loadHelperModule, type NativeFetchEvent, type NativeFilesModule } from '../src/main/native-loader';
@@ -28,6 +29,8 @@ const FILE = helperFile({ packaged: false, mainDir: path.join(ROOT, 'dist'), pla
 const PROVIDER = `Bulwark Test ${process.pid}`;
 const BASE = path.join(tmpdir(), `bulwark-files-test-${process.pid}`);
 const ICON = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\imageres.dll,-3`;
+/** Stands in for HKCU: the letter's name and icon go here, never in the user's own classes. */
+const REGISTRY_ROOT = `HKCU\\Software\\Bulwark Test ${process.pid}`;
 const SYNC_ROOT_MANAGER = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SyncRootManager';
 
 const load = (): NativeFilesModule => {
@@ -74,6 +77,25 @@ function registryValue(key: string, name: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function registryKeyExists(key: string): boolean {
+  try {
+    execFileSync('reg', ['query', key], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A drive letter's name and icon in "This PC", under the test's stand-in for HKCU. */
+function letterLabel(letter: string): { label: string | null; icon: string | null } {
+  const key = `${REGISTRY_ROOT}\\${DRIVES_KEY}\\${letter}`;
+  return { label: registryValue(`${key}\\DefaultLabel`, null), icon: registryValue(`${key}\\DefaultIcon`, null) };
+}
+
+function removeRegistryRoot(): void {
+  if (registryKeyExists(REGISTRY_ROOT)) execFileSync('reg', ['delete', REGISTRY_ROOT, '/f'], { stdio: 'ignore' });
 }
 
 /** The icon Explorer's navigation pane draws for a sync root: its namespace entry's. */
@@ -294,6 +316,7 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
       forgotten.push(rootId);
     },
     letters: options.letters ? substLetters(() => native.filesUsedDriveLetters()) : null,
+    letterLabels: options.letters ? registryLetterLabels(REGISTRY_ROOT, (letter) => native.filesDriveLetterChanged(letter)) : null,
     warn: () => {},
     fetchFirstAnswerMs: options.timeoutMs,
     fetchIdleMs: options.timeoutMs,
@@ -597,21 +620,58 @@ test.describe('the drive controller', () => {
       const set = await drive.setLetter(letter, yes);
       expect(set).toMatchObject({ ok: true, value: { letter, chosen: letter, locked: false } });
       expect(subst()).toContain(`${letter}:\\: => ${on.value.path}`);
+      // "This PC" names it and draws the app's icon, not the disk's.
+      expect(letterLabel(letter!)).toEqual({ label: 'Bulwark Files', icon: ICON });
 
       await drive.disable('acct-1', 'signed-out');
       expect(subst()).not.toContain(`${letter}:\\:`);
+      expect(letterLabel(letter!)).toEqual({ label: null, icon: null });
       expect((await drive.enable('acct-1', 'alice@example.org', no)).ok).toBe(true);
       expect(subst()).toContain(`${letter}:\\: => ${on.value.path}`);
+      expect(letterLabel(letter!)).toEqual({ label: 'Bulwark Files', icon: ICON });
 
       policyLetter = 'none';
       await drive.policyChanged();
       expect(subst()).not.toContain(`${letter}:\\:`);
+      expect(letterLabel(letter!)).toEqual({ label: null, icon: null });
+      expect(registryValue(`${REGISTRY_ROOT}\\${DRIVES_KEY}\\${letter}`, null)).toBeNull();
       expect(drive.state().letter).toMatchObject({ letter: null, chosen: letter, locked: true });
       expect(await drive.setLetter(null, yes)).toEqual({ ok: false, error: 'policy' });
     } finally {
       await drive.wipe();
       if (letter && subst().includes(`${letter}:\\:`)) execFileSync('subst', [`${letter}:`, '/D']);
+      removeRegistryRoot();
     }
     expect(subst()).not.toContain(path.join(BASE, 'drive'));
+  });
+
+  test("the letter's name and icon: written where there's none, taken away again, and someone else's left alone", async () => {
+    const labels = registryLetterLabels(REGISTRY_ROOT, null);
+    const key = (letter: string, part?: string) => `${REGISTRY_ROOT}\\${DRIVES_KEY}\\${letter}${part ? `\\${part}` : ''}`;
+    try {
+      expect(await claimLetterLabel(labels, 'Q', ICON, () => {})).toBe(true);
+      expect(letterLabel('Q')).toEqual({ label: 'Bulwark Files', icon: ICON });
+      await releaseLetterLabel(labels, 'Q', ICON);
+      expect(registryValue(key('Q'), null)).toBeNull();
+      expect(registryKeyExists(key('Q'))).toBe(false);
+
+      // Someone's own name and icon for R: never replaced, never removed.
+      execFileSync('reg', ['add', key('R', 'DefaultLabel'), '/ve', '/d', 'Backup disk', '/f']);
+      execFileSync('reg', ['add', key('R', 'DefaultIcon'), '/ve', '/d', 'C:\\Tools\\disk.ico,0', '/f']);
+      const warned: string[] = [];
+      expect(await claimLetterLabel(labels, 'R', ICON, (message) => warned.push(message))).toBe(false);
+      expect(warned).toHaveLength(1);
+      await releaseLetterLabel(labels, 'R', ICON);
+      expect(letterLabel('R')).toEqual({ label: 'Backup disk', icon: 'C:\\Tools\\disk.ico,0' });
+
+      // Ours, beside something else of someone's: only ours goes.
+      execFileSync('reg', ['add', key('S', 'Other'), '/ve', '/d', 'x', '/f']);
+      expect(await claimLetterLabel(labels, 'S', ICON, () => {})).toBe(true);
+      await releaseLetterLabel(labels, 'S', ICON);
+      expect(letterLabel('S')).toEqual({ label: null, icon: null });
+      expect(registryValue(key('S', 'Other'), null)).toBe('x');
+    } finally {
+      removeRegistryRoot();
+    }
   });
 });

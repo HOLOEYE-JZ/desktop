@@ -37,6 +37,7 @@ import type {
 import { filesErrorCode, type NativeFilesModule, type NativeSyncRoot } from '../native-loader';
 import { FetchRelay, type FetchFailure } from './drive-fetch';
 import { settleLetter, type LetterSystem } from './drive-letter';
+import { claimLetterLabel, releaseLetterLabel, type LetterLabelSystem } from './drive-letter-label';
 import {
   accountKey,
   displayNameFor,
@@ -102,6 +103,8 @@ export interface DriveDeps {
   /** The page's record of a root whose folder went: a new folder must not look like everything was deleted. */
   forgetState?: (rootId: string) => Promise<void>;
   letters: LetterSystem | null;
+  /** The letter's name and icon in "This PC" (drive-letter-label.ts). None: Windows names it. */
+  letterLabels?: LetterLabelSystem | null;
   now?: () => number;
   warn?: (message: string) => void;
   /** Pin changes come through a watcher on each root. Off in tests that don't want it. */
@@ -573,11 +576,33 @@ export class DriveController {
   private async applyLetter(): Promise<void> {
     if (!this.deps.letters) return;
     const targets = this.targets();
-    const letter = wantedLetter(this.deps.policy().letter, this.deps.store.read().letter ?? null, targets.length > 0);
+    const policyLetter = this.deps.policy().letter;
+    const chosen = this.deps.store.read().letter ?? null;
+    const letter = wantedLetter(policyLetter, chosen, targets.length > 0);
+    const before = this.letterNow;
+    const labels = this.deps.letterLabels ?? null;
+    let named: string | null = null;
     try {
+      // Named before it comes, so Explorer never shows it as the disk under it. Not a letter
+      // something else holds: that one keeps its own name, and this gets no letter.
+      const free = letter !== null && (this.deps.letters.usedMask() & (1 << (letter.charCodeAt(0) - 65))) === 0;
+      if (labels && letter && (free || letter === before) && (await claimLetterLabel(labels, letter, this.deps.icon, this.warn))) named = letter;
       this.letterNow = await settleLetter(this.deps.letters, this.base(), letter, letterTarget(this.base(), targets), this.warn);
+      // Ours from before this start: the letter outlives the app within a sign-in.
+      if (labels && this.letterNow && this.letterNow !== named) await claimLetterLabel(labels, this.letterNow, this.deps.icon, this.warn);
     } catch (error) {
       this.warn(`Setting the drive letter failed: ${(error as Error).message}`);
+    }
+    if (!labels) return;
+    // Every letter this may have named: the one before, the one it wanted and didn't get, and
+    // the stored and the policy's, for a name a crash left behind.
+    const others = new Set([before, letter, chosen, policyLetter].filter((other): other is string => !!other && /^[D-Z]$/.test(other) && other !== this.letterNow));
+    for (const other of others) {
+      try {
+        await releaseLetterLabel(labels, other, this.deps.icon);
+      } catch (error) {
+        this.warn(`Removing the drive letter's name failed: ${(error as Error).message}`);
+      }
     }
   }
 

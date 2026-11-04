@@ -67,3 +67,5 @@ pub fn dehydrate(_path: &str) -> Result<(), String> {
 pub fn used_drive_letters() -> u32 {
     0
 }
+
+pub fn letter_changed(_letter: &str) {}

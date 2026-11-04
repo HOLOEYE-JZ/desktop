@@ -109,6 +109,8 @@ export interface NativeFilesModule {
   filesDriveHydrate(path: string): Promise<void>;
   filesDriveDehydrate(path: string): void;
   filesUsedDriveLetters(): number;
+  /** Explorer reads the letter's name and icon again. */
+  filesDriveLetterChanged(letter: string): void;
 }
 
 export const FILES_NATIVE_EXPORTS = [
@@ -118,6 +120,7 @@ export const FILES_NATIVE_EXPORTS = [
   'filesDriveDisconnect',
   'filesDriveHydrate',
   'filesDriveInfo',
+  'filesDriveLetterChanged',
   'filesDrivePlace',
   'filesDriveRegister',
   'filesDriveRoots',

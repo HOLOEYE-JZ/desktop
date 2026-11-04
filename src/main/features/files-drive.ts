@@ -19,6 +19,7 @@ import { CHANNEL, type FilesDriveState, type FilesFetchRequest } from '../../sha
 import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
 import { substLetters } from '../files/drive-letter';
+import { registryLetterLabels } from '../files/drive-letter-label';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
 import { setDriveHooks } from '../files/drive-hooks';
 import { filesRegistry } from '../files/registry';
@@ -43,6 +44,13 @@ function testArgument(name: string): string | null {
   if (!__BULWARK_TEST_BUILD__) return null;
   const prefix = `--bulwark-test-files-${name}=`;
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) ?? null;
+}
+
+/** HKCU, or a test's own key in its place (as os-default-app.ts). A real build has no way to move it. */
+function registryRoot(): string {
+  if (!__BULWARK_TEST_BUILD__) return 'HKCU';
+  const prefix = '--bulwark-test-registry-root=';
+  return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || 'HKCU';
 }
 
 function windowsBuild(): number {
@@ -104,6 +112,7 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows'>): Drive
     registry: filesRegistry,
     forgetState: forgetRootState,
     letters: helper && testArgument('letters') !== 'off' ? substLetters(() => helper.filesUsedDriveLetters()) : null,
+    letterLabels: helper && testArgument('letters') !== 'off' ? registryLetterLabels(registryRoot(), (letter) => helper.filesDriveLetterChanged(letter)) : null,
     ...(testArgument('fetch-timeout') ? { fetchFirstAnswerMs: Number(testArgument('fetch-timeout')), fetchIdleMs: Number(testArgument('fetch-timeout')) } : {}),
   });
   return controller;

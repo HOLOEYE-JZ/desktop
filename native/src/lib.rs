@@ -565,3 +565,11 @@ pub fn files_drive_dehydrate(path: String) -> Result<()> {
 pub fn files_used_drive_letters() -> u32 {
     files::used_drive_letters()
 }
+
+/// Tells Explorer a drive letter's name or icon changed, so "This PC" shows the new ones.
+#[napi]
+pub fn files_drive_letter_changed(letter: String) -> Result<()> {
+    checked_label(&letter, 1, "letter", |c| c.is_ascii_uppercase())?;
+    files::letter_changed(&letter);
+    Ok(())
+}

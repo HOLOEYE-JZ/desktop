@@ -6,6 +6,7 @@ import type { FilesFetchRequest } from '../src/shared/bridge';
 import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
 import { ALIGN, FetchRelay, PIECE } from '../src/main/files/drive-fetch';
 import { settleLetter, type LetterSystem } from '../src/main/files/drive-letter';
+import { isOurLabel, parseDefaultValue, type LetterLabel, type LetterLabelSystem } from '../src/main/files/drive-letter-label';
 import {
   accountKey,
   displayNameFor,
@@ -359,5 +360,153 @@ test.describe('the icon of a drive from before', () => {
     } finally {
       remove();
     }
+  });
+});
+
+test.describe("the drive letter's name and icon in This PC", () => {
+  const ICON = 'C:\\Program Files\\Bulwark\\resources\\os-icons\\bulwark.ico,0';
+
+  function fakeLabels(events: string[], initial: Record<string, LetterLabel> = {}): LetterLabelSystem & { keys: Map<string, LetterLabel> } {
+    const keys = new Map(Object.entries(initial));
+    return {
+      keys,
+      read: async (letter) => keys.get(letter) ?? { label: null, icon: null },
+      write: async (letter, wanted) => {
+        events.push(`name ${letter}`);
+        keys.set(letter, { ...wanted });
+        return true;
+      },
+      remove: async (letter) => {
+        events.push(`unname ${letter}`);
+        keys.delete(letter);
+      },
+      changed: (letter) => events.push(`notify ${letter}`),
+    };
+  }
+
+  function driveWith(options: { used?: Record<string, string>; labels?: Record<string, LetterLabel>; policyLetter?: () => string | null } = {}) {
+    const base = mkdtempSync(path.join(tmpdir(), 'bw-drive-label-'));
+    const events: string[] = [];
+    const map = new Map(Object.entries(options.used ?? {}));
+    const letters: LetterSystem = {
+      list: async () => new Map([...map].filter(([, target]) => target !== 'disk')),
+      add: async (letter, target) => {
+        events.push(`subst ${letter}`);
+        map.set(letter, target);
+        return true;
+      },
+      remove: async (letter) => {
+        events.push(`unsubst ${letter}`);
+        return map.delete(letter);
+      },
+      usedMask: () => [...map.keys()].reduce((mask, letter) => mask | (1 << (letter.charCodeAt(0) - 65)), 0),
+    };
+    const labels = fakeLabels(events, options.labels);
+    const store = { value: {} as StoredDrive };
+    const native = {
+      filesDriveRoots: async () => [],
+      filesDriveRegister: async (o: { provider: string; account: string }) => `${o.provider}!S-1-5-21-1!${o.account}`,
+      filesDriveUnregister: async () => {},
+      filesDriveConnect: () => 'c1',
+      filesDriveDisconnect: () => {},
+    } as unknown as NativeFilesModule;
+    const drive = new DriveController({
+      native,
+      supported: true,
+      provider: 'Bulwark Test Unit',
+      base,
+      profile: 'C:\\profile',
+      icon: ICON,
+      version: '1.2.3',
+      store: { read: () => store.value, write: (next) => (store.value = next) },
+      policy: () => ({ forcedOff: false, letter: options.policyLetter?.() ?? null }),
+      page: { fetch: () => true, fetchCancelled: () => {}, stateChanged: () => {} },
+      registry: { add: () => {}, remove: () => {} },
+      letters,
+      letterLabels: labels,
+      warn: () => {},
+      watchPins: false,
+    });
+    return { drive, events, labels, map, remove: () => rmSync(base, { recursive: true, force: true }) };
+  }
+
+  const yes = () => true;
+
+  test('a letter is named before it comes, and the name goes after it went: off, sign-out, another letter, wipe', async () => {
+    const { drive, events, labels, remove } = driveWith();
+    try {
+      expect((await drive.enable('acct-1', 'alice@example.org', yes)).ok).toBe(true);
+      expect((await drive.setLetter('Q', yes)).ok).toBe(true);
+      expect(events).toEqual(['name Q', 'notify Q', 'subst Q']);
+      expect(labels.keys.get('Q')).toEqual({ label: 'Bulwark Files', icon: ICON });
+
+      events.length = 0;
+      expect((await drive.setLetter('R', yes)).ok).toBe(true);
+      expect(events).toEqual(['name R', 'notify R', 'unsubst Q', 'subst R', 'unname Q', 'notify Q']);
+      expect([...labels.keys.keys()]).toEqual(['R']);
+
+      events.length = 0;
+      await drive.disable('acct-1', 'signed-out');
+      expect(events).toEqual(['unsubst R', 'unname R', 'notify R']);
+      expect(labels.keys.size).toBe(0);
+
+      expect((await drive.enable('acct-1', 'alice@example.org', yes)).ok).toBe(true);
+      expect(labels.keys.get('R')).toEqual({ label: 'Bulwark Files', icon: ICON });
+      expect((await drive.setLetter(null, yes)).ok).toBe(true);
+      expect(labels.keys.size).toBe(0);
+
+      expect((await drive.setLetter('S', yes)).ok).toBe(true);
+      await drive.wipe();
+      expect(labels.keys.size).toBe(0);
+    } finally {
+      remove();
+    }
+  });
+
+  test("someone else's name or icon for the letter is never replaced or removed", async () => {
+    const theirs = { label: 'Backup disk', icon: 'C:\\Tools\\disk.ico,0' };
+    const { drive, events, labels, remove } = driveWith({ labels: { Q: theirs, R: { label: null, icon: 'C:\\Tools\\disk.ico,0' } } });
+    try {
+      expect((await drive.enable('acct-1', 'alice@example.org', yes)).ok).toBe(true);
+      expect((await drive.setLetter('Q', yes)).ok).toBe(true);
+      // The letter is set; its name stays theirs.
+      expect(events).toEqual(['subst Q']);
+      expect((await drive.setLetter('R', yes)).ok).toBe(true);
+      await drive.disable('acct-1', 'user');
+      expect(labels.keys.get('Q')).toEqual(theirs);
+      expect(labels.keys.get('R')).toEqual({ label: null, icon: 'C:\\Tools\\disk.ico,0' });
+      expect(events.filter((event) => event.startsWith('name') || event.startsWith('unname'))).toEqual([]);
+    } finally {
+      remove();
+    }
+  });
+
+  test('a letter something else holds gets no name, not even for a moment', async () => {
+    let policyLetter: string | null = null;
+    const { drive, events, labels, remove } = driveWith({ used: { T: 'disk' }, policyLetter: () => policyLetter });
+    try {
+      expect((await drive.enable('acct-1', 'alice@example.org', yes)).ok).toBe(true);
+      policyLetter = 'T';
+      await drive.policyChanged();
+      expect(drive.state().letter.letter).toBeNull();
+      expect(events).toEqual([]);
+      expect(labels.keys.size).toBe(0);
+    } finally {
+      remove();
+    }
+  });
+
+  test('a name from an install somewhere else counts as ours', () => {
+    expect(isOurLabel({ label: 'Bulwark Files', icon: 'D:\\Apps\\Bulwark\\resources\\os-icons\\bulwark.ico,0' }, ICON)).toBe(true);
+    expect(isOurLabel({ label: null, icon: ICON.toUpperCase() }, ICON)).toBe(true);
+    expect(isOurLabel({ label: 'Backup disk', icon: ICON }, ICON)).toBe(false);
+    expect(isOurLabel({ label: 'Bulwark Files', icon: 'C:\\Tools\\disk.ico,0' }, ICON)).toBe(false);
+    expect(isOurLabel({ label: 'Bulwark Files', icon: null }, ICON)).toBe(false);
+  });
+
+  test("reg query's default value is read in any language", () => {
+    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\\DefaultLabel\r\n    (Standard)    REG_SZ    Bulwark Files\r\n\r\n')).toBe('Bulwark Files');
+    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\\DefaultIcon\r\n    (Default)    REG_EXPAND_SZ    C:\\a b\\bulwark.ico,0\r\n')).toBe('C:\\a b\\bulwark.ico,0');
+    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\r\n')).toBeNull();
   });
 });
