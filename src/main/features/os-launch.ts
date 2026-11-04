@@ -102,9 +102,9 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   const staysHidden = (request: LaunchRequest) =>
     request.commands.length === 0 && request.links.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
-  /** A link, or a new message, brings up its own window. */
+  /** A link, a new message or a mail link brings up its own window. */
   const opensOwnWindow = (request: LaunchRequest) =>
-    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message'));
+    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message' || command.type === 'mailto'));
 
   liveHandler = (request) => void run(request);
 

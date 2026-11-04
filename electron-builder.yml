@@ -102,7 +102,7 @@ nsis:
   artifactName: Bulwark-Setup-${version}-${arch}.${ext}
   shortcutName: Bulwark
   uninstallDisplayName: Bulwark
-  createDesktopShortcut: true
+  createDesktopShortcut: false
   createStartMenuShortcut: true
   runAfterFinish: true
   deleteAppDataOnUninstall: false
@@ -116,7 +116,7 @@ msi:
   upgradeCode: 7E4C3B52-6F0A-4D8E-9B31-2C5D8A1F6E47
   artifactName: Bulwark-${version}-${arch}.${ext}
   shortcutName: Bulwark
-  createDesktopShortcut: true
+  createDesktopShortcut: false
   createStartMenuShortcut: true
 
 mac:

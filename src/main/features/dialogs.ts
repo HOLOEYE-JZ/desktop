@@ -87,15 +87,18 @@ export const dialogsFeature: Feature = {
       const labels = buttons.filter((b): b is string => typeof b === 'string').slice(0, 4).map((b) => b.slice(0, 80));
       if (labels.length === 0) throw new Error('Not a question');
       if (waitingQuestions >= MAX_WAITING_QUESTIONS) return labels.length - 1;
-      // The page writes the rest of the box, so this is what tells it from the app's own
-      // questions. macOS shows no title, so there it goes under the text.
-      const from = strings().pageQuestionFrom.replaceAll('{caller}', new URL(ctx.origin).host);
+      // In instance mode the page writes the rest of the box, so this is what tells the
+      // server's questions from the app's own. macOS shows no title, so there it goes under
+      // the text. Standalone, the page is the app's own build: its questions are the app's,
+      // and its internal address would only look broken.
+      const standalone = ctx.mode === 'standalone';
+      const from = standalone ? strings().windowNames.main : strings().pageQuestionFrom.replaceAll('{caller}', new URL(ctx.origin).host);
       const text = typeof detail === 'string' ? detail.slice(0, MAX_TEXT) : undefined;
       const settings: Electron.MessageBoxOptions = {
         type: type === 'info' || type === 'warning' || type === 'question' ? type : 'question',
         title: from,
         message: message.slice(0, MAX_TEXT),
-        detail: process.platform === 'darwin' ? [text, from].filter(Boolean).join('\n\n') : text,
+        detail: process.platform === 'darwin' && !standalone ? [text, from].filter(Boolean).join('\n\n') : text,
         buttons: labels,
         defaultId: typeof defaultId === 'number' && defaultId >= 0 && defaultId < labels.length ? defaultId : labels.length - 1,
         cancelId: labels.length - 1,

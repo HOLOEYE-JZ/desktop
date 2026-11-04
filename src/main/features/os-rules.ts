@@ -137,6 +137,28 @@ export function pageSetPause(until: unknown, now: number): number | null {
   return typeof until === 'number' && Number.isFinite(until) ? Math.min(until, now + MAX_PAGE_PAUSE_MS) : null;
 }
 
+/** The tray's "Until I turn them back on": the furthest a Date goes. Only the tray sets it. */
+export const PAUSE_UNTIL_TURNED_ON = 8.64e15;
+
+/** "Paused until 14:35", with the day when it isn't today, or until turned back on. */
+export function pausedText(
+  until: number,
+  now: number,
+  text: { trayPausedUntil: (time: string) => string; trayPausedForever: string },
+  locale?: string,
+): string {
+  if (until >= PAUSE_UNTIL_TURNED_ON) return text.trayPausedForever;
+  const at = new Date(until);
+  const sameDay = at.toDateString() === new Date(now).toDateString();
+  let time: string;
+  try {
+    time = new Intl.DateTimeFormat(locale || undefined, sameDay ? { hour: '2-digit', minute: '2-digit' } : { weekday: 'short', hour: '2-digit', minute: '2-digit' }).format(at);
+  } catch {
+    time = at.toLocaleTimeString();
+  }
+  return text.trayPausedUntil(time);
+}
+
 function minutesOf(time: string): number {
   return Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
 }

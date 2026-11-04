@@ -70,6 +70,39 @@ export function toMenuTemplate(items: unknown, onPick: (id: string) => void): Me
   return walk(items, 0);
 }
 
+/** Where a bare language is mostly written, when the OS names no region for it. */
+const USUAL_REGION: Record<string, string> = {
+  ar: 'SA', ca: 'ES', cs: 'CZ', da: 'DK', el: 'GR', en: 'US', et: 'EE', fa: 'IR', he: 'IL', ja: 'JP',
+  ko: 'KR', nb: 'NO', pt: 'BR', sl: 'SI', sr: 'RS', sv: 'SE', uk: 'UA', vi: 'VN', zh: 'CN',
+};
+
+const LANGUAGE_TAG = /^[a-z]{2,3}(-[a-z0-9]{2,8})*$/i;
+
+/**
+ * What to check spelling in: the interface language, the composers' languages, and the
+ * languages the user set up in the OS (Windows' input languages), each with its region.
+ * Windows' own checker knows "en-US" and "de-DE" but not "en": with a bare tag Chromium
+ * wants a downloaded dictionary instead. A bare tag takes the region the OS uses for
+ * that language, else the usual one.
+ */
+export function spellLanguagesFor(ui: string, composer: readonly string[], system: readonly string[]): string[] {
+  const os = system.filter((tag) => LANGUAGE_TAG.test(tag));
+  const withRegion = (tag: string): string => {
+    const [base, ...rest] = tag.split('-');
+    if (rest.length) return tag;
+    const known = os.find((candidate) => candidate.includes('-') && candidate.split('-')[0].toLowerCase() === base.toLowerCase());
+    if (known) return known;
+    return `${base.toLowerCase()}-${USUAL_REGION[base.toLowerCase()] ?? base.toUpperCase()}`;
+  };
+  const out: string[] = [];
+  for (const tag of [ui, ...composer, ...os]) {
+    if (!LANGUAGE_TAG.test(tag)) continue;
+    const full = withRegion(tag);
+    if (!out.some((seen) => seen.toLowerCase() === full.toLowerCase())) out.push(full);
+  }
+  return out;
+}
+
 /** The language Chromium has a dictionary for, closest to what was asked. */
 export function pickSpellLanguages(wanted: string[], available: string[]): string[] {
   const out: string[] = [];

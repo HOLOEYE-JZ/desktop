@@ -414,6 +414,8 @@ export interface OsSummary {
   /** Newest conversations, whether read or not, for the jump list. */
   recent: OsTrayMessage[];
   nextEvent: { title: string; when: string } | null;
+  /** The account `unread` is from, when more than one is signed in. */
+  account?: string;
 }
 
 export type OsPowerEvent = 'suspend' | 'resume' | 'lock-screen' | 'unlock-screen';
