@@ -97,6 +97,8 @@ export interface ShellState {
   keyLossTold?: string;
   /** Instances the user said may use the OS keystore. Revocable in the webmail's settings. */
   keystoreOrigins?: string[];
+  /** The browser sign-in page's port per mail server, so what a password manager saved keeps matching. */
+  signInPorts?: Record<string, number>;
   /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
   importJobs?: StoredImportJob[];
 }

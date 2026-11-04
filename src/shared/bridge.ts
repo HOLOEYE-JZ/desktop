@@ -25,9 +25,42 @@ export type ServerPrepareResult =
   | { ok: true; approved: boolean }
   | { ok: false; reason: 'declined' | 'invalid' | 'policy' };
 
-export type BrowserSignInResult =
-  | { ok: true; code: string; state: string }
+/** Standalone: a mail server's own OAuth. Instance: the instance's own login page. */
+export type BrowserSignInRequest = { kind: 'oauth'; serverUrl: string } | { kind: 'instance' };
+
+export type BrowserSignInBegin =
+  | { ok: true; flowId: string; redirectUri: string; state: string }
   | { ok: false; error: string };
+
+export type BrowserSignInResult =
+  | { ok: true; code: string; state: string; iss?: string }
+  | { ok: false; error: string };
+
+/** The server has no OAuth: a page main serves. See src/main/browser-sign-in.ts. */
+export type PasswordSignInStart = { ok: true; host: string } | { ok: false; error: string };
+
+export type PasswordSignInAttempt =
+  | { ok: true; username: string; password: string; totp?: string }
+  | { ok: false; error: string };
+
+export type PasswordSignInAnswer =
+  | { ok: true }
+  | { ok: false; error: 'invalid_credentials' | 'totp_required' | 'other' };
+
+/**
+ * What `auth.claim()` hands out, once per document, in the page's first render: a
+ * same-origin frame can reach the parent's bridge, and main can't tell its calls apart.
+ */
+export interface BrowserSignInControls {
+  begin: (request: BrowserSignInRequest) => Promise<BrowserSignInBegin>;
+  complete: (flowId: string, url: string) => Promise<BrowserSignInResult>;
+  useScheme: (flowId: string) => Promise<string | null>;
+  cancel: (flowId: string) => void;
+  beginPassword: (flowId: string) => Promise<PasswordSignInStart>;
+  nextPassword: (flowId: string) => Promise<PasswordSignInAttempt>;
+  answerPassword: (flowId: string, answer: PasswordSignInAnswer) => void;
+  outcome: (flowId: string) => Promise<BrowserSignInResult>;
+}
 
 export type PluginInstallResult =
   | { ok: true; id: string; version: string }
@@ -405,6 +438,11 @@ export const CHANNEL = {
   authBegin: 'bulwark:auth.begin',
   authComplete: 'bulwark:auth.complete',
   authCancel: 'bulwark:auth.cancel',
+  authUseScheme: 'bulwark:auth.useScheme',
+  authPasswordBegin: 'bulwark:auth.password.begin',
+  authPasswordNext: 'bulwark:auth.password.next',
+  authPasswordAnswer: 'bulwark:auth.password.answer',
+  authPasswordOutcome: 'bulwark:auth.password.outcome',
   pluginsInstall: 'bulwark:plugins.install',
   osSubscribe: 'bulwark:os.subscribe',
   osCommand: 'bulwark:os.command',

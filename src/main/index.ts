@@ -35,7 +35,6 @@ import { LocalAdmin } from './local-admin';
 import { requestGate } from './request-gate';
 import { MenuController } from './menu';
 import { attachWindowGuards, type GuardOptions } from './navigation';
-import { LoopbackSignIn } from './oauth-loopback';
 import { applyPermissionPolicy } from './permissions';
 import { sandboxRefused } from './sandbox-check';
 import { connectionMustChange, decideStart, restartKey, type StartDecision } from './policy-start';
@@ -162,7 +161,6 @@ const SERVER_PORT = await reservePort();
 app.commandLine.appendSwitch('host-resolver-rules', `MAP ${APP_HOST}:443 127.0.0.1:${SERVER_PORT}`);
 
 let windowManager: WindowManager | null = null;
-let signIn: LoopbackSignIn | null = null;
 let appStartUrl = '';
 let mainWindowAllowed = false;
 let menu: MenuController | null = null;
@@ -405,7 +403,6 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const localAdmin = new LocalAdmin({ port: SERVER_PORT, certPem: tlsPair.certPem, launchSecret, mainSecret, password: adminPassword });
 
   const windows = createWindowManager('standalone', APP_ORIGIN, session, theme, `${APP_ORIGIN}/`);
-  signIn = new LoopbackSignIn(() => windows.focus());
   const ctx: FeatureContext = {
     mode: 'standalone',
     origin: APP_ORIGIN,
@@ -421,7 +418,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     openLink: openDeepLink,
     ...createChannels(APP_ORIGIN),
   };
-  registerBridge(ctx, { origin: APP_ORIGIN, signIn, pluginPolicy: policies.pluginPolicy });
+  registerBridge(ctx, { origin: APP_ORIGIN, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
   try {
@@ -738,7 +735,6 @@ if (gotLock) {
   // Pages save first, within limits, and then the quit goes on. A preventDefault in a
   // window's own close would call the quit off, so it's done here.
   app.on('before-quit', (event) => {
-    signIn?.closeAll();
     stateFile.save();
     windowManager?.beginQuit();
     if (quitFlushed || !windowManager) return;

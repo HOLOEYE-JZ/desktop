@@ -15,6 +15,8 @@ import {
   BRIDGE_VERSION,
   CHANNEL,
   PRELOAD_ARG,
+  type BrowserSignInControls,
+  type BrowserSignInRequest,
   type ConfirmOptions,
   type FlushAnswer,
   type LanguagesUpdate,
@@ -30,6 +32,7 @@ import {
   type LocalImportScanResult,
   type MenuState,
   type OsCommand,
+  type PasswordSignInAnswer,
   type OsDefaultAppStatus,
   type OsFile,
   type OsNotification,
@@ -88,10 +91,36 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
   ipcRenderer.on(CHANNEL.policyChanged, (_event, snapshot: PolicySnapshot) => {
     policySnapshot = snapshot;
   });
+  /**
+   * A same-origin frame reaches this object through `parent`, and main can't tell. So the
+   * page takes these once, in its first render, before any frame exists, and a flow only
+   * starts from a real click on it.
+   */
+  let signInClaimed = false;
+  const signInControls: BrowserSignInControls = {
+    begin: (request: BrowserSignInRequest) => {
+      if (!navigator.userActivation?.isActive) return Promise.resolve({ ok: false, error: 'no_gesture' });
+      return ipcRenderer.invoke(CHANNEL.authBegin, request);
+    },
+    complete: (flowId: string, url: string) => ipcRenderer.invoke(CHANNEL.authComplete, flowId, url),
+    useScheme: (flowId: string) => ipcRenderer.invoke(CHANNEL.authUseScheme, flowId),
+    cancel: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
+    beginPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordBegin, flowId),
+    nextPassword: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordNext, flowId),
+    answerPassword: (flowId: string, answer: PasswordSignInAnswer) => ipcRenderer.send(CHANNEL.authPasswordAnswer, flowId, answer),
+    outcome: (flowId: string) => ipcRenderer.invoke(CHANNEL.authPasswordOutcome, flowId),
+  };
   const common = {
     version: BRIDGE_VERSION,
     platform,
     mode,
+    auth: {
+      claim: (): BrowserSignInControls | null => {
+        if (signInClaimed) return null;
+        signInClaimed = true;
+        return signInControls;
+      },
+    },
     windows: {
       open: (url: string, options: { name: string; width: number; height: number }) =>
         ipcRenderer.send(CHANNEL.windowsOpen, url, options),
@@ -227,12 +256,6 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           prepare: (serverUrl: string) => ipcRenderer.invoke(CHANNEL.serversPrepare, serverUrl),
           noteSession: (serverUrl: string, urls: SessionUrls) => ipcRenderer.send(CHANNEL.serversNoteSession, serverUrl, urls),
           forget: (serverUrl: string, reason: 'failed' | 'signed-out') => ipcRenderer.send(CHANNEL.serversForget, serverUrl, reason),
-        },
-        auth: {
-          beginBrowserSignIn: () => ipcRenderer.invoke(CHANNEL.authBegin),
-          completeBrowserSignIn: (flowId: string, authorizeUrl: string) =>
-            ipcRenderer.invoke(CHANNEL.authComplete, flowId, authorizeUrl),
-          cancelBrowserSignIn: (flowId: string) => ipcRenderer.send(CHANNEL.authCancel, flowId),
         },
         plugins: {
           install: (slug: string, version?: string) => ipcRenderer.invoke(CHANNEL.pluginsInstall, slug, version),
