@@ -23,6 +23,7 @@ const EXPORTS = [
   'filesDriveDisconnect',
   'filesDriveHydrate',
   'filesDriveInfo',
+  'filesDriveLetterChanged',
   'filesDrivePlace',
   'filesDriveRegister',
   'filesDriveRoots',
@@ -74,8 +75,8 @@ test.describe('what the binary needs from Windows', () => {
   test('no Visual C++ runtime: it would not load on a machine without one', () => {
     const { imports } = readPe(FILE);
     expect(imports.filter((name) => /^(vcruntime|msvcp|ucrtbase|api-ms-win-crt-)/.test(name))).toEqual([]);
-    // The rest is Windows itself. cldapi is the Cloud Files API, for the Files drive.
-    for (const name of imports) expect(name, name).toMatch(/^(kernel32|kernelbase|ntdll|advapi32|bcrypt|bcryptprimitives|crypt32|ncrypt|user32|ole32|oleaut32|combase|ws2_32|userenv|cldapi|api-ms-win-[a-z0-9-]+)\.dll$/);
+    // The rest is Windows itself. cldapi is the Cloud Files API, for the Files drive; shell32 tells Explorer a drive letter's name changed.
+    for (const name of imports) expect(name, name).toMatch(/^(kernel32|kernelbase|ntdll|advapi32|bcrypt|bcryptprimitives|crypt32|ncrypt|user32|ole32|oleaut32|combase|ws2_32|userenv|cldapi|shell32|api-ms-win-[a-z0-9-]+)\.dll$/);
   });
 
   test('what it loads comes from System32 only, not from a folder beside the app', () => {

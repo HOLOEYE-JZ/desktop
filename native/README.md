@@ -30,6 +30,7 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `filesDriveHydrate(path)`: promise. Fetches all of a file through this process's own connection.
 - `filesDriveDehydrate(path)`: drops a file's content from the disk. Refused for a pinned one.
 - `filesUsedDriveLetters()`: the drive letters in use, as GetLogicalDrives' mask.
+- `filesDriveLetterChanged(letter)`: tells Explorer a drive letter's name or icon changed (`SHChangeNotify`), so This PC shows it without a restart.
 - `filesDriveStatusServe(clsid, icon, callback)`: serves the drive's status in Explorer (Windows 11) from this process under `clsid`. False where Windows has no such status. A click on the status line in Explorer calls `callback` with the sync root's id.
 - `filesDriveStatusStop()`: stops serving it.
 - `filesDriveStatusAttach(id, clsid)`: names the status class in a sync root's registration, where Explorer looks for it. Again after each `filesDriveRegister`.
@@ -51,7 +52,7 @@ Windows only: macOS and Linux have the same exports, which answer `files:unsuppo
 
 **Status in Explorer** (Windows 11 22H2 and later): the storage used of the account's limit and whether the drive is up to date, where OneDrive shows its own. Explorer reads a CLSID from the sync root's `StorageProviderStatusUISourceFactory` value and creates that class out of process. `filesDriveStatusServe` registers its class object with `CoRegisterClassObject` on a thread of its own in the multithreaded apartment; COM finds it without any CLSID in the registry, so nothing is left to clean up but that value, which goes with the sync root. With the app closed nobody answers and Explorer shows no status, which is true then. The words come from the page, in its language. The bar keeps Windows' colour: an `IReference<Color>` for `QuotaUsedColor` can't leave the process (Windows has no proxy for it), so nearly full is a notice line instead. On Windows without the status classes `filesDriveStatusServe` answers false and the rest of the drive works as before.
 
-It links `cldapi.dll` from System32. `scripts/files-drive-cleanup.mjs` removes the test sync roots a crashed test run leaves behind.
+It links `cldapi.dll` and `shell32.dll` from System32. `scripts/files-drive-cleanup.mjs` removes the test sync roots a crashed test run leaves behind.
 
 ## Hello
 
