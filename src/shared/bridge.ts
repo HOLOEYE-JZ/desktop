@@ -14,6 +14,8 @@ export interface WindowInfo {
   id: number;
   type: WindowType;
   title: string;
+  /** What the page calls the window in the Window menu (`windows.setMenuName`), if it said. */
+  menuName?: string;
   focused: boolean;
   /** False for a main window hidden while pop-outs are open. */
   visible?: boolean;
@@ -548,6 +550,7 @@ export const CHANNEL = {
   windowsCloseSelf: 'bulwark:windows.closeSelf',
   windowsSetRestore: 'bulwark:windows.setRestore',
   windowsSetRestoreEnabled: 'bulwark:windows.setRestoreEnabled',
+  windowsSetMenuName: 'bulwark:windows.setMenuName',
   windowsSessionReady: 'bulwark:windows.sessionReady',
   windowsSessionEnded: 'bulwark:windows.sessionEnded',
   windowsSpareReady: 'bulwark:windows.spareReady',

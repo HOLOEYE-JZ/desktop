@@ -147,14 +147,14 @@ test.describe('files handed to the app', () => {
     return list;
   });
 
-  test('"Open with" on several files, one launch each, asks once about all of them', async () => {
+  test('"Open with" on several files, one launch each, puts them all on one message', async () => {
     const pdf = path.join(folder, 'report.pdf');
     const png = path.join(folder, 'chart.png');
     writeFileSync(pdf, '%PDF-1.4');
     writeFileSync(png, 'png');
     await handle(['Bulwark.exe', '--', pdf]);
     await handle(['Bulwark.exe', '--', png]);
-    await expect.poll(taken, { timeout: 10_000 }).toEqual([{ type: 'files', reason: 'attach', ask: true, names: ['report.pdf', 'chart.png'], failed: [] }]);
+    await expect.poll(taken, { timeout: 10_000 }).toEqual([{ type: 'files', reason: 'attach', ask: undefined, names: ['report.pdf', 'chart.png'], failed: [] }]);
   });
 
   test('Send to puts everything on one message without asking, an .eml too', async () => {

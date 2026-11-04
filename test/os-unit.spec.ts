@@ -10,10 +10,12 @@ import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  currentOsSettings,
   electronRegistersScheme,
   isAccelerator,
   quickComposeBuiltIn,
   quickComposeShortcut,
+  showShortcutBuiltIn,
   isRetryableLoadError,
   launchSkipPaths,
   needsRegistration,
@@ -279,12 +281,33 @@ test.describe('the keys a page may hold for every app', () => {
     });
   }
 
-  for (const keys of ['CommandOrControl+Alt+Enter', 'CommandOrControl+Shift+B', 'CommandOrControl+Alt+Shift+F9', 'Ctrl+Alt+J', 'CommandOrControl+Alt+7']) {
+  for (const keys of ['CommandOrControl+Alt+Enter', 'CommandOrControl+Alt+F11', 'CommandOrControl+Alt+Shift+F9', 'Ctrl+Alt+J', 'CommandOrControl+Alt+7']) {
     test(`takes ${keys}`, () => {
       expect(cleanSettingsPatch({ quickComposeShortcut: keys })).toEqual({ quickComposeShortcut: keys });
       expect(cleanSettingsPatch({ showShortcut: keys })).toEqual({ showShortcut: keys });
     });
   }
+
+  // The composer's and the menus' own: a global key would take them from Bulwark itself.
+  for (const keys of ['CommandOrControl+Shift+B', 'CommandOrControl+Shift+C', 'CommandOrControl+Shift+Enter', 'CommandOrControl+Shift+M', 'CommandOrControl+Shift+N', 'CommandOrControl+Shift+S', 'CommandOrControl+Shift+R', 'CommandOrControl+Shift+F']) {
+    test(`refuses ${keys}, a key of the app's own`, () => {
+      for (const platform of ['win32', 'darwin', 'linux']) expect(isAccelerator(keys, platform), platform).toBe(false);
+      expect(cleanSettingsPatch({ showShortcut: keys })).toEqual({});
+    });
+  }
+
+  test('"Show Bulwark" by default is no key of the app\'s and passes the rules', () => {
+    for (const platform of ['win32', 'darwin', 'linux']) expect(isAccelerator(showShortcutBuiltIn(platform), platform), platform).toBe(true);
+    expect(showShortcutBuiltIn('win32')).toBe('CommandOrControl+Alt+F11');
+    expect(showShortcutBuiltIn('darwin')).toBe('CommandOrControl+Alt+B');
+  });
+
+  test('the old built-in Ctrl+Shift+B, stored by switching it on, becomes the new one; a key someone chose stays', () => {
+    expect(currentOsSettings({ showShortcut: 'CommandOrControl+Shift+B' }, 'win32')).toEqual({ showShortcut: 'CommandOrControl+Alt+F11' });
+    expect(currentOsSettings({ showShortcut: 'CommandOrControl+Shift+B' }, 'linux')).toEqual({ showShortcut: 'CommandOrControl+Alt+B' });
+    expect(currentOsSettings({ showShortcut: 'Ctrl+Alt+J' }, 'win32')).toEqual({ showShortcut: 'Ctrl+Alt+J' });
+    expect(currentOsSettings({ showShortcut: null }, 'win32')).toEqual({ showShortcut: null });
+  });
 
   test('a Mac\'s own keys are refused there, and free elsewhere', () => {
     expect(isAccelerator('CommandOrControl+Shift+4', 'darwin')).toBe(false);
@@ -306,7 +329,7 @@ test.describe('settings from a page', () => {
     expect(cleanSettingsPatch({ closeToTray: false, nonsense: true, startAtLogin: 'yes' })).toEqual({ closeToTray: false });
     expect(cleanSettingsPatch({ quietHoursStart: '25:00', quietHoursEnd: '07:30' })).toEqual({ quietHoursEnd: '07:30' });
     expect(cleanSettingsPatch({ showShortcut: 'rm -rf' })).toEqual({});
-    expect(cleanSettingsPatch({ showShortcut: 'CommandOrControl+Shift+B' })).toEqual({ showShortcut: 'CommandOrControl+Shift+B' });
+    expect(cleanSettingsPatch({ showShortcut: 'CommandOrControl+Alt+B' })).toEqual({ showShortcut: 'CommandOrControl+Alt+B' });
     expect(cleanSettingsPatch({ showShortcut: null })).toEqual({ showShortcut: null });
     expect(cleanSettingsPatch({ quickComposeShortcut: 'rm -rf' })).toEqual({});
     expect(cleanSettingsPatch({ quickComposeShortcut: 'CommandOrControl+Alt+M' })).toEqual({ quickComposeShortcut: 'CommandOrControl+Alt+M' });

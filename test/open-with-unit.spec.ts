@@ -5,6 +5,7 @@ import { expect, test } from '@playwright/test';
 import {
   launchFileCommand,
   LaunchFileBatch,
+  launchOpensOwnWindow,
   OPEN_WITH_EXTENSIONS,
   parseArgv,
   SEND_TO_FLAG,
@@ -19,11 +20,20 @@ const EXE = 'C:\\Program Files\\Bulwark\\Bulwark.exe';
 const ARGV = { cwd: 'C:\\work', skip: [] as string[], platform: 'win32' as const };
 
 test.describe('files opened with the app', () => {
-  test('a document from "Open with" asks; Send to attaches without asking, even an .eml', () => {
-    expect(launchFileCommand('attach', false)).toEqual({ reason: 'attach', ask: true });
+  test('a document from "Open with" attaches, as Send to does with anything, and neither asks', () => {
+    expect(launchFileCommand('attach', false)).toEqual({ reason: 'attach' });
     expect(launchFileCommand('open', false)).toEqual({ reason: 'open' });
     expect(launchFileCommand('open', true)).toEqual({ reason: 'attach' });
     expect(launchFileCommand('attach', true)).toEqual({ reason: 'attach' });
+  });
+
+  test('Send to and Open with on a document bring up a compose window, not the main window; an .ics does', () => {
+    const none = { links: [], commands: [] };
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\one.pdf', 'C:\\a\\two.png'], sendTo: true })).toBe(true);
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\letter.eml'], sendTo: true })).toBe(true);
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\one.pdf'], sendTo: false })).toBe(true);
+    expect(launchOpensOwnWindow({ ...none, files: ['C:\\a\\party.ics'], sendTo: false })).toBe(false);
+    expect(launchOpensOwnWindow({ ...none, files: [], sendTo: false })).toBe(false);
   });
 
   test('Send to\'s marker comes before the terminator, and every file after it counts', () => {

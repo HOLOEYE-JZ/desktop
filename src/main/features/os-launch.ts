@@ -25,6 +25,7 @@ import {
   parseToastUrl,
   requestFromUrl,
   type LaunchRequest,
+  launchOpensOwnWindow,
 } from './os-rules';
 
 const early: { urls: string[]; files: string[]; launches: { argv: string[]; cwd: string }[] } = { urls: [], files: [], launches: [] };
@@ -136,9 +137,6 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   const staysHidden = (request: LaunchRequest) =>
     request.commands.length === 0 && request.links.length === 0 && request.files.length === 0 && toastActions(request).length > 0 && toastActions(request).every(({ action }) => action !== 'open' && action !== 'reply');
 
-  /** A link, a new message or a mail link brings up its own window. */
-  const opensOwnWindow = (request: LaunchRequest) =>
-    request.links.length > 0 || (request.files.length === 0 && request.commands.length > 0 && request.commands.every((command) => command.type === 'new-message' || command.type === 'mailto'));
 
   liveHandler = (request) => void run(request);
 
@@ -146,7 +144,7 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
 
   liveSecondLaunch = (argv, cwd) => {
     const request = parseArgv(argv, { cwd, skip });
-    if (!staysHidden(request) && !opensOwnWindow(request)) hub.ctx.showMain();
+    if (!staysHidden(request) && !launchOpensOwnWindow(request)) hub.ctx.showMain();
     void run(request);
   };
   for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);

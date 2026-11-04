@@ -123,6 +123,8 @@ export interface ManagedWindow {
   flushable?: boolean;
   /** Saved: the next close goes straight through. */
   flushed?: boolean;
+  /** The Window menu's name for it, from its page: the view and account, a subject. */
+  menuName?: string;
   /** Asked and not answered yet. */
   flushWaits?: Set<(answers: FlushAnswer[]) => void>;
   /**
@@ -453,7 +455,10 @@ export class WindowManager extends EventEmitter<{
     // The OS is ending the session: there's no time for questions, only for saving.
     window.on('session-end', () => this.saveForSessionEnd());
     webContents.on('did-start-navigation', (details) => {
-      if (details.isMainFrame && !details.isSameDocument) this.emit('navigated', window);
+      if (!details.isMainFrame || details.isSameDocument) return;
+      // The next page names the window itself.
+      managed.menuName = undefined;
+      this.emit('navigated', window);
     });
     if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
@@ -822,6 +827,17 @@ export class WindowManager extends EventEmitter<{
 
   // ─── Saving before a window goes ────────────────────────────
 
+  /** The page's name for its window in the Window menu. One line, no control characters, not too long. */
+  setMenuName(window: BrowserWindow, name: string): void {
+    const managed = this.windows.get(window.id);
+    if (!managed) return;
+    // eslint-disable-next-line no-control-regex
+    const clean = name.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300) || undefined;
+    if (clean === managed.menuName) return;
+    managed.menuName = clean;
+    this.emitChanged();
+  }
+
   setFlushable(window: BrowserWindow, flushable: boolean): void {
     const managed = this.windows.get(window.id);
     if (managed) managed.flushable = flushable;
@@ -1053,7 +1069,7 @@ export class WindowManager extends EventEmitter<{
     const focused = BrowserWindow.getFocusedWindow()?.id;
     return [...this.windows.values()]
       .filter((w) => !w.window.isDestroyed())
-      .map(({ window, type }) => ({ id: window.id, type, title: window.getTitle(), focused: window.id === focused, visible: window.isVisible() }));
+      .map(({ window, type, menuName }) => ({ id: window.id, type, title: window.getTitle(), ...(menuName ? { menuName } : {}), focused: window.id === focused, visible: window.isVisible() }));
   }
 
   broadcast(channel: string, payload: unknown): void {

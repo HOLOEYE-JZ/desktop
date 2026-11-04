@@ -135,6 +135,79 @@ export function findBarItem<T extends BarSourceItem>(menus: readonly T[], key: s
   return labelParts(found.label ?? '').text === label ? found : null;
 }
 
+/**
+ * No line at the start or end of a menu, and none right after another, counting only what
+ * shows: a hidden item between two lines would leave them side by side. Hidden items stay,
+ * since some still answer their keys. Submenus too.
+ */
+export function tidySeparators<T extends { type?: string; visible?: boolean; submenu?: unknown }>(items: readonly T[]): T[] {
+  const out: T[] = [];
+  let lastShown: 'none' | 'item' | 'separator' = 'none';
+  for (const item of items) {
+    const submenu = Array.isArray(item.submenu) ? { ...item, submenu: tidySeparators(item.submenu as T[]) } : item;
+    if (item.type === 'separator') {
+      if (lastShown !== 'item') continue;
+      lastShown = 'separator';
+      out.push(submenu);
+      continue;
+    }
+    out.push(submenu);
+    if (item.visible !== false) lastShown = 'item';
+  }
+  // A line with nothing shown after it.
+  for (let at = out.length - 1; at >= 0; at--) {
+    if (out[at].type === 'separator') {
+      out.splice(at, 1);
+      continue;
+    }
+    if (out[at].visible !== false) break;
+  }
+  return out;
+}
+
+/** Roles that show or keep no mail: the lock screen's field still needs Copy and Paste. */
+const ROLES_WHILE_LOCKED = new Set(['about', 'quit', 'minimize', 'zoom', 'front', 'close', 'hide', 'hideothers', 'unhide', 'services', 'undo', 'redo', 'cut', 'copy', 'paste', 'pasteandmatchstyle', 'selectall']);
+const IDS_WHILE_LOCKED = new Set(['file.unlock', 'file.quit', 'file.close', 'window.minimize', 'window.cycle', 'help.docs']);
+
+/**
+ * What the menus still offer while the app is locked: About, Unlock, Exit, the Window menu's
+ * basics and the editing keys of the PIN field. Nothing that shows, prints, saves or sends mail,
+ * and no settings: the page under the lock screen can't act, so they'd print the lock screen.
+ */
+export function enabledWhileLocked(item: { id?: string | null; role?: string | null }): boolean {
+  if (item.role && ROLES_WHILE_LOCKED.has(item.role.toLowerCase())) return true;
+  return !!item.id && (IDS_WHILE_LOCKED.has(item.id) || item.id.startsWith('window.focus.'));
+}
+
+const WINDOW_NAME_MAX = 50;
+
+/**
+ * The Window menu's lines: each window by the name its page gave (the main window by view and
+ * account, a message by its subject, a composer by its subject or "New message"), else its
+ * title, else its kind. Long names end in "…", and two the same get a number, so no two lines
+ * read alike. Locked, only the kinds: a subject is mail.
+ */
+export function windowMenuNames(
+  list: readonly { type: string; title: string; menuName?: string }[],
+  kinds: Record<string, string>,
+  locked = false,
+): string[] {
+  const cut = (name: string) => {
+    const chars = Array.from(name);
+    return chars.length > WINDOW_NAME_MAX ? `${chars.slice(0, WINDOW_NAME_MAX - 1).join('').trimEnd()}…` : name;
+  };
+  const names = list.map((info) => cut((locked ? '' : (info.menuName || info.title)).trim() || kinds[info.type] || ''));
+  const total = new Map<string, number>();
+  for (const name of names) total.set(name, (total.get(name) ?? 0) + 1);
+  const seen = new Map<string, number>();
+  return names.map((name) => {
+    if ((total.get(name) ?? 0) < 2) return name;
+    const n = (seen.get(name) ?? 0) + 1;
+    seen.set(name, n);
+    return n === 1 ? name : `${name} (${n})`;
+  });
+}
+
 /** Native menus read & as a marker. A folder called "R&D" has to stay that. */
 export function escapeMenuLabel(label: string): string {
   return label.replace(/&/g, '&&');

@@ -10,7 +10,22 @@ import { fileURLToPath } from 'node:url';
 import { parseDeepLink, type WindowLink } from '../deep-link';
 import type { OsCommand, OsSettings } from '../../shared/bridge';
 
-export const DEFAULT_SHOW_SHORTCUT = 'CommandOrControl+Shift+B';
+/**
+ * "Show Bulwark" from anywhere: Ctrl+Alt+B (⌥⌘B). Not on Windows, where Ctrl+Alt is AltGr
+ * and B types on 44 of its layouts (see quickComposeBuiltIn): a function key types nothing.
+ * Never one of the app's own keys: a global one never reaches the app (`APP_KEYS`).
+ */
+export function showShortcutBuiltIn(platform: string): string {
+  return platform === 'win32' ? 'CommandOrControl+Alt+F11' : 'CommandOrControl+Alt+B';
+}
+
+/** What switching it on gave before: the composer's Bcc key. */
+const OLD_SHOW_SHORTCUT = 'CommandOrControl+Shift+B';
+
+/** Stored settings as they apply now: the old built-in key, which nobody picked, becomes the new one. */
+export function currentOsSettings<T extends { showShortcut?: string | null }>(stored: T, platform: string): T {
+  return stored.showShortcut === OLD_SHOW_SHORTCUT ? { ...stored, showShortcut: showShortcutBuiltIn(platform) } : stored;
+}
 /** Same as HANDOFF_MAX_BYTES in the webmail: it wouldn't take more. */
 export const MAX_LAUNCH_FILE_BYTES = 100 * 1024 * 1024;
 const MAX_URL_LENGTH = 8192;
@@ -71,6 +86,13 @@ const SHORTCUT_MODIFIERS: Record<string, string> = {
 };
 /** What a system or every app already uses, past the rule of two modifiers. `cmd` is Cmd on a Mac and Ctrl elsewhere. */
 const RESERVED_SHORTCUTS = new Set(['cmd+shift+A', 'cmd+shift+C', 'cmd+shift+V', 'cmd+shift+X', 'cmd+shift+Z']);
+/**
+ * The app's own keys with two modifiers: the composer's (Cc, Bcc, schedule send) and the
+ * menus' (new message, new window, Save as PDF, reply all, forward). A global key is taken
+ * before any window sees it, so one of these would stop working in Bulwark itself.
+ * Same list as APP_KEYS in the webmail's lib/desktop/shortcut-keys.ts.
+ */
+const APP_KEYS = new Set(['cmd+shift+B', 'cmd+shift+C', 'cmd+shift+ENTER', 'cmd+shift+M', 'cmd+shift+N', 'cmd+shift+S', 'cmd+shift+R', 'cmd+shift+F']);
 const RESERVED_ON_MAC = new Set([
   'cmd+shift+3', 'cmd+shift+4', 'cmd+shift+5', 'cmd+shift+Q',
   'cmd+ctrl+Q', 'cmd+ctrl+F',
@@ -99,7 +121,7 @@ export function isAccelerator(value: unknown, platform: string = process.platfor
   const distinct = new Set(modifiers);
   if (distinct.size !== modifiers.length || distinct.size < 2 || !(distinct.has('cmd') || distinct.has('ctrl'))) return false;
   const named = `${[...distinct].sort().join('+')}+${key.toUpperCase()}`;
-  return !RESERVED_SHORTCUTS.has(named) && !(mac && RESERVED_ON_MAC.has(named));
+  return !RESERVED_SHORTCUTS.has(named) && !APP_KEYS.has(named) && !(mac && RESERVED_ON_MAC.has(named));
 }
 
 /** What a page may change: known keys of the right type, nothing else. */
@@ -244,10 +266,25 @@ export function fileReason(file: string): 'open' | 'attach' {
   return OPENABLE.has(path.extname(file).toLowerCase()) ? 'open' : 'attach';
 }
 
-/** What becomes of the files of one launch. Send to attaches whatever it is; "Open with" asks. */
+/**
+ * What becomes of the files of one launch. Send to attaches whatever it is; "Open with" attaches
+ * a document and opens an .eml, .ics or .vcf. Neither asks: a compose window with the files
+ * opens, as for a mail link, and the main window stays where it is.
+ */
 export function launchFileCommand(reason: 'open' | 'attach', sendTo: boolean): { reason: 'open' | 'attach'; ask?: boolean } {
   if (sendTo) return { reason: 'attach' };
-  return reason === 'attach' ? { reason, ask: true } : { reason };
+  return { reason };
+}
+
+/**
+ * A second launch that brings up a window of its own and leaves the main window be: a link, a
+ * new message, a mail link, or files for a new message (Send to, Open with on a document).
+ */
+export function launchOpensOwnWindow(request: Pick<LaunchRequest, 'links' | 'commands' | 'files' | 'sendTo'>): boolean {
+  if (request.links.length > 0) return true;
+  if (request.commands.length === 0 && request.files.length === 0) return false;
+  return request.commands.every((command) => command.type === 'new-message' || command.type === 'mailto')
+    && request.files.every((file) => launchFileCommand(fileReason(file), request.sendTo).reason === 'attach');
 }
 
 /** At most this many files go on one message from the OS, and this much together. The rest are named as not opened. */

@@ -18,8 +18,8 @@
  */
 
 import { app, BrowserWindow, Menu, shell, type MenuItem, type MenuItemConstructorOptions } from 'electron';
-import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState, type WindowInfo } from '../shared/bridge';
-import { assignMnemonics, barItemsOf, findBarItem, type BarSourceItem } from './menu-text';
+import { CHANNEL, type MenuBarEntry, type MenuBarEvent, type MenuBarMenu, type MenuBarReport, type MenuState } from '../shared/bridge';
+import { assignMnemonics, barItemsOf, enabledWhileLocked, findBarItem, tidySeparators, windowMenuNames, type BarSourceItem } from './menu-text';
 import { strings } from './strings';
 import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
@@ -47,6 +47,9 @@ function runsInMain(id: string): boolean {
 
 /** New items of the other apps, importing and settings: what the main window shows. */
 const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import', 'file.importCalendar', 'file.importContacts']);
+
+/** The hidden line that takes Ctrl+F off a Mac. */
+const FIND_KEY_ID = 'edit.forwardOrSearch';
 
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
 const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
@@ -87,11 +90,20 @@ function withoutMnemonic(label: string): string {
   return label.replace(/&(.)/g, '$1');
 }
 
+function greyWhileLocked(items: MenuItemConstructorOptions[]): void {
+  for (const item of items) {
+    if (Array.isArray(item.submenu)) greyWhileLocked(item.submenu);
+    else if (item.type !== 'separator' && !enabledWhileLocked(item)) item.enabled = false;
+  }
+}
+
 export class MenuController {
   private readonly stateByWindow = new WeakMap<BrowserWindow, MenuState>();
   private readonly extensions = new Map<MenuSection, Extension[]>();
   private windows: WindowManager | null = null;
   private timer: NodeJS.Timeout | null = null;
+  /** The app lock is on: only what shows no mail stays enabled (`enabledWhileLocked`). */
+  private locked = false;
 
   constructor(private readonly hooks: MenuHooks) {}
 
@@ -114,7 +126,7 @@ export class MenuController {
     windows.on('changed', (list) => {
       // Windows came or went, or a title changed: the Window menu has other lines now.
       // Only the focus moving is a matter of ticks and greyed items.
-      const signature = list.map((w) => `${w.id}:${w.title}`).join('\n');
+      const signature = list.map((w) => `${w.id}:${w.title}:${w.menuName ?? ''}`).join('\n');
       if (signature !== this.windowSignature) {
         this.windowSignature = signature;
         this.scheduleRebuild();
@@ -154,8 +166,16 @@ export class MenuController {
     const walk = (items: MenuItem[]) => {
       for (const item of items) {
         if (item.submenu) walk(item.submenu.items);
+        if (this.locked && !item.submenu && item.type !== 'separator' && !enabledWhileLocked(item)) {
+          item.enabled = false;
+          continue;
+        }
         const id = item.id;
         if (!id) continue;
+        if (id === FIND_KEY_ID) {
+          item.enabled = this.ctrlFTarget() !== null;
+          continue;
+        }
         if (id.startsWith('window.focus.')) {
           item.checked = this.windows?.focusedManaged()?.window.id === Number(id.slice('window.focus.'.length));
           continue;
@@ -172,8 +192,25 @@ export class MenuController {
     walk(menu.items);
   }
 
+  /**
+   * Ctrl+F on Windows and Linux: Forward while a message is selected in Mail, as in Outlook
+   * beside Ctrl+R, and the view's search everywhere else. Null when neither can run.
+   */
+  private ctrlFTarget(): 'message.forward' | 'edit.search' | null {
+    if (this.stateOf('message.forward').enabled) return 'message.forward';
+    if (this.stateOf('edit.search').enabled) return 'edit.search';
+    return null;
+  }
+
   /** Items whose state comes from the page or the policy. */
   private readonly knownCommands = new Set<string>(SHELL_STATE_COMMANDS);
+
+  /** The app lock closed or opened: a new menu, greyed or not. */
+  setLocked(locked: boolean): void {
+    if (this.locked === locked) return;
+    this.locked = locked;
+    this.rebuild();
+  }
 
   /** The language changed: a new menu. */
   refresh(): void {
@@ -258,12 +295,12 @@ export class MenuController {
     const text = strings();
     const list = windows.list();
     if (list.length === 0) return [];
-    const nameOf = (info: WindowInfo) => info.title || text.windowNames[info.type];
+    const names = windowMenuNames(list, text.windowNames, this.locked);
     return [
       { type: 'separator' },
-      ...list.map((info): MenuItemConstructorOptions => ({
+      ...list.map((info, index): MenuItemConstructorOptions => ({
         id: `window.focus.${info.id}`,
-        label: nameOf(info).replace(/&/g, '&&'),
+        label: names[index].replace(/&/g, '&&'),
         type: 'checkbox',
         checked: info.focused,
         click: () => windows.focus(info.id),
@@ -359,6 +396,19 @@ export class MenuController {
         { type: 'separator' },
         // What the screen searches. Settings has no search of its own and goes to mail's.
         this.command('edit.search', searchLabels[section], mac ? {} : { accelerator: 'Ctrl+E' }),
+        // Ctrl+F: Forward or search, whichever the window can do (ctrlFTarget). Hidden: Forward shows the key.
+        ...(mac ? [] : [{
+          id: FIND_KEY_ID,
+          label: text.menuForward,
+          accelerator: 'Ctrl+F',
+          visible: false,
+          acceleratorWorksWhenHidden: true,
+          enabled: this.ctrlFTarget() !== null,
+          click: () => {
+            const target = this.ctrlFTarget();
+            if (target) this.dispatch(target);
+          },
+        } as MenuItemConstructorOptions]),
       ],
     };
 
@@ -418,7 +468,11 @@ export class MenuController {
         // Outlook's and Apple Mail's keys; the single ones still work beside them.
         this.command('message.reply', text.menuReply, { accelerator: 'CmdOrCtrl+R' }),
         this.command('message.replyAll', text.menuReplyAll, { accelerator: 'CmdOrCtrl+Shift+R' }),
-        this.command('message.forward', text.menuForward, { accelerator: 'CmdOrCtrl+Shift+F' }),
+        // Ctrl+F as in Outlook (the hidden FIND_KEY_ID runs it); Ctrl+Shift+F still works. A Mac keeps Apple Mail's.
+        ...(mac ? [this.command('message.forward', text.menuForward, { accelerator: 'CmdOrCtrl+Shift+F' })] : [
+          this.command('message.forward', text.menuForward, { accelerator: 'Ctrl+F', registerAccelerator: false }),
+          this.command('message.forward', text.menuForward, { id: 'message.forwardAlt', accelerator: 'Ctrl+Shift+F', visible: false, acceleratorWorksWhenHidden: true }),
+        ]),
         { type: 'separator' },
         this.command('message.markRead', text.menuMarkRead, win ? { accelerator: 'Ctrl+Q' } : this.pageKey('Shift+I')),
         this.command('message.markUnread', text.menuMarkUnread, mac ? {} : { accelerator: 'Ctrl+U' }),
@@ -475,7 +529,9 @@ export class MenuController {
       id: 'window',
       label: text.menuWindow,
       submenu: [
-        { role: 'minimize', label: text.menuMinimize },
+        // Windows and Linux apps don't minimise on Ctrl+M (Outlook checks for mail there):
+        // the role brings that key along, so only a Mac gets the role.
+        mac ? { role: 'minimize', label: text.menuMinimize } : { id: 'window.minimize', label: text.menuMinimize, click: onFocused((window) => window.minimize()) },
         ...(mac ? [{ role: 'zoom' } as MenuItemConstructorOptions] : []),
         {
           id: 'window.cycle',
@@ -523,6 +579,9 @@ export class MenuController {
     // Only Mail, or a composer, has a Message menu. Left out rather than hidden: a native
     // bar may still draw a hidden top-level menu, and it would keep its Alt letter.
     const bar = [fileMenu, editMenu, viewMenu, ...(mail || composing ? [messageMenu] : []), goMenu, windowMenu, helpMenu];
+    // A hidden line (Reading pane outside Mail) leaves its lines around it: one is enough.
+    for (const menu of [appMenu, ...bar]) menu.submenu = tidySeparators(menu.submenu as MenuItemConstructorOptions[]);
+    if (this.locked) for (const menu of [appMenu, ...bar]) greyWhileLocked(menu.submenu as MenuItemConstructorOptions[]);
     assignMnemonics(bar.map((item) => item.label as string)).forEach((label, index) => {
       bar[index].label = label;
     });

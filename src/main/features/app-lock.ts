@@ -118,15 +118,21 @@ function setup(ctx: FeatureContext): void {
   });
 
   // Only with a lock, as in the tray: a greyed line with no way to make it work says nothing.
-  ctx.menu.extend('file', () => (appLockGate.enrolled ? [{
+  // Locked, it's Unlock instead: the main window, where the lock screen asks for the PIN.
+  ctx.menu.extend('file', () => (appLockGate.enrolled ? [appLockGate.locked ? {
+    id: 'file.unlock',
+    label: strings().menuUnlock,
+    click: () => ctx.showMain(),
+  } : {
     id: 'file.lockNow',
     label: strings().menuLockNow,
-    enabled: !appLockGate.locked,
     click: () => appLockGate.requestLock(),
   }] : []));
 
+  ctx.menu.setLocked(appLockGate.enrolled && appLockGate.locked);
   appLockGate.on('locked', (locked) => {
     if (locked) blankTitles();
+    ctx.menu.setLocked(locked && appLockGate.enrolled);
     ctx.menu.rebuild();
   });
 

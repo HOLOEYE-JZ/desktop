@@ -125,6 +125,9 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   ctx.on(CHANNEL.windowsSetRestoreEnabled, (_event, _window, enabled) => {
     if (typeof enabled === 'boolean') windows.setRestoreEnabled(enabled);
   });
+  ctx.on(CHANNEL.windowsSetMenuName, (_event, window, name) => {
+    if (window && typeof name === 'string') windows.setMenuName(window, name);
+  });
   ctx.on(CHANNEL.windowsSessionReady, () => windows.emit('sessionReady'));
   ctx.on(CHANNEL.windowsSessionEnded, () => windows.emit('sessionEnded'));
   ctx.on(CHANNEL.windowsSpareReady, (_event, window) => {

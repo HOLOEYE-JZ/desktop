@@ -5,7 +5,7 @@ import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { appPathOfDeepLink, deepLinkFromArgv, LinkRateLimit, parseDeepLink } from '../src/main/deep-link';
 import { AltTracker } from '../src/main/features/window-input';
-import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, toMenuTemplate, type BarSourceItem } from '../src/main/menu-text';
+import { assignMnemonics, barItemsOf, escapeMenuLabel, findBarItem, labelParts, lineMnemonics, linkOffersOpen, pdfFileName, pickSpellLanguages, safeFileName, safeImageName, shownAccelerator, tidySeparators, toMenuTemplate, windowMenuNames, type BarSourceItem } from '../src/main/menu-text';
 import { LABEL_KEY } from '../src/main/label-keys';
 import { accentHex, highContrastColours } from '../src/main/chrome-colours';
 import { nextInCycle, sumAnswers } from '../src/main/window-logic';
@@ -160,6 +160,37 @@ test.describe('the pure parts', () => {
     const [day, week] = toMenuTemplate([{ id: 'd', label: 'Day', accelerator: 'D' }, { id: 'w', label: 'Week', accelerator: 'not a key' }], () => {});
     if (process.platform !== 'darwin') expect(day).toMatchObject({ label: 'Day', accelerator: 'D', registerAccelerator: false });
     expect(week.accelerator).toBeUndefined();
+  });
+
+  test('no two lines in a row where a hidden line stood between them, and none at an end', () => {
+    const sep = { type: 'separator' };
+    const shown = (label: string): { label: string; type?: string; visible?: boolean } => ({ label });
+    const hidden = (label: string) => ({ label, visible: false });
+    const labels = (items: { type?: string; label?: string }[]) => items.map((item) => item.type === 'separator' ? '-' : item.label);
+    expect(labels(tidySeparators([shown('Refresh'), hidden('F5'), sep, hidden('Reading pane'), sep, shown('Zoom in')]))).toEqual(['Refresh', 'F5', '-', 'Reading pane', 'Zoom in']);
+    expect(labels(tidySeparators([sep, shown('A'), sep, sep, shown('B'), sep, hidden('C')]))).toEqual(['A', '-', 'B', 'C']);
+    const [withSub] = tidySeparators([{ label: 'Sub', submenu: [sep, shown('x'), sep] }]);
+    expect(labels(withSub.submenu as { label?: string }[])).toEqual(['x']);
+  });
+
+  test('Window menu names: as the page gives them, cut with an ellipsis, numbered when two read alike, only kinds while locked', () => {
+    const kinds = { main: 'Bulwark', message: 'Message', composer: 'New message', settings: 'Settings' };
+    const subject = 'Invoice 2026-118 (3) - dso-ux-desktop@example.org - Bulwark';
+    const list = [
+      { type: 'main', title: subject, menuName: 'Inbox - dso-ux-desktop@example.org' },
+      { type: 'message', title: subject, menuName: 'Invoice 2026-118 (3)' },
+      { type: 'message', title: 'x', menuName: 'Invoice 2026-118 (3)' },
+      { type: 'composer', title: 'New message - a@example.org - Bulwark', menuName: 'New message' },
+      { type: 'composer', title: '', menuName: '' },
+      { type: 'message', title: 'An older page' },
+      { type: 'message', title: '', menuName: 'A subject that goes on and on and on, far longer than any menu should be' },
+    ];
+    const names = windowMenuNames(list, kinds);
+    expect(names.slice(0, 6)).toEqual(['Inbox - dso-ux-desktop@example.org', 'Invoice 2026-118 (3)', 'Invoice 2026-118 (3) (2)', 'New message', 'New message (2)', 'An older page']);
+    expect(Array.from(names[6]).length).toBeLessThanOrEqual(50);
+    expect(names[6].endsWith('…')).toBe(true);
+    expect(new Set(names).size).toBe(names.length);
+    expect(windowMenuNames(list.slice(0, 2), kinds, true)).toEqual(['Bulwark', 'Message']);
   });
 
   test('a second launch finds its link among the arguments', () => {
@@ -333,6 +364,26 @@ test.describe('the app menu and windows', () => {
     expect((await menuItem(app, 'view.menuBar'))?.type).toBe('checkbox');
   });
 
+  test('Ctrl+F forwards with a message selected, and searches without one', async () => {
+    test.skip(process.platform === 'darwin', 'a Mac keeps Cmd+F for finding');
+    const seen: string[] = [];
+    await page.exposeFunction('__menuSeen', (id: string) => { seen.push(id); });
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { menu: { onCommand(l: (id: string) => void): void } } }).bulwarkDesktop.menu.onCommand((id) => (window as unknown as { __menuSeen(id: string): void }).__menuSeen(id)));
+    const enabled = () => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('edit.forwardOrSearch')?.enabled ?? null);
+    await setState({ 'message.forward': true, 'edit.search': true });
+    await expect.poll(enabled).toBe(true);
+    await clickMenuItem(app, 'edit.forwardOrSearch');
+    await expect.poll(() => seen.at(-1)).toBe('message.forward');
+    await setState({ 'message.forward': false, 'edit.search': true });
+    await expect.poll(async () => (await menuItem(app, 'message.forward'))?.enabled).toBe(false);
+    await clickMenuItem(app, 'edit.forwardOrSearch');
+    await expect.poll(() => seen.at(-1)).toBe('edit.search');
+    // A composer: neither, so the key is the editor's.
+    await setState({ 'message.forward': false, 'edit.search': false });
+    await expect.poll(enabled).toBe(false);
+    await setState({});
+  });
+
   test('single keys only show: the page has them, and knows when someone types', async () => {
     const star = await menuItem(app, 'message.star');
     expect(star).toMatchObject({ accelerator: 'S', registerAccelerator: false });
@@ -354,7 +405,10 @@ test.describe('the app menu and windows', () => {
     };
     await registered('message.reply', 'CmdOrCtrl+R');
     await registered('message.replyAll', 'CmdOrCtrl+Shift+R');
-    await registered('message.forward', 'CmdOrCtrl+Shift+F');
+    await registered('message.forwardAlt', 'Ctrl+Shift+F');
+    // Ctrl+F shows on Forward and runs through a hidden line: Forward, or search where there's nothing to forward.
+    expect(await menuItem(app, 'message.forward')).toMatchObject({ accelerator: 'Ctrl+F', registerAccelerator: false });
+    await registered('edit.forwardOrSearch', 'Ctrl+F');
     await registered('message.markUnread', 'Ctrl+U');
     await registered('edit.search', 'Ctrl+E');
     await registered('view.refresh', 'F9');
@@ -404,6 +458,33 @@ test.describe('the app menu and windows', () => {
     await setState({});
     await expect.poll(async () => menuItem(app, 'compose.send')).toBeNull();
     expect(await topLabels()).toContain('Message');
+  });
+
+  test('outside Mail the View menu has no two lines in a row where Reading pane is hidden', async () => {
+    const viewLines = () => app.evaluate(({ Menu }) => {
+      const view = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'View')!;
+      return view.submenu!.items.filter((item) => item.visible).map((item) => item.type);
+    });
+    await setState({ 'section.settings': true });
+    try {
+      await expect.poll(() => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('view.readingPane')?.visible ?? false)).toBe(false);
+      expect((await viewLines()).join(',')).not.toContain('separator,separator');
+      expect((await viewLines())[0]).not.toBe('separator');
+    } finally {
+      await setState({});
+      // Mail again before the next test reads the menus.
+      await expect.poll(() => app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('view.readingPane')?.visible ?? false)).toBe(true);
+    }
+  });
+
+  test('Window > Minimise has no Ctrl+M off a Mac: Windows apps don\'t minimise on it', async () => {
+    test.skip(process.platform === 'darwin', 'a Mac minimises on Cmd+M');
+    const minimise = await app.evaluate(({ Menu }) => {
+      const windowMenu = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'Window')!;
+      const item = windowMenu.submenu!.items[0];
+      return { label: item.label, role: item.role ?? null, accelerator: item.accelerator ?? null, roleKey: (item as unknown as { getDefaultRoleAccelerator?: () => string | null }).getDefaultRoleAccelerator?.() ?? null };
+    });
+    expect(minimise).toMatchObject({ label: 'Minimize', role: null, accelerator: null, roleKey: null });
   });
 
   test('each part of the app searches itself, only Mail has a Message menu, and File > Import has each app\'s import', async () => {
@@ -592,6 +673,20 @@ test.describe('the app menu and windows', () => {
       return seen;
     });
     expect(focused).toHaveLength(1);
+    await other.close();
+  });
+
+  test('a page that names its window is listed by that name, not by its title', async () => {
+    const other = await openPopout('named1');
+    const list = () => app.evaluate(({ Menu }) => {
+      const windowMenu = Menu.getApplicationMenu()!.items.find((item) => item.label.replace('&', '') === 'Window');
+      return windowMenu!.submenu!.items.filter((item) => item.id?.startsWith('window.focus.')).map((item) => item.label);
+    });
+    // Set again each time: the page names itself as it loads, and a new page starts unnamed.
+    await expect.poll(async () => {
+      await other.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { setMenuName(name: string): void } } }).bulwarkDesktop.windows.setMenuName('Quarterly budget'));
+      return (await list()).includes('Quarterly budget');
+    }).toBe(true);
     await other.close();
   });
 
