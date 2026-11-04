@@ -145,9 +145,25 @@ export async function waitForLogin(page: Page): Promise<void> {
   await page.locator('#username').waitFor({ state: 'visible', timeout: 90_000 });
 }
 
+/**
+ * The sign-in page asks for the email address first and looks up its server; the
+ * server field opens only when nothing is found (the test domains have no JMAP
+ * records), or behind "Change" when something was.
+ */
+export async function fillServer(page: Page, serverUrl: string, username = ACCOUNT): Promise<void> {
+  const field = page.locator('#jmap-endpoint');
+  if (!(await field.isVisible())) {
+    await page.fill('#username', username);
+    const change = page.getByTestId('login-server-change');
+    await expect(field.or(change)).toBeVisible({ timeout: 30_000 });
+    if (!(await field.isVisible())) await change.click();
+  }
+  await field.fill(serverUrl);
+}
+
 export async function fillLogin(page: Page, serverUrl: string, username: string, password: string): Promise<void> {
   await waitForLogin(page);
-  await page.fill('#jmap-endpoint', serverUrl);
+  await fillServer(page, serverUrl, username);
   await page.fill('#username', username);
   await page.fill('#password', password);
 }

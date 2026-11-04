@@ -7,7 +7,7 @@ import { connect, type AddressInfo } from 'node:net';
 import path from 'node:path';
 import { chromium, expect, test, type Browser, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
-import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, launch, launchStandalone, opened, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, STALWARTS, tempProfile, waitForLogin } from './helpers';
+import { ACCOUNT, APP_ORIGIN, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillServer, launch, launchStandalone, opened, prompts, removeProfile, requireAccount, SCREENSHOTS, shownPage, STALWARTS, tempProfile, waitForLogin } from './helpers';
 
 /**
  * "Sign in with your browser" on the real app. A real Chromium plays the system browser:
@@ -156,7 +156,7 @@ for (const { label, url } of STALWARTS) {
       await waitForLogin(page);
       if (label === '1.0') await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-browser-signin-login.png') });
 
-      await page.fill('#jmap-endpoint', url);
+      await fillServer(page, url);
       await page.getByTestId('desktop-browser-sign-in').click();
       await expect(page.getByTestId('desktop-browser-waiting')).toBeVisible();
       if (label === '1.0') await page.screenshot({ path: path.join(SCREENSHOTS, 'desktop-browser-signin-waiting.png') });
@@ -227,7 +227,7 @@ for (const { label, url } of STALWARTS) {
       const { app, page } = await launchStandalone(profile);
       await fakeOsIntegration(app);
       await waitForLogin(page);
-      await page.fill('#jmap-endpoint', url);
+      await fillServer(page, url);
       await page.getByTestId('desktop-browser-sign-in').click();
       const context = await systemBrowser();
       const tab = await context.newPage();
@@ -267,7 +267,7 @@ test.describe('what can go wrong, on the real app', () => {
   });
 
   async function startFlow(count: number) {
-    await page.fill('#jmap-endpoint', server);
+    await fillServer(page, server);
     await page.getByTestId('desktop-browser-sign-in').click();
     const target = new URL(await nextOpened(app, count));
     const redirect = new URL(target.searchParams.get('redirect_uri')!);
@@ -529,7 +529,7 @@ test.describe('policies', () => {
     const { app, page } = await launchStandalone(profile, policy.arg);
     await fakeOsIntegration(app);
     await waitForLogin(page);
-    await page.fill('#jmap-endpoint', server);
+    await fillServer(page, server);
     await page.getByTestId('desktop-browser-sign-in').click();
     await expect(page.getByTestId('desktop-policy-notice')).toBeVisible();
     const answer = await app.evaluate(async ({ BrowserWindow, ipcMain }, { origin, serverUrl }) => {
@@ -586,7 +586,7 @@ test.describe('a server with no OAuth', () => {
     await fakeOsIntegration(app, 0);
     const output = watchOutput(app, page);
     await waitForLogin(page);
-    await page.fill('#jmap-endpoint', relayUrl);
+    await fillServer(page, relayUrl);
     await page.getByTestId('desktop-browser-sign-in').click();
     const address = new URL(await nextOpened(app));
     expect(address.hostname).toBe('127.0.0.1');
@@ -636,7 +636,7 @@ test.describe('a server with no OAuth', () => {
     const { app, page } = await launchStandalone(profile);
     await fakeOsIntegration(app, 1);
     await waitForLogin(page);
-    await page.fill('#jmap-endpoint', relayUrl);
+    await fillServer(page, relayUrl);
     await page.getByTestId('desktop-browser-sign-in').click();
     await expect(page.getByTestId('desktop-notice')).toBeVisible();
     expect(await opened(app)).toEqual([]);
@@ -679,7 +679,7 @@ test.describe('a server that refuses a loopback redirect', () => {
     const { app, page } = await launchStandalone(profile);
     await fakeOsIntegration(app, 0);
     await waitForLogin(page);
-    await page.fill('#jmap-endpoint', url);
+    await fillServer(page, url);
     await page.getByTestId('desktop-browser-sign-in').click();
     const target = new URL(await nextOpened(app));
     expect(target.searchParams.get('redirect_uri')).toBe('bulwark://sign-in/callback');
