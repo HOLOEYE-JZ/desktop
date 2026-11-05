@@ -8,13 +8,14 @@ import { expect, test } from '@playwright/test';
 import { icoSizes } from '../scripts/ico.mjs';
 
 /**
- * How the installers look: the NSIS window in the app's colours (build/installer-theme.nsh),
- * its words in every language the installer has, and the DMG's background. Running the
- * installer takes a desktop; the README's checklist has that part.
+ * How the installers look: the NSIS window, a borderless square painted by the BulwarkSplash
+ * plugin (native/nsis-splash, called from build/installer-theme.nsh), its words in every
+ * language the installer has, and the DMG's background.
  */
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const BUILD = path.join(ROOT, 'build');
+const PLUGIN = path.join(BUILD, 'x86-unicode', 'BulwarkSplash.dll');
 const require = createRequire(path.join(ROOT, 'package.json'));
 const yaml = require('js-yaml');
 const { lcid } = require('app-builder-lib/out/util/langs');
@@ -23,7 +24,8 @@ const TEMPLATES = path.join(path.dirname(require.resolve('app-builder-lib/packag
 
 const read = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
 const theme = () => read(path.join(BUILD, 'installer-theme.nsh'));
-const STRINGS = ['bulwarkInstalling', 'bulwarkUpdating', 'bulwarkRemoving', 'bulwarkOpensAfter', 'bulwarkRestartsAfter'];
+const splash = () => read(path.join(ROOT, 'native', 'nsis-splash', 'splash.c'));
+const STRINGS = ['bulwarkInstalling', 'bulwarkUpdating', 'bulwarkRemoving', 'bulwarkOpensAfter', 'bulwarkRestartsAfter', 'bulwarkProfileStays', 'bulwarkPercent'];
 
 /** id -> language id -> text, from build/installer-strings.nsh. */
 function strings(): Map<string, Map<number, string>> {
@@ -35,42 +37,76 @@ function strings(): Map<string, Map<number, string>> {
   return result;
 }
 
+const CACHE = path.join(process.env.LOCALAPPDATA ?? '', 'electron-builder', 'Cache');
+const nsisDir = existsSync(CACHE) ? readdirSync(CACHE).find((entry) => entry.startsWith('nsis-') && !entry.startsWith('nsis-resources')) : undefined;
+function makensis(): string | null {
+  if (!nsisDir) return null;
+  const top = path.join(CACHE, nsisDir);
+  for (const folder of [top, ...readdirSync(top, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(top, d.name))]) {
+    const file = path.join(folder, 'Bin', 'makensis.exe');
+    if (existsSync(file)) return file;
+  }
+  return null;
+}
+const vswhere = path.join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
+const canBuild = process.platform === 'win32' && !!nsisDir && existsSync(vswhere);
+
+/** The plugin, built from this checkout's source. */
+function buildPlugin(): void {
+  const made = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'build-nsis-splash.mjs')], { encoding: 'utf8', cwd: ROOT });
+  expect(made.status, made.stdout + made.stderr).toBe(0);
+  expect(existsSync(PLUGIN)).toBe(true);
+}
+
 test.describe('the NSIS window', () => {
-  test('is drawn by the include electron-builder takes', () => {
+  test('is drawn by the include electron-builder takes, through the plugin', () => {
     expect(config.nsis.oneClick).toBe(true);
     const include = read(path.join(ROOT, config.nsis.include));
     expect(include).toContain('!include "${__FILEDIR__}\\installer-theme.nsh"');
     // The uninstaller's window is drawn first thing in the uninstall section.
     expect(include).toMatch(/!macro customUnInstall\n {2}!ifmacrodef bulwarkThemeUninstallerPage\n {4}!insertmacro bulwarkThemeUninstallerPage\n/);
+    const text = theme();
+    expect(text).toContain('!addplugindir /x86-unicode "${BULWARK_THEME_DIR}\\x86-unicode"');
+    expect(text).toContain('BulwarkSplash::Show');
+    // See-through from the first frame until painted: no white flash.
+    expect(text).toContain('!define MUI_CUSTOMFUNCTION_GUIINIT bulwarkThemeGuiInit');
+    expect(text).toContain('!define MUI_CUSTOMFUNCTION_UNGUIINIT un.bulwarkThemeGuiInit');
+    // The release builds the plugin before the installers, and git never holds it.
+    expect(read(path.join(ROOT, '.github', 'workflows', 'release.yml'))).toMatch(/run: node scripts\/build-nsis-splash\.mjs\n\n\s+- name: Build installers/);
+    expect(read(path.join(ROOT, '.gitignore'))).toContain('build/x86-unicode/');
+  });
+
+  test('is a borderless 300 by 340 square with rounded corners, dragged by any point', () => {
+    const source = splash();
+    expect(source).toContain('#define DIP_WIDTH 300');
+    expect(source).toContain('#define DIP_HEIGHT 340');
+    expect(source).toMatch(/style &= ~\(WS_CAPTION \| WS_SYSMENU/);
+    expect(source).toContain('ex |= WS_EX_APPWINDOW;');
+    expect(source).toContain('DWMWA_WINDOW_CORNER_PREFERENCE');
+    expect(source).toContain('return hit == HTCLIENT ? HTCAPTION : hit;');
+    // Painted in one go, nothing erased first: the old window's statics flickered white.
+    expect(source).toMatch(/case WM_ERASEBKGND:\n\s+return 1;/);
+    expect(source).not.toContain('"STATIC"');
   });
 
   test('has the app colours, light and dark, and Windows decides which', () => {
-    const text = theme();
-    expect(text).toContain('ReadRegDWORD $0 HKCU "${BULWARK_THEME_KEY}" "AppsUseLightTheme"');
-    expect(text).toContain('"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"');
-    // Background and text: the webmail's --color-background and --color-foreground.
-    expect(text).toContain('SetCtlColors $R0 0F172A FFFFFF');
-    expect(text).toContain('SetCtlColors $R0 FAFAFA 0A0A0A');
-    expect(text).toContain('SetCtlColors ${HWND} 59687C FFFFFF');
-    expect(text).toContain('SetCtlColors ${HWND} ADADAD 0A0A0A');
+    const source = splash();
+    expect(theme()).toContain('"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"');
+    expect(source).toContain('L"AppsUseLightTheme"');
+    // The webmail's background, foreground, muted, accent (primary, info in dark) and border.
+    for (const colour of ['0xffffff', '0x0f172a', '0x59687c', '0x185aea', '0xe2e8f0', '0x0a0a0a', '0xfafafa', '0xadadad', '0x60a5fa', '0x262626']) {
+      expect(source).toContain(`Hex(${colour})`);
+    }
     // High Contrast keeps Windows' colours.
-    expect(text).toContain("SystemParametersInfoW(i 0x42");
+    expect(source).toContain('SPI_GETHIGHCONTRAST');
+    expect(source).toContain('GetSysColor(COLOR_HIGHLIGHT)');
   });
 
-  test('draws the progress bar flat, in the accent colour', () => {
-    const text = theme();
-    expect(text).toContain(`System::Call 'uxtheme::SetWindowTheme(p $R2, w "", w "")'`);
-    // PBM_SETBARCOLOR and PBM_SETBKCOLOR, 0xBBGGRR: #185aea on #e2e8f0, #60a5fa on #262626.
-    expect(text).toContain('SendMessage $R2 0x409 0 0xEA5A18');
-    expect(text).toContain('SendMessage $R2 0x2001 0 0xF0E8E2');
-    expect(text).toContain('SendMessage $R2 0x409 0 0xFAA560');
-    expect(text).toContain('SendMessage $R2 0x2001 0 0x262626');
-  });
-
-  test('has a logo for every scale from 100 to 300 %', () => {
+  test('has a logo for every scale from 100 to 250 %, and 256 above', () => {
     expect(theme()).toContain('"${BULWARK_THEME_DIR}\\installer-logo.ico"');
     const sizes = icoSizes(readFileSync(path.join(BUILD, 'installer-logo.ico')));
-    for (const scale of [100, 125, 150, 175, 200, 225, 250, 300]) expect(sizes).toContain((48 * scale) / 100);
+    for (const scale of [100, 125, 150, 175, 200, 225, 250]) expect(sizes).toContain((96 * scale) / 100);
+    expect(sizes).toContain(256);
   });
 
   test('says what it does in every language the installer has', () => {
@@ -85,7 +121,11 @@ test.describe('the NSIS window', () => {
       expect([...texts!.keys()].sort(), name).toEqual([...ids].sort());
       const english = texts!.get(1033)!;
       for (const [id, value] of texts!) {
-        expect(value, `${name} ${id}`).toContain('${PRODUCT_NAME}');
+        if (name === 'bulwarkPercent') {
+          expect(value, `${name} ${id}`).toMatch(/^[^#]{0,2}#[^#]{0,2}$/);
+          continue;
+        }
+        if (name !== 'bulwarkProfileStays') expect(value, `${name} ${id}`).toContain('${PRODUCT_NAME}');
         if (id !== 1033) expect(value, `${name} ${id} is not translated`).not.toBe(english);
       }
     }
@@ -95,6 +135,8 @@ test.describe('the NSIS window', () => {
     expect(table.get('bulwarkInstalling')!.get(1031)).toBe('${PRODUCT_NAME} wird installiert…');
     expect(table.get('bulwarkUpdating')!.get(1031)).toBe('${PRODUCT_NAME} wird aktualisiert…');
     expect(table.get('bulwarkRemoving')!.get(1031)).toBe('${PRODUCT_NAME} wird deinstalliert…');
+    expect(table.get('bulwarkPercent')!.get(1033)).toBe('#%');
+    expect(table.get('bulwarkPercent')!.get(1031)).toBe('# %');
     // makensis reads it as UTF-8 only with the mark.
     expect([...readFileSync(path.join(BUILD, 'installer-strings.nsh')).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
   });
@@ -125,16 +167,104 @@ test.describe('the NSIS window', () => {
   });
 });
 
-const CACHE = path.join(process.env.LOCALAPPDATA ?? '', 'electron-builder', 'Cache');
-const hasNsis = existsSync(CACHE) && readdirSync(CACHE).some((entry) => entry.startsWith('nsis-') && !entry.startsWith('nsis-resources'));
+// The plugin for real: a small NSIS program with an instfiles page, as electron-builder's,
+// hands its window over and reports what the window became. It installs nothing; its window
+// shows for about two seconds.
+test.describe('the plugin', () => {
+  test.skip(!canBuild, "needs Windows, MSVC and electron-builder's NSIS");
+  test.setTimeout(180_000);
+
+  test('takes the caption away, makes the square, and shows the progress in percent', () => {
+    buildPlugin();
+    const dir = mkdtempSync(path.join(tmpdir(), 'bw-splash-'));
+    try {
+      const report = path.join(dir, 'report.txt');
+      const script = path.join(dir, 'probe.nsi');
+      writeFileSync(
+        script,
+        [
+          'Unicode true',
+          'ManifestDPIAware true',
+          `!addplugindir /x86-unicode "${path.dirname(PLUGIN)}"`,
+          '!include "MUI2.nsh"',
+          `OutFile "${path.join(dir, 'probe.exe')}"`,
+          'RequestExecutionLevel user',
+          'ShowInstDetails nevershow',
+          '!insertmacro MUI_PAGE_INSTFILES',
+          '!insertmacro MUI_LANGUAGE "English"',
+          'Section',
+          '  Push "Software\\BulwarkTest\\NoSuchKey"',
+          '  Push "0"',
+          '  Push "0"',
+          `  Push "${path.join(BUILD, 'installer-logo.ico')}"`,
+          '  Push "#%"',
+          '  Push "A line"',
+          '  Push "A heading"',
+          '  BulwarkSplash::Show',
+          '  Pop $0',
+          '  FindWindow $1 "#32770" "" $HWNDPARENT',
+          '  GetDlgItem $1 $1 1004',
+          // NSIS moves the bar on after every instruction, by more after a plugin call. Read
+          // just before the wait, during which it stands still, then what the window says.
+          '  SendMessage $1 0x408 0 0 $R0',
+          '  SendMessage $1 0x407 0 0 $R1',
+          '  Sleep 1500',
+          `  System::Call 'user32::GetPropW(p $HWNDPARENT, w "BulwarkSplashPercent") i .R2'`,
+          '  IntOp $R0 $R0 * 100',
+          '  IntOp $R0 $R0 / $R1',
+          "  System::Call 'user32::GetWindowLongW(p $HWNDPARENT, i -16) i .r2'",
+          "  System::Call 'user32::GetWindowLongW(p $HWNDPARENT, i -20) i .r3'",
+          "  System::Call '*(i, i, i, i) p .r9'",
+          "  System::Call 'user32::GetWindowRect(p $HWNDPARENT, p r9)'",
+          "  System::Call '*$9(i .r4, i .r5, i .r6, i .r7)'",
+          '  System::Free $9',
+          '  IntOp $6 $6 - $4',
+          '  IntOp $7 $7 - $5',
+          "  System::Call 'user32::GetDC(p $HWNDPARENT) p .r9'",
+          "  System::Call 'gdi32::GetDeviceCaps(p r9, i 90) i .r8'",
+          "  System::Call 'user32::ReleaseDC(p $HWNDPARENT, p r9)'",
+          `  FileOpen $9 "${report}" w`,
+          '  FileWrite $9 "$0 $2 $3 $6 $7 $8 $R2 $R0"',
+          '  FileClose $9',
+          '  SetAutoClose true',
+          'SectionEnd',
+        ].join('\n'),
+      );
+      const made = spawnSync(makensis()!, ['-V2', script], { encoding: 'utf8' });
+      expect(made.status, made.stdout + made.stderr).toBe(0);
+      const ran = spawnSync(path.join(dir, 'probe.exe'), [], { timeout: 60_000 });
+      expect(ran.status).toBe(0);
+      const [result, style, ex, width, height, dpi, percent, bar] = readFileSync(report, 'utf8').trim().split(' ');
+      expect(result).toBe('ok');
+      const WS_CAPTION = 0x00c00000;
+      const WS_SYSMENU = 0x00080000;
+      expect(Number(style) & WS_CAPTION).toBe(0);
+      expect(Number(style) & WS_SYSMENU).toBe(0);
+      // In the taskbar, and not see-through.
+      expect(Number(ex) & 0x40000).toBe(0x40000);
+      expect(Number(ex) & 0x80000).toBe(0);
+      expect(Number(width)).toBe(Math.round((300 * Number(dpi)) / 96));
+      expect(Number(height)).toBe(Math.round((340 * Number(dpi)) / 96));
+      // What the bar says, stored plus one. Read before the wait; a few instructions have
+      // moved it on since, never back.
+      const shown = Number(percent) - 1;
+      expect(Number(bar)).toBeGreaterThan(0);
+      expect(shown, `window ${shown}, bar ${bar}`).toBeGreaterThanOrEqual(Number(bar));
+      expect(shown - Number(bar), `window ${shown}, bar ${bar}`).toBeLessThanOrEqual(6);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+});
 
 // makensis runs with warnings as errors: a language without the window's words, or words for
 // a language the installer doesn't load, fails here. Only built, never run.
 test.describe('the installer with this config', () => {
-  test.skip(process.platform !== 'win32' || !hasNsis, "needs Windows and electron-builder's NSIS");
+  test.skip(!canBuild, "needs Windows, MSVC and electron-builder's NSIS");
   test.setTimeout(240_000);
 
   test('builds, installer and uninstaller', () => {
+    buildPlugin();
     const dir = mkdtempSync(path.join(tmpdir(), 'bw-look-'));
     try {
       const app = path.join(dir, 'app');
