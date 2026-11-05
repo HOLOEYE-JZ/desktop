@@ -41,6 +41,10 @@ const MAX_REMEMBERED_PORTS = 64;
 
 export interface SignInText {
   signInDone: string;
+  /** With `{address}`: the account a password sign-in just signed in. */
+  signInDoneAs: string;
+  /** The button that brings the app forward (bulwark://inbox). */
+  signInOpenApp: string;
   signInFailed: string;
   signInLinkUsed: string;
   signInDeclined: string;
@@ -168,15 +172,24 @@ function refuse(res: ServerResponse, status: number): void {
   res.writeHead(status, { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', connection: 'close' }).end();
 }
 
-const STYLE = 'body{font:16px system-ui,sans-serif;display:grid;place-items:center;min-height:90vh;margin:0}@media(prefers-color-scheme:dark){body{background:#17181b;color:#f4f4f5}input{background:#26272b;color:inherit;border-color:#55565c}}main{width:min(24em,90vw);padding:1em}p{margin:.75em 0}h1{font-size:1.25em;margin:.25em 0 .5em}label{display:block;margin:.75em 0 .25em;font-size:.875em}input{box-sizing:border-box;width:100%;padding:.55em .7em;font:inherit;border:1px solid #bbb;border-radius:8px}button{margin-top:1.25em;width:100%;padding:.6em;font:inherit;font-weight:600;color:#fff;background:#2563eb;border:0;border-radius:8px;cursor:pointer}.error{color:#b91c1c}@media(prefers-color-scheme:dark){.error{color:#fca5a5}}';
+/** The sign-in card's look: the standard theme's colours, light or dark as the browser is. */
+const STYLE = ':root{color-scheme:light dark;--bg:#f1f5f9;--card:#fff;--fg:#0f172a;--muted:#59687c;--border:#e2e8f0;--primary:#2563eb;--field:#f8fafc;--error:#b91c1c}@media(prefers-color-scheme:dark){:root{--bg:#0b1120;--card:#111827;--fg:#f1f5f9;--muted:#94a3b8;--border:#1f2937;--primary:#3b82f6;--field:#0f172a;--error:#fca5a5}}body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:var(--bg);color:var(--fg)}main{box-sizing:border-box;width:min(26em,92vw);padding:2em 1.75em;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 10px 30px rgba(15,23,42,.08);text-align:center}.logo{width:48px;height:48px;fill:var(--primary);display:block;margin:0 auto .75em}p{margin:.75em 0}h1{font-size:1.2em;margin:.25em 0 .5em}form{text-align:start}label{display:block;margin:.75em 0 .25em;font-size:.875em;font-weight:500}input{box-sizing:border-box;width:100%;padding:.6em .75em;font:inherit;color:inherit;background:var(--field);border:1px solid var(--border);border-radius:10px}input:focus{outline:2px solid var(--primary);outline-offset:1px}button,.button{display:block;box-sizing:border-box;margin-top:1.25em;width:100%;padding:.65em;font:inherit;font-weight:600;color:#fff;background:var(--primary);border:0;border-radius:10px;cursor:pointer;text-decoration:none;text-align:center}.error{color:var(--error)}';
+
+/** Bulwark's mark, inline: the page's policy lets nothing load. */
+const LOGO = '<svg class="logo" viewBox="0 0 1000 1000" role="img" aria-label="Bulwark"><path d="M 373.467 557.247 L 55.226 271.52 L 55.226 385.564 C 55.226 398.153 62.453 415.6 71.355 424.501 L 107.525 460.671 C 116.426 469.573 123.653 487.02 123.653 499.609 L 123.653 682.08 C 123.655 718.462 133.336 750.017 152.047 778.668 L 373.467 557.247 Z M 626.533 557.247 L 944.774 271.52 L 944.774 396.969 C 944.774 403.263 941.16 411.987 936.709 416.437 L 884.411 468.736 C 879.96 473.186 876.347 481.91 876.347 488.204 L 876.347 682.08 C 876.345 718.462 866.664 750.017 847.953 778.668 L 626.533 557.247 Z M 500 638.743 L 500 638.743 C 466.206 638.738 448.855 625.316 424.448 603.033 L 197.809 829.672 C 261.382 884.635 364.213 931.859 500 990 Q 500 990 500 990 C 635.787 931.859 738.618 884.635 802.191 829.672 L 575.552 603.033 C 551.145 625.316 533.794 638.738 500 638.743 Z M 483.028 563.647 L 63.713 187.183 C 59.029 182.978 55.226 174.454 55.226 168.159 L 55.226 122.542 C 55.226 116.247 60.206 109.988 66.339 108.573 L 215.181 74.225 C 221.314 72.809 226.293 76.77 226.293 83.065 L 226.293 176.92 L 352.034 147.895 C 358.167 146.479 363.147 140.219 363.147 133.925 L 363.147 51.483 C 363.147 45.189 368.126 38.93 374.259 37.514 L 488.888 11.061 C 495.021 9.646 504.979 9.646 511.112 11.061 L 625.741 37.514 C 631.874 38.93 636.853 45.189 636.853 51.483 L 636.853 133.925 C 636.853 140.219 641.833 146.479 647.966 147.895 L 773.707 176.92 L 773.707 83.065 C 773.707 76.77 778.686 72.809 784.819 74.225 L 933.661 108.573 C 939.794 109.988 944.774 116.247 944.774 122.542 L 944.774 168.159 C 944.774 174.454 940.971 182.978 936.287 187.183 L 516.972 563.647 C 507.605 572.056 492.395 572.056 483.028 563.647 Z"/></svg>';
+
+/** Where "Open Bulwark" goes: the app's own scheme, which brings it forward on the inbox. */
+export const OPEN_APP_LINK = 'bulwark://inbox';
 
 function page(title: string, body: string, nonce: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width"><style nonce="${nonce}">${STYLE}</style></head><body><main>${body}</main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="light dark"><style nonce="${nonce}">${STYLE}</style></head><body><main>${LOGO}${body}</main></body></html>`;
 }
 
-function sendMessage(res: ServerResponse, status: number, message: string): void {
+/** A line of text, and on success the button back to the app (settings-p3-15). */
+function sendMessage(res: ServerResponse, status: number, message: string, openApp?: string): void {
   const nonce = randomBytes(16).toString('base64');
-  send(res, status, page('Bulwark', `<p>${escapeHtml(message)}</p>`, nonce), nonce);
+  const button = openApp ? `<a class="button" href="${OPEN_APP_LINK}">${escapeHtml(openApp)}</a>` : '';
+  send(res, status, page('Bulwark', `<p>${escapeHtml(message)}</p>${button}`, nonce), nonce);
 }
 
 function sendForm(res: ServerResponse, status: number, text: SignInText, password: PasswordState, error: string | null, needsCode: boolean): void {
@@ -271,7 +284,7 @@ export class LoopbackSignIn {
     // Closed once the browser has its page, not before.
     whenClosed(res, () => this.delivered(flow, result));
     const declined = url.searchParams.get('error') === 'access_denied';
-    sendMessage(res, code ? 200 : declined ? 403 : 400, code ? text.signInDone : declined ? text.signInDeclined : text.signInFailed);
+    sendMessage(res, code ? 200 : declined ? 403 : 400, code ? text.signInDone : declined ? text.signInDeclined : text.signInFailed, code ? text.signInOpenApp : undefined);
   }
 
   private delivered(flow: Flow, result: BrowserSignInResult): void {
@@ -490,7 +503,7 @@ export class LoopbackSignIn {
     if (answer.ok) {
       flow.answered = true;
       whenClosed(pending.response, () => this.delivered(flow, { ok: true, code: '', state: flow.state }));
-      return sendMessage(pending.response, 200, text.signInDone);
+      return sendMessage(pending.response, 200, fill(text.signInDoneAs, { address: password.username }), text.signInOpenApp);
     }
     const message = answer.error === 'invalid_credentials' ? text.signInWrongPassword : answer.error === 'totp_required' ? text.signInCodeNeeded : text.signInNoAnswer;
     sendForm(pending.response, answer.error === 'other' ? 502 : 401, text, password, message, answer.error === 'totp_required');
