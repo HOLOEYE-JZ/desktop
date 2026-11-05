@@ -1,7 +1,9 @@
 // Packs the webmail server into server.asar for one target, before electron-builder
-// copies resources. 3,100 loose files make an install slow, since a virus scanner reads
-// each one. This leaves about 400: native binaries, which have to be real files, and
-// .next/static and public, which are served as streams and are cheaper loose.
+// copies resources. Loose files make an install slow: the installer writes each one and a
+// virus scanner reads each one. Only native binaries stay out, about 10 files, since
+// Windows loads a DLL only from a real file. .next/static and public stay in: Next serves
+// them with fs.stat and fs.createReadStream, which read straight out of an asar in
+// Electron's utility process, without copying anything out.
 //
 // Before packing, because electron-builder only adds an asar to the ASAR integrity list
 // if it exists when it computes that list. So the server is covered by integrity too.
@@ -19,9 +21,9 @@ import { trimServer } from './server-natives.mjs';
 
 export const OS_NAMES = { win32: 'win', darwin: 'mac', linux: 'linux' };
 
-/** Must stay real files: the OS loads these, or Next streams them. */
+/** Must stay real files: the OS loads these. sharp's DLLs sit next to its .node in @img. */
 export const UNPACK_FILES = '*.{node,dll,so,dylib}';
-export const UNPACK_DIRS = '{.next/static,public,node_modules/@img}';
+export const UNPACK_DIRS = 'node_modules/@img';
 
 export function archiveDir(projectDir, platform, arch) {
   return path.join(projectDir, '.server-build', `${OS_NAMES[platform] ?? platform}-${arch}`);

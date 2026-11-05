@@ -258,6 +258,54 @@ export function findPackagedTaskIconProblems(resources, platform) {
   return [...findTaskIconProblems(dir), ...findAppIconProblems(dir)].map((problem) => `resources/${TASK_ICON_FOLDER}/${problem}`);
 }
 
+/**
+ * Every loose file costs every install and update: the installer writes it and a virus scanner
+ * reads it. server.asar.unpacked holds native modules only (server-archive.mjs), and a Windows
+ * package stays under a count that Electron's own files, its locales and ours fit in.
+ */
+export const MAX_SERVER_UNPACKED_FILES = 40;
+export const MAX_WINDOWS_PACKAGE_FILES = 150;
+
+export function findLooseFileProblems(appOutDir, resources, platform) {
+  const problems = [];
+  const unpacked = path.join(resources, 'server.asar.unpacked');
+  if (existsSync(unpacked)) {
+    let count = 0;
+    for (const { full, entry } of walk(unpacked)) {
+      if (!entry.isFile()) continue;
+      count += 1;
+      const relative = toPosix(path.relative(unpacked, full));
+      if (!relative.startsWith('node_modules/')) problems.push(`server.asar.unpacked/${relative} (belongs in server.asar)`);
+    }
+    if (count > MAX_SERVER_UNPACKED_FILES) problems.push(`server.asar.unpacked holds ${count} files, at most ${MAX_SERVER_UNPACKED_FILES}`);
+  }
+  if (platform === 'win32') {
+    let count = 0;
+    for (const { entry } of walk(appOutDir)) if (entry.isFile()) count += 1;
+    if (count > MAX_WINDOWS_PACKAGE_FILES) problems.push(`the package holds ${count} files, at most ${MAX_WINDOWS_PACKAGE_FILES}`);
+  }
+  return problems.sort();
+}
+
+/**
+ * Chromium's string packs (locales/*.pak) on Windows and Linux: exactly electronLanguages in
+ * electron-builder.yml. Without that list all 55 of Chromium's ship, for languages the app
+ * doesn't have. macOS keeps them in .lproj folders, which findResourceProblems looks at.
+ */
+export function findLocaleProblems(appOutDir, platform, wanted) {
+  if (platform === 'darwin') return [];
+  if (!Array.isArray(wanted) || wanted.length === 0) return ['electronLanguages is not set, so every Chromium language would ship'];
+  const dir = path.join(appOutDir, 'locales');
+  const have = existsSync(dir) ? readdirSync(dir) : [];
+  const expected = wanted.map((language) => `${language}.pak`);
+  return [...expected.filter((name) => !have.includes(name)).map((name) => `locales/${name} (missing)`), ...have.filter((name) => !expected.includes(name)).map((name) => `locales/${name}`)].sort();
+}
+
+export function guardPackageFiles(appOutDir, resources, platform, languages) {
+  const problems = [...findLooseFileProblems(appOutDir, resources, platform), ...findLocaleProblems(appOutDir, platform, languages)];
+  if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
+}
+
 export function guardResources(resources, platform) {
   const problems = [...findResourceProblems(resources, platform), ...findPackagedTaskIconProblems(resources, platform)];
   if (problems.length > 0) throw new Error(`Do not ship this package:\n  ${problems.slice(0, 30).join('\n  ')}`);
