@@ -323,6 +323,11 @@ bulwarkPoliciesDone:
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Bulwark"
     DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run" "Bulwark"
     RMDir /r "$LOCALAPPDATA\Bulwark\os-files"
+    ; Only when empty: a copy of an attachment someone still edits, and what the folder sync
+    ; knows, stay with the profile. src/main/uninstall-cleanup.ts does the same for the MSI.
+    RMDir "$LOCALAPPDATA\Bulwark\edit-files"
+    RMDir "$LOCALAPPDATA\Bulwark\files-sync\state"
+    RMDir "$LOCALAPPDATA\Bulwark\files-sync"
     RMDir "$LOCALAPPDATA\Bulwark"
     RMDir /r "$LOCALAPPDATA\bulwark-desktop-updater"
     ; Electron registers a COM server for toasts under a CLSID it may make up itself. Any

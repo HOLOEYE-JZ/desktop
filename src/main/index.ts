@@ -62,6 +62,8 @@ import { navigateHistory } from './features/window-input';
 import { appPathOfDeepLink, deepLinkWindowKey, LinkRateLimit, DEEP_LINK_SCHEME, type WindowLink } from './deep-link';
 import { closeDictionaryDownloads } from './spellcheck';
 import { isInstalledBuild, osRegistrationAllowed } from './installed';
+import { registryRoot, sendToFolder } from './features/os-default-app';
+import { asksForUninstallCleanup, uninstallCleanup } from './uninstall-cleanup';
 
 // Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
 // anyone can rename it. See installed.ts.
@@ -83,6 +85,19 @@ if (!__BULWARK_TEST_BUILD__) {
     app.exit(0);
     await new Promise(() => {});
   }
+}
+
+// The MSI's uninstall runs this as the user, before it removes the files (uninstall-cleanup.ts).
+// Nothing else of the app starts. A test build only cleans a stand-in key and folders of its own.
+if (asksForUninstallCleanup(process.argv)) {
+  const root = registryRoot();
+  const allowed = process.platform === 'win32' && (!__BULWARK_TEST_BUILD__ || root !== 'HKCU');
+  if (allowed) {
+    const local = __BULWARK_TEST_BUILD__ ? argValue('bulwark-test-local-dir') ?? null : process.env.LOCALAPPDATA ?? null;
+    await uninstallCleanup({ root, exe: process.execPath, sendTo: sendToFolder(), local }).catch(() => undefined);
+  }
+  app.exit(allowed || process.platform !== 'win32' ? 0 : 1);
+  await new Promise(() => {});
 }
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

@@ -47,8 +47,9 @@ afterPack: scripts/after-pack.cjs
 # Chromium's own strings: the webmail's languages and their regional forms. The rest
 # falls back to en-US. Chromium has no Mongolian pack, so that's en-US as well.
 electronLanguages: [ar, ca, cs, da, de, en-GB, en-US, es, es-419, et, fa, fr, he, hu, it, ja, ko, lv, nb, nl, pl, pt-BR, pt-PT, ro, ru, sk, th, tr, uk, vi, zh-CN, zh-TW]
-# INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL. The NSIS side is build/installer.nsh.
-msiProjectCreated: scripts/msi-policies.cjs
+# INSTANCE_URL, FORCE_INSTANCE and UPDATE_CHANNEL, the mark that an installer put the app there,
+# and the per-user cleanup at uninstall. The NSIS side is build/installer.nsh.
+msiProjectCreated: scripts/msi-project.cjs
 # policy-watcher is N-API, so what `npm ci` built loads in Electron as it is.
 npmRebuild: false
 electronFuses:

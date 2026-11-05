@@ -127,9 +127,11 @@ msiexec /i Bulwark-1.0.0-x64.msi /qn
 msiexec /x Bulwark-1.0.0-x64.msi /qn
 ```
 
+At its first start the app offers itself to each user under their own HKCU: Default apps, mail links, `.eml`, `.ics` and `.vcf`, Open with and Send to. Uninstalling the MSI runs `Bulwark.exe --uninstall-cleanup` as the user who uninstalls, which takes those entries away for that user. Windows Installer can't reach other users' HKCU, so their entries stay and point at the removed exe. To clean them up too, run `"C:\Program Files\Bulwark\Bulwark.exe" --uninstall-cleanup` as each user before you uninstall, for example from a logon script or an Intune script in user context. It opens no window.
+
 The ARM64 MSI is marked x64 inside, because electron-builder's WiX has no arm64, though the files in it are arm64. Windows 11 on ARM should accept it. It hasn't been tried on one.
 
-**NSIS, per user.** `Bulwark-Setup-1.0.0-x64.exe /S` needs no elevation. Uninstalling leaves the user's mail profile in `%APPDATA%\Bulwark` on purpose: delete the folder to remove it too.
+**NSIS, per user.** `Bulwark-Setup-1.0.0-x64.exe /S` needs no elevation. Uninstalling leaves the user's mail profile in `%APPDATA%\Bulwark` on purpose: delete the folder to remove it too. Under `%LOCALAPPDATA%\Bulwark` it leaves only copies of attachments someone still had open for editing and the folder sync's records, if there are any. Both uninstallers take the app out of Default apps, Open with and Send to.
 
 **Policies.** `packaging/bulwark-policies.sample.reg` is a sample to start from, with `AutoUpdate` and `UpdateChannel` set. Import it with `reg import`, or use the ADMX templates. `AutoUpdate=0` stops every request for updates, on any install. Values under `Software\Policies\Bulwark\Desktop` are forced, the same under `\Recommended` are defaults. `AutoUpdate` has no recommended form: nobody can choose it in the app, so there's nothing for it to be a default of.
 
