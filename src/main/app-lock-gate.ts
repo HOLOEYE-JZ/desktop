@@ -24,6 +24,8 @@ import path from 'node:path';
 const FREE_GUESSES = 4;
 const FIRST_WAIT_MS = 30_000;
 const LONGEST_WAIT_MS = 60 * 60_000;
+/** Locked again this soon after an unlock: something locks on its own, and the user may never get back in. */
+const RELOCK_ERROR_MS = 1_000;
 
 export function waitAfterGuesses(guesses: number): number {
   if (guesses <= FREE_GUESSES) return 0;
@@ -44,6 +46,7 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   private lockedNow = true;
   private guesses = 0;
   private blockedUntil = 0;
+  private unlockedAt = 0;
 
   /** Features start in some order, and whichever asks first reads the profile. */
   initForProfile(userData: string, origin: string): void {
@@ -79,6 +82,9 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
 
   private set(locked: boolean): void {
     if (locked === this.lockedNow) return;
+    const since = Date.now() - this.unlockedAt;
+    if (locked && this.unlockedAt > 0 && since < RELOCK_ERROR_MS) console.error(`[app-lock] Locked again ${since} ms after an unlock`);
+    if (!locked) this.unlockedAt = Date.now();
     this.lockedNow = locked;
     this.emit('locked', locked);
   }
