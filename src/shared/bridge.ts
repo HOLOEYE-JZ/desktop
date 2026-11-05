@@ -469,6 +469,11 @@ export type OsCommand =
   /** The tray's "Pause syncing" and "Resume syncing": every drive and synced folder. Older pages ignore it. */
   | { type: 'files-sync'; action: 'pause-all' | 'resume-all' };
 
+/** The page's `os.onCommand` options. `messageFileWindows`: it opens an .eml in a window of its own. */
+export interface OsCommandOptions {
+  messageFileWindows?: boolean;
+}
+
 export interface OsNotification {
   /** Tag of the toast. Showing an id again within a few minutes does nothing. */
   id: string;
@@ -483,8 +488,11 @@ export interface OsNotification {
   sound?: boolean;
   /** New mail: flash the taskbar or bounce the dock if that's on. */
   attention?: boolean;
-  /** What a locked app says instead: new mail unless this says otherwise. */
-  kind?: 'mail' | 'reminder';
+  /**
+   * What a locked app says instead: new mail unless this says otherwise. `undo`: the answer
+   * to the user's own click (a discarded draft's Undo), shown past pause, quiet hours and focus.
+   */
+  kind?: 'mail' | 'reminder' | 'undo';
 }
 
 export interface OsNotifyResult {

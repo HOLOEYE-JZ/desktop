@@ -132,7 +132,7 @@ function setup(ctx: FeatureContext): void {
     toasts.showNotice(text.closedToTrayTitle, text.closedToTrayBody);
   });
 
-  ctx.on(CHANNEL.osSubscribe, (event) => hub.subscribe(event.sender));
+  ctx.on(CHANNEL.osSubscribe, (event, _window, options) => hub.subscribe(event.sender, options));
   ctx.handle(CHANNEL.osGetStatus, () => hub.status());
   ctx.handle(CHANNEL.osSetSettings, (_event, _window, patch, clicked) => hub.update(settingsAllowedWithoutClick(patch, clicked === true)));
   ctx.on(CHANNEL.osSetPaused, (_event, _window, until) => hub.setPaused(pageSetPause(until, Date.now())));

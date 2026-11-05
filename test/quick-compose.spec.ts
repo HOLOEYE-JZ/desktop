@@ -64,6 +64,9 @@ async function signedIn(app: ElectronApplication, page: Page): Promise<void> {
   await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { sessionReady: () => void } } }).bulwarkDesktop.windows.sessionReady());
 }
 
+/** Unlocked as main sees it, without a webmail build that signs in. */
+const openLock = (app: ElectronApplication) => app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { setLockedByMain(locked: boolean): void } } }).__bulwarkOs.hub.setLockedByMain(false));
+
 const signedOut = (page: Page) => page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { sessionEnded: () => void } } }).bulwarkDesktop.windows.sessionEnded());
 
 const clickTrayNew = (app: ElectronApplication) => app.evaluate(() => {
@@ -538,5 +541,47 @@ test.describe('the window', () => {
     await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { open: (url: string, o: object) => void } } }).bulwarkDesktop.windows.open('/popout/compose', { name: 'other', width: 760, height: 780 }));
     await expect.poll(async () => (await composers(app))[0]?.visible).toBe(true);
     expect((await composers(app))[0].width).toBeGreaterThan(740);
+  });
+
+  // desktop-p3-1 and p3-12: Undo after a discard, and a mail link, open quick compose again.
+  test('a composer the page opens as a quick one gets the size of quick compose, whatever size it names', async () => {
+    running = await launchStandalone(profile);
+    const { app, page } = running;
+    await openLock(app);
+    await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { open: (url: string, o: object) => void } } }).bulwarkDesktop.windows.open('/popout/compose?handoff=x', { name: 'restored', width: 760, height: 780, quick: true }));
+    // Shown or not (no webmail here signs in), it was made at that size.
+    await expect.poll(async () => (await composers(app)).length).toBe(1);
+    const [window] = await composers(app);
+    expect(window.width).toBeLessThan(740);
+    expect(window.height).toBeLessThan(760);
+  });
+
+  // desktop-p3-1: "Draft discarded" with Undo answers a click in a window that has closed.
+  test('an Undo toast shows while notifications are paused and the main window is in front; mail does not', async () => {
+    running = await launchStandalone(profile);
+    const { app } = running;
+    await openLock(app);
+    await app.evaluate(({ BrowserWindow, Notification }) => {
+      const g = globalThis as unknown as { __shown: string[]; __bulwarkOs: { toasts: { setFocusAssistForTest(value: string | null): void }; hub: { setPaused(until: number | null): void } } };
+      g.__shown = [];
+      Notification.prototype.show = function show(this: Electron.Notification) {
+        g.__shown.push(this.toastXml || this.title);
+        this.emit('show');
+      };
+      g.__bulwarkOs.toasts.setFocusAssistForTest('off');
+      g.__bulwarkOs.hub.setPaused(Date.now() + 3600_000);
+      const main = BrowserWindow.getAllWindows().find((w) => w.isVisible())!;
+      BrowserWindow.getFocusedWindow = () => main;
+    });
+    const notify = (request: object) => app.evaluate((_e, r) => (globalThis as unknown as { __bulwarkOs: { toasts: { notify(r: unknown): Promise<{ shown: boolean; reason?: string }> } } }).__bulwarkOs.toasts.notify(r), request);
+    const undo = await notify({ id: 'discarded:1', title: 'Draft discarded', body: 'Budget', context: '{"discardedDraft":"1"}', actions: [{ id: 'undo', label: 'Undo' }], kind: 'undo' });
+    expect(undo).toEqual(expect.objectContaining({ shown: true }));
+    const mail = await notify({ id: 'mail:1', title: 'Sam', body: 'Hello', context: '' });
+    expect(mail).toEqual(expect.objectContaining({ shown: false, reason: 'paused' }));
+    await app.evaluate(() => (globalThis as unknown as { __bulwarkOs: { hub: { setPaused(until: number | null): void } } }).__bulwarkOs.hub.setPaused(null));
+    expect(await notify({ id: 'mail:2', title: 'Sam', body: 'Hello', context: '' })).toEqual(expect.objectContaining({ shown: false, reason: 'focused' }));
+    const shown = await app.evaluate(() => (globalThis as unknown as { __shown: string[] }).__shown);
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toContain('Undo');
   });
 });

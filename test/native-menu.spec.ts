@@ -386,6 +386,40 @@ test.describe('the app menu and windows', () => {
     await setState({});
   });
 
+  // desktop-p3-14: on a starred message the item still said "Star".
+  test('Star says Remove star while the message is starred', async () => {
+    await setState({ 'message.star': { enabled: true, checked: true } });
+    await expect.poll(async () => (await menuItem(app, 'message.star'))?.label).toBe('Remove star');
+    expect(await menuItem(app, 'message.star')).toMatchObject({ enabled: true });
+    await setState({ 'message.star': { enabled: true, checked: false } });
+    await expect.poll(async () => (await menuItem(app, 'message.star'))?.label).toBe('Star');
+    await setState({});
+  });
+
+  // desktop-p3-16: Ctrl+E in Settings read "Search mail" and searched mail.
+  test('Edit > Search names the settings search in Settings', async () => {
+    await setState({ 'section.settings': true, 'edit.search': true });
+    await expect.poll(async () => (await menuItem(app, 'edit.search'))?.label).toBe('Search settings');
+    await setState({});
+    await expect.poll(async () => (await menuItem(app, 'edit.search'))?.label).toBe('Search mail');
+  });
+
+  // desktop-p3-15: in month view none of Day, Week, Month and Agenda was ticked.
+  test('Calendar\'s views are ticked as the page says, also when the menu is built in that view', async () => {
+    const views = ['day', 'week', 'month', 'agenda'];
+    const state = (current: string) => ({ 'section.calendar': true, ...Object.fromEntries(views.map((view) => [`view.calendar.${view}`, { enabled: true, checked: view === current }])) });
+    const ticked = () => app.evaluate(({ Menu }, ids) => ids.filter((id) => Menu.getApplicationMenu()?.getMenuItemById(id)?.checked), views.map((view) => `view.calendar.${view}`));
+    await setState(state('month'));
+    await expect.poll(ticked).toEqual(['view.calendar.month']);
+    await setState(state('agenda'));
+    await expect.poll(ticked).toEqual(['view.calendar.agenda']);
+    await setState(state('day'));
+    await expect.poll(ticked).toEqual(['view.calendar.day']);
+    await setState({});
+    // Back in Mail, with its Message menu, for the tests after this one.
+    await expect.poll(() => menuItem(app, 'message.star')).not.toBeNull();
+  });
+
   test('single keys only show: the page has them, and knows when someone types', async () => {
     const star = await menuItem(app, 'message.star');
     expect(star).toMatchObject({ accelerator: 'S', registerAccelerator: false });

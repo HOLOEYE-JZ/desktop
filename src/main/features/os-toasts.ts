@@ -107,7 +107,7 @@ function cleanRequest(request: unknown): OsNotification | null {
     reply: reply && text(reply.label, 40) ? { label: text(reply.label, 40), placeholder: text(reply.placeholder, 100) } : undefined,
     sound: input.sound === true,
     attention: input.attention === true,
-    kind: input.kind === 'reminder' ? 'reminder' : undefined,
+    kind: input.kind === 'reminder' || input.kind === 'undo' ? input.kind : undefined,
   };
 }
 
@@ -235,14 +235,19 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
     for (const [key, at] of seen) if (now - at > REPEAT_MS) seen.delete(key);
     if (seen.has(request.id)) return { shown: false, reason: 'duplicate', playSound: false };
     seen.set(request.id, now);
-    if (hub.pausedUntil() !== null) return { shown: false, reason: 'paused', playSound: false };
-    if (inQuietHours(hub.settings(), new Date())) return { shown: false, reason: 'quiet-hours', playSound: false };
+    // An Undo answers what the user just did in a window that has gone: no pause or
+    // quiet hours holds it back, and the main window in front doesn't say it instead.
+    const answer = request.kind === 'undo';
+    // Locked, there's nothing to undo into, and its text mustn't show.
+    if (answer && hub.locked) return { shown: false, reason: 'failed', playSound: false };
+    if (!answer && hub.pausedUntil() !== null) return { shown: false, reason: 'paused', playSound: false };
+    if (!answer && inQuietHours(hub.settings(), new Date())) return { shown: false, reason: 'quiet-hours', playSound: false };
     const quiet = (await focusAssist()) !== 'off';
     const playSound = !!request.sound && !quiet && process.platform !== 'darwin';
     // In front of the user the app says it itself, which only the main window does:
     // a message in a pop-out must not swallow it, and neither must a window on its way out.
     const focused = BrowserWindow.getFocusedWindow();
-    if (focused && focused === hub.ctx.windows.mainWindow() && focused.isVisible()) return { shown: false, reason: 'focused', playSound };
+    if (!answer && focused && focused === hub.ctx.windows.mainWindow() && focused.isVisible()) return { shown: false, reason: 'focused', playSound };
     if (!toastLimit.allow(Date.now())) {
       // Not shown, so the same one may come again.
       seen.delete(request.id);

@@ -81,7 +81,7 @@ function positive(value: unknown): number | undefined {
 export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
   const { windows, theme, origin } = ctx;
 
-  const openAppWindow = (url: unknown, key: unknown, size?: { width: unknown; height: unknown }, type?: WindowType) => {
+  const openAppWindow = (url: unknown, key: unknown, size?: { width: unknown; height: unknown }, type?: WindowType, quick = false) => {
     const target = resolveAppUrl(url, origin);
     if (!target || target.pathname.startsWith('/api/')) return;
     const width = positive(size?.width);
@@ -91,12 +91,14 @@ export function registerBridge(ctx: FeatureContext, options: IpcOptions): void {
       url: target.toString(),
       key: typeof key === 'string' && key ? key : target.toString(),
       size: width && height ? { width, height } : undefined,
+      // A new message from outside the main window: quick compose's size and place.
+      ...(quick && windowTypeOf(target.pathname) === 'composer' ? { boundsKey: 'quickComposer' as const, size: undefined } : {}),
     });
   };
 
   ctx.on(CHANNEL.windowsOpen, (_event, _window, url, opts) => {
-    const o = (opts ?? {}) as { name?: unknown; width?: unknown; height?: unknown };
-    openAppWindow(url, o.name, { width: o.width, height: o.height });
+    const o = (opts ?? {}) as { name?: unknown; width?: unknown; height?: unknown; quick?: unknown };
+    openAppWindow(url, o.name, { width: o.width, height: o.height }, undefined, o.quick === true);
   });
   ctx.on(CHANNEL.windowsOpenMessage, (_event, _window, target) => {
     const t = (target ?? {}) as { url?: unknown; emailId?: unknown };

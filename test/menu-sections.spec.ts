@@ -130,6 +130,13 @@ test.describe('the menus follow the part of the app on screen', () => {
     await clickMenuItem(app, 'edit.search');
     await expect.poll(activeField).toBe('Search events');
     await page.keyboard.press('Escape');
+
+    // desktop-p3-15: a page that starts in month view (here after a reload) ticks Month in the menu built for it.
+    await clickMenuItem(app, 'view.calendar.month');
+    await expect.poll(async () => (await readBack(app)).views.filter((item) => item.checked).map((item) => item.id)).toEqual(['view.calendar.month']);
+    await page.reload();
+    await expect.poll(async () => (await readBack(app)).search?.label, { timeout: 60_000 }).toBe('Search events');
+    await expect.poll(async () => (await readBack(app)).views.filter((item) => item.checked).map((item) => item.id), { timeout: 30_000 }).toEqual(['view.calendar.month']);
   });
 
   test('Contacts: no Message menu, and Search contacts goes to the contacts search', async () => {

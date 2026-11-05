@@ -8,7 +8,7 @@ import path from 'node:path';
 import { icoSizes } from './ico.mjs';
 
 /** One per glyph in assets/glyphs. */
-export const TASK_ICONS = /** @type {const} */ (['compose', 'inbox', 'calendar', 'contacts', 'message']);
+export const TASK_ICONS = /** @type {const} */ (['compose', 'inbox', 'calendar', 'contacts', 'message', 'lock']);
 /** `light` glyphs go on a dark shell, `dark` ones on a light shell. */
 export const TASK_ICON_VARIANTS = /** @type {const} */ (['light', 'dark']);
 /** 16 px at 100% to 300% scale. */

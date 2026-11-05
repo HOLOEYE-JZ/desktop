@@ -102,6 +102,34 @@ test.describe('the NSIS window', () => {
     expect(source).toContain('GetSysColor(COLOR_HIGHLIGHT)');
   });
 
+  // Controls made from the install section belong to its thread, which paints them only
+  // while it waits (ExecWait): on an update, while the old uninstaller ran, they got a white
+  // background next to their text. The splash makes none: the plugin paints everything in
+  // the window's own WM_PAINT, on the window's thread.
+  test('makes no controls from the install section', () => {
+    expect(theme()).not.toContain('CreateWindowEx');
+    const source = read(path.join(ROOT, 'native', 'nsis-splash', 'splash.c'));
+    expect(source).not.toContain('CreateWindow');
+    expect(source).toContain('SetWindowLongPtrW(parent, GWLP_WNDPROC, (LONG_PTR)Proc)');
+    expect(source).toContain('case WM_PAINT:');
+  });
+
+  test("keeps NSIS's integrity check and its message", () => {
+    // SilentInstall would hide the "verifying installer" box, and the "integrity check failed" message with it.
+    for (const file of [path.join(BUILD, 'installer-theme.nsh'), path.join(ROOT, config.nsis.include)]) {
+      expect(read(file), file).not.toMatch(/^\s*(SilentInstall|SilentUnInstall|CRCCheck)\b/m);
+    }
+  });
+
+  test('leaves out the uninstaller question for a person, and stays silent with /S', () => {
+    const text = theme();
+    // un.onInit's ${LogSet} turns silent on, only without /S, and the app check turns it off again.
+    expect(text).toMatch(/!macro customHeader\n\s+!undef LogSet\n\s+!define LogSet "!insertmacro bulwarkLogSet"\n\s+!macroend/);
+    expect(text).toMatch(/!macro bulwarkLogSet SETTING\n\s+!insertmacro LogSetMacro \$\{SETTING\}\n\s+!ifdef __UNINSTALL__\n\s+!if "\$\{__FUNCTION__\}" == "onInit"\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent silent\n/);
+    const check = text.slice(text.lastIndexOf('!macro customCheckAppRunning'));
+    expect(check).toMatch(/^!macro customCheckAppRunning\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent normal\n[\s\S]*?!insertmacro _CHECK_APP_RUNNING\n\s+!macroend/);
+  });
+
   test('has a logo for every scale from 100 to 250 %, and 256 above', () => {
     expect(theme()).toContain('"${BULWARK_THEME_DIR}\\installer-logo.ico"');
     const sizes = icoSizes(readFileSync(path.join(BUILD, 'installer-logo.ico')));
@@ -164,6 +192,18 @@ test.describe('the NSIS window', () => {
     expect(unSection.indexOf('!insertmacro customUnInstall')).toBeLessThan(unSection.indexOf('RMDir /r $INSTDIR'));
     const oneClick = read(path.join(TEMPLATES, 'oneClick.nsh'));
     expect(oneClick).toContain('!insertmacro MUI_PAGE_INSTFILES');
+    // The uninstaller's question: asked in un.onInit only when not silent, after ${LogSet},
+    // which customHeader can redefine (after common.nsh defines it, before uninstaller.nsh).
+    const inOrder = (text: string, parts: string[]) => {
+      const at = parts.map((part) => text.indexOf(part));
+      expect(at.every((index) => index > -1), JSON.stringify(at)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+    };
+    const unInit = uninstaller.slice(uninstaller.indexOf('Function un.onInit'), uninstaller.indexOf('FunctionEnd', uninstaller.indexOf('Function un.onInit')));
+    inOrder(unInit, ['${LogSet} on', '${GetOptions} $R0 "/S" $R1', '${If} ${Silent}\n    call un.checkAppRunning\n  ${else}', 'MessageBox MB_OKCANCEL "$(areYouSureToUninstall)"', '!insertmacro customUnInit']);
+    expect(uninstaller.split('$(areYouSureToUninstall)')).toHaveLength(2);
+    expect(read(path.join(TEMPLATES, 'common.nsh'))).toContain('!define LogSet "!insertmacro LogSetMacro"');
+    inOrder(read(path.join(TEMPLATES, 'installer.nsi')), ['!include "common.nsh"', '!insertmacro customHeader', '!include "uninstaller.nsh"']);
   });
 });
 
