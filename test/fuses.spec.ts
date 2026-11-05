@@ -113,10 +113,18 @@ test.describe('the packaged app', () => {
     delete env.ELECTRON_RUN_AS_NODE;
     const child = spawn(EXE, [`--user-data-dir=${path.join(profile, 'ud')}`, '--lang=en-US'], { env, stdio: 'ignore' });
     try {
-      const title = () =>
-        spawnSync('powershell.exe', ['-NoProfile', '-Command', `(Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue).MainWindowTitle`], { encoding: 'utf8' }).stdout.trim();
-      // Set by welcome.js, so the script ran.
-      await expect.poll(title, { timeout: 40_000, intervals: [1000] }).toMatch(/Welcome to Bulwark|Willkommen bei Bulwark/);
+      // The heading is filled in by welcome.js, so finding it means the script ran. Read the way a
+      // screen reader does (UI Automation): the window's title is "Bulwark" on every step.
+      const script = [
+        'Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes',
+        `$p = Get-Process -Id ${child.pid} -ErrorAction SilentlyContinue`,
+        'if (-not $p -or $p.MainWindowHandle -eq 0) { exit }',
+        '$root = [System.Windows.Automation.AutomationElement]::FromHandle($p.MainWindowHandle)',
+        '$found = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)',
+        '$found | ForEach-Object { $_.Current.Name } | Where-Object { $_ }',
+      ].join('; ');
+      const names = () => spawnSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).stdout;
+      await expect.poll(names, { timeout: 40_000, intervals: [1000] }).toMatch(/Welcome to Bulwark|Willkommen bei Bulwark/);
     } finally {
       child.kill();
       spawnSync('taskkill', ['/F', '/T', '/PID', String(child.pid)], { stdio: 'ignore' });
