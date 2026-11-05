@@ -11,7 +11,8 @@ name: Release
 # and only then publishes, so electron-updater never sees a half-filled release:
 # `gh attestation verify <file> --repo bulwarkmail/desktop`.
 #
-# Signing: Windows is unsigned for now, see the hook in electron-builder.yml. macOS signs and
+# Signing: Windows signs every build through Azure Artifact Signing when the repository has
+# the AZURE_* secrets, and is unsigned otherwise (see the windows job). macOS signs and
 # notarizes on a tag when the repository has its secrets, and is unsigned otherwise. Betas
 # publish with nobody looking. The `release` environment a stable tag publishes through doesn't
 # exist yet, and GitHub creates it with no reviewers, so until someone sets it up a pushed tag
@@ -182,8 +183,47 @@ jobs:
       - name: Build the installer window
         run: node scripts/build-nsis-splash.mjs
 
+      # With the secrets: signed through Azure Artifact Signing as "Rath & Blume GbR", and
+      # app-update.yml names that publisher, so an install refuses any later installer that
+      # isn't signed by it. That's why betas are signed too: a signed stable copy that moves to
+      # beta would refuse an unsigned one. Without the secrets: unsigned, as before. The
+      # settings are here and not in electron-builder.yml because electron-builder goes for
+      # Azure as soon as azureSignOptions is set, and fails without credentials.
       - name: Build installers
-        run: npx electron-builder --win --x64 --arm64 --publish never
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+        run: |
+          signing=()
+          if [ -n "$AZURE_CLIENT_SECRET" ]; then
+            signing=(
+              -c.win.azureSignOptions.endpoint=https://plc.codesigning.azure.net/
+              -c.win.azureSignOptions.codeSigningAccountName=Bulwark
+              -c.win.azureSignOptions.certificateProfileName=bulwark-desktop
+              "-c.win.azureSignOptions.publisherName=Rath & Blume GbR"
+            )
+          else
+            unset AZURE_TENANT_ID AZURE_CLIENT_ID AZURE_CLIENT_SECRET
+          fi
+          npx electron-builder --win --x64 --arm64 --publish never "${signing[@]}"
+
+      # Every exe and msi has to carry a valid signature by the publisher, or none of them may.
+      - name: Check the signatures
+        shell: pwsh
+        env:
+          SIGNED: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+        run: |
+          $bad = 0
+          Get-ChildItem release\* -Include *.exe,*.msi | ForEach-Object {
+            $s = Get-AuthenticodeSignature $_.FullName
+            Write-Host "$($_.Name): $($s.Status) $($s.SignerCertificate.Subject)"
+            if ($env:SIGNED -eq 'true') {
+              if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch '^CN="?Rath & Blume GbR') { $bad++ }
+            }
+          }
+          if ($bad) { throw "$bad file(s) without a valid Rath & Blume GbR signature" }
 
       # The blockmaps let an update download only the blocks of the installer that changed:
       # electron-updater fetches the new one and the one of the version it runs.

@@ -69,17 +69,12 @@ publish:
   repo: desktop
 
 win:
-  # >>> WINDOWS SIGNING HOOK. Unsigned for now, nothing is configured on purpose. <<<
-  # When there is a certificate, this is the only place to change:
-  #   azureSignOptions:            # Azure Artifact Signing, the likely choice
-  #     endpoint: ...
-  #     certificateProfileName: ...
-  #     codeSigningAccountName: ...
-  #     publisherName: ...         # goes into app-update.yml too, see below
-  #   # or signtoolOptions: { certificateSubjectName: ..., publisherName: [...] }
-  # With a publisher name set, app-update.yml carries it and electron-updater refuses an
-  # installer that isn't signed by that name. With none, as now, it skips that check and
-  # relies on the sha512 in latest.yml, over TLS. See "Unsigned builds" in the README.
+  # Signing: CI passes azureSignOptions (Azure Artifact Signing, publisher "Rath & Blume GbR")
+  # on the command line when it has the AZURE_* secrets, see the windows job in release.yml.
+  # Not here: electron-builder goes for Azure as soon as they're set, and a local build has no
+  # credentials. The publisher name goes into app-update.yml, and electron-updater then refuses
+  # an installer that isn't signed by that name. Never change it without listing the old name
+  # as well, or every signed install stops updating. A local build is unsigned and names none.
   icon: build/icon.ico
   executableName: Bulwark
   # The jump list's icons. Windows reads them itself, after the app set them, so they have to
