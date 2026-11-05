@@ -271,6 +271,12 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       show: (request: DialogWindowRequest): Promise<DialogWindowAnswer> => ipcRenderer.invoke(CHANNEL.dialogsShow, request),
       /** Takes back a question asked with `show`, showing or waiting. */
       cancel: (id: string) => ipcRenderer.send(CHANNEL.dialogsCancel, id),
+      /**
+       * Shows the dialog window this page opened as `window.open('', name)` (a name
+       * `bulwark-dialog-…`; main made it a frameless modal child the size of this page)
+       * once the page has drawn its dialog into it. False when there is no such window.
+       */
+      showWindow: (name: string): Promise<boolean> => ipcRenderer.invoke(CHANNEL.dialogsShowWindow, name),
     },
     clipboard: {
       /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */

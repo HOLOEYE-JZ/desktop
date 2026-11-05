@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { request as httpsRequest } from 'node:https';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, launchStandalone, removeOsTraces, removeProfile, requireAccount, shownPage, STALWARTS, tempProfile, waitForLogin } from './helpers';
+import { ACCOUNT, dialogHost, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launch, launchStandalone, removeOsTraces, removeProfile, requireAccount, shownPage, STALWARTS, tempProfile, waitForLogin } from './helpers';
 import { pageWith } from './native-helpers';
 
 /**
@@ -368,9 +368,11 @@ for (const { label, url: SERVER } of servers) {
       const toggle = page.getByTestId('app-lock-switch');
       await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: 60_000 });
       await toggle.click();
-      await page.getByTestId('app-lock-new-pin').fill(pin);
-      await page.getByTestId('app-lock-repeat-pin').fill(pin);
-      await page.getByTestId('app-lock-dialog-save').click();
+      // The PIN dialog is a window of its own (dialog-surfaces.ts), or over the page with an older webmail.
+      const pinDialog = await dialogHost(app, page, '[data-testid="app-lock-new-pin"]');
+      await pinDialog.getByTestId('app-lock-new-pin').fill(pin);
+      await pinDialog.getByTestId('app-lock-repeat-pin').fill(pin);
+      await pinDialog.getByTestId('app-lock-dialog-save').click();
       await expect(toggle).toHaveAttribute('aria-checked', 'true', { timeout: 30_000 });
       await page.getByTestId('app-lock-now').click();
       await expect.poll(lockShown, { timeout: 60_000 }).toBe(true);
