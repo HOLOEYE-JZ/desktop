@@ -9,9 +9,6 @@ const MUST_KEEP: Record<string, readonly string[]> = {
   certificateTitle: ['{host}'],
   certificateRemember: ['{host}'],
   certificateIssued: ['{issuer}', '{date}'],
-  signInPageTitle: ['{server}'],
-  signInPageIntro: ['{server}'],
-  signInDoneAs: ['{address}'],
   contextSearchMail: ['{text}'],
 };
 

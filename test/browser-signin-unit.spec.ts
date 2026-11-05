@@ -2,33 +2,19 @@ import { connect } from 'node:net';
 import { request } from 'node:http';
 import { networkInterfaces } from 'node:os';
 import { expect, test } from '@playwright/test';
-import { CALLBACK_PATH, LoopbackSignIn, navigationAllowed, SCHEME_REDIRECT_URI, type SignInText } from '../src/main/browser-sign-in';
+import { CALLBACK_PATH, LoopbackSignIn, navigationAllowed, SCHEME_REDIRECT_URI } from '../src/main/browser-sign-in';
 import { deepLinkFromArgv, parseDeepLink } from '../src/main/deep-link';
-import { LABEL_KEY, labelKeepsPlaceholders } from '../src/main/label-keys';
 import { requestFromUrl } from '../src/main/features/os-rules';
+import STRINGS from '../src/pages/sign-in-strings.json' with { type: 'json' };
 
 /**
  * The real listener, on the real loopback, with attacks by raw HTTP: a browser wouldn't
  * let a test send most of these. No Electron.
  */
 
-const TEXT: SignInText = {
-  signInDone: 'DONE',
-  signInDoneAs: 'DONE AS {address}',
-  signInOpenApp: 'OPEN APP',
-  signInFailed: 'FAILED',
-  signInLinkUsed: 'USED',
-  signInDeclined: 'DECLINED',
-  signInPageTitle: 'Sign in to {server}',
-  signInPageIntro: 'Goes to {server}',
-  signInUsername: 'User',
-  signInPassword: 'Pass',
-  signInCode: 'Code',
-  signInSubmit: 'Go',
-  signInWrongPassword: 'WRONG',
-  signInCodeNeeded: 'NEEDS CODE',
-  signInNoAnswer: 'NO ANSWER',
-};
+/** The pages' English, as the page escapes it. No Accept-Language means English. */
+const EN = STRINGS.en;
+const html = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 
 const OWNER = 7;
 
@@ -40,7 +26,6 @@ function rig(extra: Partial<ConstructorParameters<typeof LoopbackSignIn>[0]> = {
       opened.push(url);
     },
     bringForward: (owner) => forward.push(owner),
-    text: () => TEXT,
     ...extra,
   });
   return { signIn, opened, forward };
@@ -103,11 +88,11 @@ test.describe('the listener', () => {
     expect(opened[0]).toContain(encodeURIComponent(begun.redirectUri));
     const answer = await raw(port, callback(begun.state));
     expect(answer.status).toBe(200);
-    expect(answer.body).toContain('DONE');
+    expect(answer.body).toContain(html(EN.doneTitle));
     expect(answer.body).not.toContain('the-code');
     // settings-p3-15: Bulwark's mark, a way back to the app, light or dark as the browser.
     expect(answer.body).toContain('<svg class="logo"');
-    expect(answer.body).toContain('<a class="button" href="bulwark://inbox">OPEN APP</a>');
+    expect(answer.body).toContain('<a class="button" href="bulwark://inbox">Open Bulwark</a>');
     expect(answer.body).toContain('prefers-color-scheme:dark');
     expect(await result).toEqual({ ok: true, code: 'the-code', state: begun.state, iss: undefined });
     expect(forward).toEqual([OWNER]);
@@ -205,7 +190,9 @@ test.describe('the listener', () => {
     const csp = String(headers['content-security-policy']);
     expect(csp).toContain("default-src 'none'");
     expect(csp).toContain("frame-ancestors 'none'");
-    expect(csp).not.toContain('script');
+    // One script, by its hash: the one that takes code and state out of the address bar.
+    expect(csp).toMatch(/script-src 'sha256-[A-Za-z0-9+/]+=*'(;|$)/);
+    expect(csp).not.toContain('unsafe-inline');
     expect(headers['referrer-policy']).toBe('same-origin');
     expect(headers['cache-control']).toBe('no-store');
     expect(headers['x-frame-options']).toBe('DENY');
@@ -214,7 +201,7 @@ test.describe('the listener', () => {
   test('a provider that says no ends the flow, and what it said goes nowhere', async () => {
     const { begun, port, result } = await started();
     const answer = await raw(port, `${CALLBACK_PATH}?error=access_denied&error_description=${encodeURIComponent('<script>x</script>')}&state=${begun.state}`);
-    expect(answer.body).not.toContain('script>');
+    expect(answer.body).not.toContain('<script>x');
     expect(await result).toEqual({ ok: false, error: 'denied' });
   });
 
@@ -224,7 +211,7 @@ test.describe('the listener', () => {
     expect(forged.status).toBe(400);
     expect(await portState(port)).toBe('open');
     const answer = await raw(port, `${CALLBACK_PATH}?error=access_denied&state=${begun.state}`);
-    expect(answer.body).toContain('DECLINED');
+    expect(answer.body).toContain(html(EN.declinedTitle));
     expect(await result).toEqual({ ok: false, error: 'denied' });
     expect(forward).toEqual([OWNER]);
     await expect.poll(() => portState(port)).toBe('closed');
@@ -399,7 +386,7 @@ test.describe('the password page, for a server with no OAuth', () => {
     expect((await raw(port, token)).status).toBe(200);
     const second = await raw(port, token);
     expect(second.status).toBe(410);
-    expect(second.body).toContain('USED');
+    expect(second.body).toContain(html(EN.usedTitle));
     expect(second.body).not.toContain('type="password"');
     signIn.closeAll();
   });
@@ -449,7 +436,7 @@ test.describe('the password page, for a server with no OAuth', () => {
     signIn.answerPassword(flowId, OWNER, { ok: false, error: 'invalid_credentials' });
     const wrong = await tab;
     expect(wrong.status).toBe(401);
-    expect(wrong.body).toContain('WRONG');
+    expect(wrong.body).toContain(html(EN.wrongPassword));
     expect(wrong.body).toContain('value="a@example.org"');
     expect(wrong.body).not.toContain('the-secret-password');
     expect(forward).toEqual([]);
@@ -463,7 +450,7 @@ test.describe('the password page, for a server with no OAuth', () => {
     const done = await retry;
     expect(done.status).toBe(200);
     // The account it signed in: the one typed on this page.
-    expect(done.body).toContain('DONE AS a@example.org');
+    expect(done.body).toContain(html(EN.doneAs.replace('{address}', 'a@example.org')));
     expect(done.body).toContain('href="bulwark://inbox"');
     expect(done.body).not.toContain('type="password"');
     await expect.poll(() => forward).toEqual([OWNER]);
@@ -478,7 +465,7 @@ test.describe('the password page, for a server with no OAuth', () => {
     await next;
     signIn.answerPassword(flowId, OWNER, { ok: false, error: 'totp_required' });
     const answer = await tab;
-    expect(answer.body).toContain('NEEDS CODE');
+    expect(answer.body).toContain(html(EN.codeNeeded));
     expect(answer.body).toContain('autocomplete="one-time-code"');
     const again = signIn.nextPassword(flowId, OWNER);
     const retry = post(port, token, nonceOf(answer.body), {}, { username: 'a', password: 'b', totp: ' 123456 ' });
@@ -493,7 +480,7 @@ test.describe('the password page, for a server with no OAuth', () => {
     void signIn.nextPassword(flowId, OWNER);
     const answer = await post(port, token, nonce);
     expect(answer.status).toBe(502);
-    expect(answer.body).toContain('NO ANSWER');
+    expect(answer.body).toContain(html(EN.noAnswer));
     signIn.closeAll();
   });
 
@@ -578,11 +565,12 @@ test.describe('the password page, for a server with no OAuth', () => {
   });
 });
 
-test('a page\'s translation can\'t take the server\'s name off the password page', () => {
-  expect(LABEL_KEY.test('signInPageTitle')).toBe(true);
-  expect(labelKeepsPlaceholders('signInPageTitle', 'Bei {server} anmelden')).toBe(true);
-  expect(labelKeepsPlaceholders('signInPageTitle', 'Sign in to your bank')).toBe(false);
-  expect(labelKeepsPlaceholders('signInPageIntro', 'Your password goes somewhere')).toBe(false);
+test('the password page names the server in every language', () => {
+  for (const [language, words] of Object.entries(STRINGS)) {
+    expect(words.formTitle, language).toContain('{server}');
+    expect(words.formIntro, language).toContain('{server}');
+    expect(words.doneAs, language).toContain('{address}');
+  }
 });
 
 test('the navigation rule, as a table', () => {
