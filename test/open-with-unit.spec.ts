@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import {
+  isOurSendToShortcut,
   launchFileCommand,
   LaunchFileBatch,
   launchOpensOwnWindow,
@@ -11,6 +12,7 @@ import {
   parseArgv,
   SEND_TO_FLAG,
   sendToShortcut,
+  sendToShortcutAction,
   sendToShortcutCurrent,
   WINDOWS_ATTACH_PROGID,
   windowsOpenWithRegistration,
@@ -68,6 +70,22 @@ test.describe('files opened with the app', () => {
     expect(sendToShortcutCurrent({ target: EXE, args: '' }, EXE)).toBe(false);
     expect(sendToShortcutCurrent({ target: 'C:\\Old\\Bulwark.exe', args: `${SEND_TO_FLAG} --` }, EXE)).toBe(false);
     expect(sendToShortcutCurrent(null, EXE)).toBe(false);
+  });
+
+  test('a start points our Send to shortcut at this exe, leaves another program\'s alone, and brings a missing one back only with the keys', () => {
+    const ours = { target: 'C:\\Users\\a\\Temp\\pack\\Bulwark.exe', args: `${SEND_TO_FLAG} --` };
+    // The installer's: no description, the same command line.
+    expect(sendToShortcutAction(ours, EXE, false)).toBe('replace');
+    expect(sendToShortcutAction(ours, EXE, true)).toBe('replace');
+    expect(sendToShortcutAction({ target: EXE, args: `${SEND_TO_FLAG} --` }, EXE, true)).toBe('none');
+    expect(sendToShortcutAction({ target: EXE, args: '--bulwark-send-to' }, EXE, false)).toBe('replace');
+    const foreign = { target: 'C:\\Tools\\Other.exe', args: '/attach' };
+    expect(isOurSendToShortcut(foreign)).toBe(false);
+    expect(sendToShortcutAction(foreign, EXE, false)).toBe('none');
+    expect(sendToShortcutAction(foreign, EXE, true)).toBe('none');
+    expect(isOurSendToShortcut({ target: EXE, args: `--other${SEND_TO_FLAG}` })).toBe(false);
+    expect(sendToShortcutAction(null, EXE, false)).toBe('none');
+    expect(sendToShortcutAction(null, EXE, true)).toBe('create');
   });
 });
 

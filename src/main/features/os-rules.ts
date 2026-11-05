@@ -747,6 +747,27 @@ export function sendToShortcutCurrent(found: { target?: string; args?: string } 
   return (found.target ?? '').toLowerCase() === wanted.target.toLowerCase() && (found.args ?? '').trim() === wanted.args;
 }
 
+/**
+ * Whether a shortcut of that name is ours, by the flag on its command line. Every copy of the app
+ * and the installer write it (build/installer.nsh), and no other program has a use for it. One
+ * of another program that happens to have the name isn't ours to change or take away.
+ */
+export function isOurSendToShortcut(found: { target?: string; args?: string } | null): boolean {
+  return !!found && (found.args ?? '').trim().split(/\s+/).includes(SEND_TO_FLAG);
+}
+
+/**
+ * What a start does with the Send to shortcut. Ours naming another exe, or one that's gone (a
+ * test pack's, an older install's), is pointed at this one. A missing one comes back only with
+ * the keys, when they were missing or named another exe: that was another copy's registration.
+ * One the user deleted while the keys stayed stays deleted.
+ */
+export function sendToShortcutAction(found: { target?: string; args?: string } | null, exe: string, keysRewritten: boolean): 'none' | 'create' | 'replace' {
+  if (!found) return keysRewritten ? 'create' : 'none';
+  if (!isOurSendToShortcut(found) || sendToShortcutCurrent(found, exe)) return 'none';
+  return 'replace';
+}
+
 /** The autostart entry where the OS has no login item API. */
 export function linuxAutostartEntry(exec: string): string {
   return `[Desktop Entry]\nType=Application\nName=Bulwark\nExec=${exec} ${LOGIN_FLAG}\nIcon=bulwark\nX-GNOME-Autostart-enabled=true\nHidden=false\nNoDisplay=false\n`;
