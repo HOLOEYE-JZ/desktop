@@ -948,6 +948,7 @@ export const CHANNEL = {
   dialogsConfirm: 'bulwark:dialogs.confirm',
   dialogsShow: 'bulwark:dialogs.show',
   dialogsCancel: 'bulwark:dialogs.cancel',
+  dialogsShowWindow: 'bulwark:dialogs.showWindow',
   /** The dialog window's own page: what to draw, its size, the answer. */
   dialogWindowSpec: 'bulwark:dialog-window.spec',
   dialogWindowReady: 'bulwark:dialog-window.ready',

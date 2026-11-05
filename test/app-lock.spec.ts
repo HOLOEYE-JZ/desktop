@@ -86,6 +86,33 @@ test.describe('the gate, in plain Node', () => {
     expect(again.guess(until)).toBe(0);
   });
 
+  test('locked again within a second of an unlock is logged as an error, a lock later on isn\'t', () => {
+    const gate = new AppLockGate();
+    gate.init(file);
+    gate.enroll(proof(1));
+    gate.lock();
+    const said: string[] = [];
+    const error = console.error;
+    console.error = (...args: unknown[]) => { said.push(args.join(' ')); };
+    const realNow = Date.now;
+    try {
+      let now = 1_000_000;
+      Date.now = () => now;
+      expect(gate.prove(proof(1))).toBe(true);
+      now += 300;
+      gate.lock();
+      expect(said).toEqual([expect.stringContaining('[app-lock] Locked again 300 ms after an unlock')]);
+      said.length = 0;
+      expect(gate.prove(proof(1))).toBe(true);
+      now += 5_000;
+      gate.lock();
+      expect(said).toEqual([]);
+    } finally {
+      console.error = error;
+      Date.now = realNow;
+    }
+  });
+
   test('keeps a hash, never the proof', () => {
     const gate = new AppLockGate();
     gate.init(file);

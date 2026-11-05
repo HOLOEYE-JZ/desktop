@@ -186,6 +186,31 @@ export function requireAccount(): void {
   if (!ENT_PASSWORD) throw new Error("Set IT_ENT_PASSWORD to the test account's password");
 }
 
+/**
+ * The page an app dialog holding `selector` is drawn in. With a webmail that opens its
+ * dialogs as windows of their own (src/main/dialog-surfaces.ts) that is an about:blank
+ * window; an older one draws them over `page`.
+ */
+export async function dialogHost(app: ElectronApplication, page: Page, selector: string, timeout = 30_000): Promise<Page> {
+  let found: Page | null = null;
+  await expect
+    .poll(
+      async () => {
+        const candidates = [...app.windows().filter((p) => !p.isClosed() && p.url() === 'about:blank').reverse(), page];
+        for (const candidate of candidates) {
+          if ((await candidate.locator(selector).count().catch(() => 0)) > 0) {
+            found = candidate;
+            return true;
+          }
+        }
+        return false;
+      },
+      { timeout, intervals: [100, 250, 500] },
+    )
+    .toBe(true);
+  return found!;
+}
+
 function reg(...args: string[]): { ok: boolean; out: string } {
   const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
   return { ok: result.status === 0, out: result.stdout ?? '' };

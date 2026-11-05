@@ -12,6 +12,7 @@ import { app, clipboard, dialog, powerMonitor } from 'electron';
 import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
 import { DialogWindows } from '../dialog-window';
+import { showDialogSurface } from '../dialog-surfaces';
 import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { Feature } from './index';
@@ -118,6 +119,8 @@ export const dialogsFeature: Feature = {
     const windows = new DialogWindows();
     ctx.handle(CHANNEL.dialogsShow, (event, window, request) => windows.ask(event.sender, window, request));
     ctx.on(CHANNEL.dialogsCancel, (event, _window, id) => windows.cancel(event.sender, id));
+    // The page's own dialogs in windows of their own (dialog-surfaces.ts).
+    ctx.handle(CHANNEL.dialogsShowWindow, (event, _window, name) => showDialogSurface(event.sender, name));
 
     ctx.handle(CHANNEL.clipboardCopyFile, async (_event, _window, name, data) => {
       if (!(data instanceof ArrayBuffer) && !ArrayBuffer.isView(data)) return false;

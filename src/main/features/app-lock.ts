@@ -42,6 +42,9 @@ import type { Feature, FeatureContext } from '.';
 const OS_KEY_NAME = 'app-lock-key';
 /** A PIN record or a database key. Nothing here wraps anything big. */
 const MAX_WRAP_BYTES = 4096;
+/** A lock's new renderer: how long its page gets to load, and how often it's tried. */
+const REPLACE_LOAD_MS = 8_000;
+const REPLACE_TRIES = 3;
 
 /** The backend that only obfuscates would make this look safer than it is. */
 async function wrapAvailable(): Promise<boolean> {
@@ -300,14 +303,33 @@ function setup(ctx: FeatureContext): void {
 
   // What a lock leaves in the renderer can't be overwritten, only ended with the process: a page
   // reloads into the same one. Only while locked, or a frame could use it to take a window down.
+  // Windows replaced at the same moment can lose a load between them: one window's new page
+  // lands in the process of another that is ended next, or never commits. The crash handling
+  // leaves a window being replaced alone, so it would stay blank, with no lock screen to unlock
+  // from. Until its page has loaded, a window here loads it again.
   ctx.on(CHANNEL.appLockReplaceRenderer, (_event, window) => {
     if (!window || window.isDestroyed() || !appLockGate.locked) return;
     const { webContents } = window;
+    if (replacingRenderer.has(webContents)) return;
     replacingRenderer.add(webContents);
-    webContents.once('render-process-gone', () => {
-      webContents.once('did-finish-load', () => replacingRenderer.delete(webContents));
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = () => {
+      clearTimeout(timer);
+      webContents.off('render-process-gone', reloadNow);
+      webContents.off('did-finish-load', finish);
+      replacingRenderer.delete(webContents);
+    };
+    function reloadNow() {
+      clearTimeout(timer);
+      if (webContents.isDestroyed()) return finish();
+      if (tries === 0) webContents.on('did-finish-load', finish);
+      tries += 1;
       webContents.reload();
-    });
+      // Past the last try the window's own crash handling takes over.
+      timer = setTimeout(() => (tries < REPLACE_TRIES ? reloadNow() : finish()), REPLACE_LOAD_MS);
+    }
+    webContents.on('render-process-gone', reloadNow);
     // Ended from outside rather than crashed: a crash would write its memory to a dump.
     process.kill(webContents.getOSProcessId());
   });

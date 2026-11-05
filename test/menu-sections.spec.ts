@@ -1,5 +1,5 @@
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { fakeOsIntegration, launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
+import { dialogHost, fakeOsIntegration, launchStandalone, removeProfile, requireAccount, signIn, STALWARTS, tempProfile } from './helpers';
 import { clickMenuItem, menuItem } from './native-helpers';
 
 /**
@@ -166,8 +166,11 @@ test.describe('the menus follow the part of the app on screen', () => {
       savePdf: { visible: false, enabled: false },
     });
     await clickMenuItem(app, 'file.newFolder');
-    await expect(page.getByRole('dialog')).toBeVisible();
-    await page.keyboard.press('Escape');
+    // A window of its own (dialog-surfaces.ts), or over the page with an older webmail.
+    const newFolder = await dialogHost(app, page, '[role="dialog"]');
+    await expect(newFolder.getByRole('dialog')).toBeVisible();
+    await newFolder.keyboard.press('Escape').catch(() => {});
+    await expect.poll(() => app.windows().filter((p) => !p.isClosed() && p.url() === 'about:blank').length).toBe(0);
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await clickMenuItem(app, 'edit.search');
     await expect.poll(activeField).toMatch(/^Search/);
@@ -225,14 +228,18 @@ test.describe('the menus follow the part of the app on screen', () => {
   test('File > Import > Calendar… and Contacts… open that app\'s import from anywhere', async () => {
     await clickMenuItem(app, 'file.importCalendar');
     await page.waitForURL((url) => url.pathname.startsWith('/calendar'), { timeout: 60_000 });
-    await expect(page.getByRole('dialog', { name: 'Import calendar' })).toBeVisible({ timeout: 30_000 });
-    await page.keyboard.press('Escape');
+    const calendarImport = await dialogHost(app, page, '[role="dialog"]', 60_000);
+    await expect(calendarImport.getByRole('dialog', { name: 'Import calendar' })).toBeVisible({ timeout: 30_000 });
+    await calendarImport.keyboard.press('Escape').catch(() => {});
     await expect(page.getByRole('dialog', { name: 'Import calendar' })).toBeHidden();
+    await expect.poll(() => app.windows().filter((p) => !p.isClosed() && p.url() === 'about:blank').length).toBe(0);
 
     await clickMenuItem(app, 'file.importContacts');
     await page.waitForURL((url) => url.pathname.startsWith('/contacts'), { timeout: 60_000 });
-    await expect(page.getByRole('dialog', { name: 'Import contacts' })).toBeVisible({ timeout: 30_000 });
-    await page.keyboard.press('Escape');
+    const contactImport = await dialogHost(app, page, '[role="dialog"]', 60_000);
+    await expect(contactImport.getByRole('dialog', { name: 'Import contacts' })).toBeVisible({ timeout: 30_000 });
+    await contactImport.keyboard.press('Escape').catch(() => {});
     await expect(page.getByRole('dialog', { name: 'Import contacts' })).toBeHidden();
+    await expect.poll(() => app.windows().filter((p) => !p.isClosed() && p.url() === 'about:blank').length).toBe(0);
   });
 });

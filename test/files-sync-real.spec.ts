@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { helperFile, loadHelperModule, type NativeFilesModule } from '../src/main/native-loader';
-import { APP_ORIGIN, launchStandalone, removeProfile, signIn, tempProfile } from './helpers';
+import { APP_ORIGIN, dialogHost, launchStandalone, removeProfile, signIn, tempProfile } from './helpers';
 
 /**
  * Files on this computer end to end: the real webmail's sync engine in the main window, the
@@ -152,7 +152,8 @@ async function openFilesOnThisComputer(): Promise<void> {
 test('a synced folder gets the Files folder, and both directions follow within seconds', async () => {
   await openFilesOnThisComputer();
   await page.getByTestId('files-sync-add-folder').click();
-  const picker = page.getByRole('dialog');
+  // A window of its own (dialog-surfaces.ts), or over the page with an older webmail.
+  const picker = (await dialogHost(app, page, '[role="dialog"]')).getByRole('dialog');
   await picker.getByText(RUN, { exact: true }).click();
   await picker.getByRole('button', { name: /Choose folder on this computer/ }).click();
 
