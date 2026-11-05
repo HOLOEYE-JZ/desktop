@@ -473,7 +473,8 @@ export interface OsFile {
 
 /** What the OS asks the app to do: a tray item, a jump list entry, a toast, a double-clicked file. */
 export type OsCommand =
-  | { type: 'new-message' }
+  /** `params`: a bulwark://new link's parameters for a plugin of the page (main/deep-link.ts). */
+  | { type: 'new-message'; params?: Record<string, string> }
   /** `settings/files_sync`: Settings > Files on this computer, from the drive's status in Explorer. */
   | { type: 'navigate'; target: 'inbox' | 'calendar' | 'contacts' | 'settings/files_sync' }
   | { type: 'open-message'; emailId: string; accountId?: string; context?: string }

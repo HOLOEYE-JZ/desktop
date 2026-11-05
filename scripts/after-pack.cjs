@@ -33,17 +33,21 @@ exports.default = async function afterPack(context) {
   if (ARCH[context.arch] !== 'universal') {
     const { archiveDir } = await import('./server-archive.mjs');
     const built = archiveDir(projectDir, context.electronPlatformName, ARCH[context.arch] ?? 'x64');
-    cpSync(path.join(built, 'server.asar.unpacked'), path.join(resources, 'server.asar.unpacked'), { recursive: true });
+    if (!existsSync(path.join(built, 'server.asar'))) throw new Error(`before-pack built no server archive in ${built}, so server.asar.unpacked has nothing to come from`);
+    // Only native modules are unpacked, and a server with none has no such folder.
+    const unpacked = path.join(built, 'server.asar.unpacked');
+    if (existsSync(unpacked)) cpSync(unpacked, path.join(resources, 'server.asar.unpacked'), { recursive: true });
   }
 
   // The updater needs to know whether this copy can install an update by itself, and
   // on macOS that takes a signature, which is only known here.
   writeFileSync(path.join(resources, 'bulwark-build.json'), `${JSON.stringify({ macSigned: Boolean(process.env.CSC_LINK || process.env.CSC_NAME) })}\n`);
 
-  const { guardHelper, guardModes, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
+  const { guardHelper, guardModes, guardPackageFiles, guardResources, guardExtraFiles, tightenModes } = await import('./package-guard.mjs');
   // Last, so it covers what's copied above. Before fpm and the others pack the tree.
   tightenModes(context.appOutDir);
   guardResources(resources, context.electronPlatformName);
+  guardPackageFiles(context.appOutDir, resources, context.electronPlatformName, context.packager.config?.electronLanguages);
   guardExtraFiles(context.appOutDir);
   guardModes(context.appOutDir);
   // Only a test may pack without it: scripts/pack-test.mjs, a machine with no Rust.

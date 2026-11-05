@@ -267,8 +267,14 @@ bulwarkPoliciesDone:
 !macroend
 
 !macro customInstall
+  !ifmacrodef bulwarkThemeRegisterStep
+    !insertmacro bulwarkThemeRegisterStep
+  !endif
   !insertmacro bulwarkWritePolicies
   !insertmacro bulwarkRegisterOpenWith
+  !ifmacrodef bulwarkThemeDoneStep
+    !insertmacro bulwarkThemeDoneStep
+  !endif
 !macroend
 
 ; What the app writes at runtime outside its folder goes at a real uninstall (see also
@@ -373,4 +379,8 @@ bulwarkPoliciesDone:
     Pop $R7
     Pop $R6
   ${endIf}
+  ; electron-builder removes the files right after this.
+  !ifmacrodef bulwarkThemeUninstallFilesStep
+    !insertmacro bulwarkThemeUninstallFilesStep
+  !endif
 !macroend

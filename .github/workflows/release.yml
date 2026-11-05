@@ -185,12 +185,15 @@ jobs:
       - name: Build installers
         run: npx electron-builder --win --x64 --arm64 --publish never
 
+      # The blockmaps let an update download only the blocks of the installer that changed:
+      # electron-updater fetches the new one and the one of the version it runs.
       - name: Upload artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-windows
           path: |
             release/*.exe
+            release/*.exe.blockmap
             release/*.msi
             release/*.yml
             !release/builder-debug.yml
@@ -473,6 +476,7 @@ jobs:
             release/*.deb
             release/*.rpm
             release/*.yml
+            release/*.blockmap
 
       - name: Write the release notes
         env:

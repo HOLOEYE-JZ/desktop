@@ -141,6 +141,15 @@ test.describe('bulwark: links only show things', () => {
     expect(requestFromUrl('mailto:a@example.org')).toEqual({ commands: [{ type: 'mailto', url: 'mailto:a@example.org' }], links: [] });
   });
 
+  test('a new message carries the parameters for a plugin of the page, and nothing else', () => {
+    expect(requestFromUrl('bulwark://new?x-akte-case=01%2F2026&X-Akte-Court=AG%20Berlin&subject=Hi&x-=no&x-a%20b=no')).toEqual({
+      commands: [{ type: 'new-message', params: { 'x-akte-case': '01/2026', 'x-akte-court': 'AG Berlin' } }],
+      links: [],
+    });
+    expect(requestFromUrl('bulwark://new?subject=Hi')).toEqual({ commands: [{ type: 'new-message' }], links: [] });
+    expect(requestFromUrl('bulwark://new?x-akte-note=a%0D%0Ab')).toEqual({ commands: [{ type: 'new-message', params: { 'x-akte-note': 'ab' } }], links: [] });
+  });
+
   test('nothing that changes mail, and nothing unknown', () => {
     for (const url of ['bulwark://toast/archive?c=x&s=y', 'bulwark://archive/a/b', 'bulwark://delete/a/b', 'bulwark://new/x', 'bulwark://inbox/x', 'bulwark://calendar/a/b', 'https://example.org/']) {
       expect(requestFromUrl(url), url).toEqual({ commands: [], links: [] });
@@ -574,6 +583,33 @@ test.describe('the lock in main', () => {
     expect(os.locked).toBe(true);
     os.setLockedByMain(false);
     expect(os.locked).toBe(false);
+  });
+});
+
+test.describe('a new message with parameters for a plugin', () => {
+  const setup = () => {
+    const sent: unknown[] = [];
+    const contents = { id: 1, isDestroyed: () => false, send: (_channel: string, command: unknown) => sent.push(command) };
+    const windows = new EventEmitter() as EventEmitter & { mainWindow: () => unknown; broadcast: () => void; startMainHidden: () => void };
+    windows.mainWindow = () => ({ webContents: contents });
+    windows.broadcast = () => {};
+    windows.startMainHidden = () => {};
+    const os = new OsHub({ windows, state: { data: {}, touch() {}, save() {} }, showMain() {} } as unknown as FeatureContext);
+    os.subscribe(contents as never);
+    os.setLockedByPage(false, contents as never);
+    let quick = 0;
+    os.quickCompose = () => { quick += 1; };
+    return { os, sent, quick: () => quick };
+  };
+
+  test('goes to the page, which hands them over; without them it is quick compose', () => {
+    const { os, sent, quick } = setup();
+    os.dispatch({ type: 'new-message', params: { 'x-akte-case': '01/2026' } });
+    expect(quick()).toBe(0);
+    expect(sent).toEqual([{ type: 'new-message', params: { 'x-akte-case': '01/2026' } }]);
+    os.dispatch({ type: 'new-message' });
+    expect(quick()).toBe(1);
+    expect(sent).toHaveLength(1);
   });
 });
 

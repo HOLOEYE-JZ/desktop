@@ -12,7 +12,7 @@ import { CHANNEL, type BrowserSignInBegin, type PasswordSignInAnswer } from '../
 import { effectivePolicyValue } from '../../shared/policy-schema';
 import { LoopbackSignIn } from '../browser-sign-in';
 import { serverOrigin } from '../server-address';
-import { strings } from '../strings';
+import { uiLanguageNow } from '../strings';
 import { addWipeStep } from './local-wipe';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
@@ -63,7 +63,7 @@ export function setupBrowserSignIn(ctx: FeatureContext): LoopbackSignIn {
   const signIn = new LoopbackSignIn({
     open: (url) => shell.openExternal(url),
     bringForward: (owner) => bringForward(ctx, owner),
-    text: strings,
+    language: uiLanguageNow,
     instanceOrigin: ctx.mode === 'instance' ? ctx.origin : undefined,
     timeoutMs: testTimeoutMs(),
     ports: remembered,

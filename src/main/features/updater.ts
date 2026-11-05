@@ -23,6 +23,7 @@ import { openExternally } from '../navigation';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../update-policy';
 import {
   acceptDownload,
+  differentialDownloads,
   effectiveChannel,
   installKind,
   isPrerelease,
@@ -199,9 +200,10 @@ class Updater {
     // Only true once a right version is on disk: see `onDownloaded`.
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
-    // Its differential path ignores the cancellation token, so a download given up on would
-    // run to the end and block the next one. The packages have no blockmaps anyway.
-    autoUpdater.disableDifferentialDownload = true;
+    // On Windows only the blocks that changed come down (see differentialDownloads). Its
+    // differential path ignores the cancellation token: abandonDownload ends its requests with
+    // an error, which settles it.
+    autoUpdater.disableDifferentialDownload = !differentialDownloads(process.platform);
     // Every hop of every request, redirects included: only GitHub. TLS doesn't help against a
     // release asset that points somewhere else.
     const testOrigin = __BULWARK_UPDATER_TEST__ && this.testFeed ? new URL(this.testFeed).origin : undefined;
@@ -254,7 +256,9 @@ class Updater {
         const response = await updater.netSession.fetch(`${base}/${OWNER}/${REPO}/releases.atom`, { headers: { accept: 'application/atom+xml' } });
         const newest = response.ok ? newestReleaseInFeed(await response.text()) : null;
         if (newest) {
-          updater.setFeedURL({ provider: 'generic', url: `${base}/${OWNER}/${REPO}/releases/download/v${newest}/` });
+          // One range per request, as electron-updater's GitHub provider does: GitHub's
+          // download servers don't answer several ranges in one.
+          updater.setFeedURL({ provider: 'generic', url: `${base}/${OWNER}/${REPO}/releases/download/v${newest}/`, useMultipleRangeRequest: false });
           return;
         }
       } catch (error) {
@@ -323,7 +327,12 @@ class Updater {
       this.downloadToken.cancel();
       this.downloadToken = null;
       // Only with a download on: nothing would ever settle a check whose request went away.
-      for (const request of this.requests) request.abort();
+      // An aborted request says nothing to whoever waits on it, so each gets an error too:
+      // the differential download waits on its range requests that way.
+      for (const request of this.requests) {
+        request.abort();
+        if (request.listenerCount('error') > 0) request.emit('error', new Error('The update download was given up.'));
+      }
       this.requests.clear();
     }
     if (this.updater) this.updater.autoInstallOnAppQuit = false;

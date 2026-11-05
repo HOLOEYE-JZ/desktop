@@ -8,6 +8,7 @@
  *   bulwark://mailbox/<role or id>
  *   bulwark://folder/<role or id>
  *   bulwark://new
+ *   bulwark://new?x-<plugin id>-<name>=<value>
  *   bulwark://inbox, bulwark://calendar, bulwark://contacts
  *   bulwark://sign-in/callback?code=<code>&state=<state>
  *
@@ -18,6 +19,10 @@
  * The sign-in link is the redirect for a server that refuses a loopback one. It shows
  * nothing and opens nothing. It finishes a flow the user started in the app, if its state
  * is that flow's (browser-sign-in.ts), and otherwise it's dropped without a sound.
+ *
+ * A new message may carry parameters for a plugin of the webmail: `x-<plugin id>-<name>`
+ * (its lib/plugin-link-params.ts), handed to that plugin once the composer is open. They
+ * are text the plugin checks; nothing else of the query is kept.
  */
 
 export const DEEP_LINK_SCHEME = 'bulwark';
@@ -25,7 +30,7 @@ export const DEEP_LINK_SCHEME = 'bulwark';
 export type DeepLink =
   | { kind: 'message'; emailId: string; account?: string; owner?: string }
   | { kind: 'folder'; folder: string }
-  | { kind: 'new' }
+  | { kind: 'new'; params?: Record<string, string> }
   | { kind: 'view'; view: 'inbox' | 'calendar' | 'contacts' }
   | { kind: 'sign-in'; code: string; state: string };
 
@@ -40,6 +45,26 @@ const ID = /^[A-Za-z0-9_-]{1,255}$/;
  * username is usually an address itself, so it can hold another @.
  */
 const LOGIN = /^[^\s/\\?#%<>"'`&]{1,254}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,253}[A-Za-z0-9])?$/;
+
+/** A plugin parameter's name, as the webmail takes it. */
+const PLUGIN_PARAM = /^x-[a-z0-9][a-z0-9._-]{0,125}$/;
+const MAX_PLUGIN_PARAMS = 50;
+const MAX_PLUGIN_PARAM_VALUE = 2048;
+
+/** The `x-<plugin id>-<name>` parameters of a new-message link, or undefined when it has none. */
+function pluginParams(query: URLSearchParams): Record<string, string> | undefined {
+  const out: Record<string, string> = {};
+  let count = 0;
+  for (const [rawName, value] of query) {
+    const name = rawName.toLowerCase();
+    if (!PLUGIN_PARAM.test(name) || Object.prototype.hasOwnProperty.call(out, name)) continue;
+    if (count >= MAX_PLUGIN_PARAMS) break;
+    // eslint-disable-next-line no-control-regex -- removing control characters is the point
+    out[name] = value.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, MAX_PLUGIN_PARAM_VALUE);
+    count += 1;
+  }
+  return count > 0 ? out : undefined;
+}
 
 /** RFC 6749 appendix A: printable ASCII. */
 const OAUTH_VALUE = /^[\x20-\x7e]{1,1024}$/;
@@ -88,7 +113,10 @@ export function parseDeepLink(raw: unknown): DeepLink | null {
     return { kind: 'sign-in', code, state };
   }
   if (segments.length > 0) return null;
-  if (url.hostname === 'new') return { kind: 'new' };
+  if (url.hostname === 'new') {
+    const params = pluginParams(url.searchParams);
+    return params ? { kind: 'new', params } : { kind: 'new' };
+  }
   if (url.hostname === 'inbox' || url.hostname === 'calendar' || url.hostname === 'contacts') return { kind: 'view', view: url.hostname };
   return null;
 }

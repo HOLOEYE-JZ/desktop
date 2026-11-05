@@ -122,6 +122,17 @@ export function updateAbility(kind: InstallKind): UpdateAbility {
   return kind === 'nsis' || kind === 'appimage' || kind === 'mac-signed' ? 'install' : 'notify';
 }
 
+/**
+ * Whether an update downloads only the blocks that changed. On Windows: the release workflow
+ * publishes a blockmap next to each installer, and the NSIS installer keeps a copy of itself
+ * in the updater's cache as the base. Anything that goes wrong on the way falls back to the
+ * whole installer, which is checked against latest.yml's sha512 either way. The other
+ * platforms publish no blockmaps, so trying would only cost a failed request first.
+ */
+export function differentialDownloads(platform: NodeJS.Platform): boolean {
+  return platform === 'win32';
+}
+
 export type FeedVerdict = 'newer' | 'same' | 'older-offer' | 'ignore';
 
 /**

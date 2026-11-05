@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { asarFiles } from '../scripts/package-guard.mjs';
+import { asarFiles, MAX_WINDOWS_PACKAGE_FILES } from '../scripts/package-guard.mjs';
 import { realRegistrationSnapshot, removeProfile, tempProfile } from './helpers';
 
 /**
@@ -109,14 +109,17 @@ test.describe('the packaged app', () => {
     expect(relative.some((file) => file.startsWith('node_modules/caniuse-lite/'))).toBe(false);
   });
 
-  test('the server is one file plus what has to stay loose, far fewer than it was', () => {
+  test('the server is one file plus its native modules, far fewer than it was', () => {
+    // Every loose file is written and virus-scanned at each install and update.
     const count = allFiles(UNPACKED).length;
-    expect(count).toBeLessThan(600);
+    expect(count).toBeLessThan(process.platform === 'win32' ? MAX_WINDOWS_PACKAGE_FILES : 600);
     const unpacked = allFiles(path.join(UNPACKED, 'resources', 'server.asar.unpacked')).map((file) => file.split(path.sep).join('/'));
     expect(unpacked.some((file) => file.endsWith('.node') && file.includes('@img'))).toBe(true);
-    expect(unpacked.some((file) => file.includes('/public/'))).toBe(true);
-    expect(unpacked.some((file) => file.includes('/.next/static/'))).toBe(true);
-    expect(unpacked.some((file) => file.includes('/.next/server/'))).toBe(false);
+    expect(unpacked.every((file) => file.includes('/server.asar.unpacked/node_modules/')), unpacked.join(', ')).toBe(true);
+    // Next serves public/ and .next/static straight out of the archive.
+    const packed = asarFiles(path.join(UNPACKED, 'resources', 'server.asar'));
+    expect(packed).toContain('public/sw.js');
+    expect(packed.some((file) => file.startsWith('.next/static/chunks/'))).toBe(true);
   });
 
   test('the first-run page still works with the file protocol\'s extra privileges off', async () => {

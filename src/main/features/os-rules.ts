@@ -249,7 +249,7 @@ export function requestFromUrl(raw: string): { commands: OsCommand[]; links: Win
     const command = commandFromUrl(raw);
     return { commands: command ? [command] : [], links: [] };
   }
-  if (link.kind === 'new') return { commands: [{ type: 'new-message' }], links: [] };
+  if (link.kind === 'new') return { commands: [{ type: 'new-message', ...(link.params ? { params: link.params } : {}) }], links: [] };
   if (link.kind === 'view') return { commands: [{ type: 'navigate', target: link.view }], links: [] };
   // Not a request of any kind: see os-launch.ts, which gives it to the flow that's waiting.
   if (link.kind === 'sign-in') return { commands: [], links: [] };

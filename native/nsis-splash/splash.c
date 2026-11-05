@@ -6,9 +6,18 @@
  * shows the progress in percent needs a window procedure. This is that procedure. It takes
  * over electron-builder's installer window (the one-click instfiles page): hides every
  * control, takes away the caption, makes the window a 300 by 340 square in the middle of the
- * screen, and paints the logo, a heading, a line under it, a rounded progress bar and the
- * percent. The percent comes from the page's own progress bar, which NSIS keeps moving while
- * it's hidden, read on a timer.
+ * screen, and paints the logo, a heading, a line under it, a rounded progress bar, the
+ * percent and what it's doing now.
+ *
+ * One bar for the whole run. NSIS's own bar can't be that: it restarts with each part (the
+ * unpacking fills it, then the file copy fills it again) and an update runs the old
+ * uninstaller first. So the script tells the window each step (WM_SPLASH_STEP): its share of
+ * the bar, from and to in percent, how long it usually takes, and the line to show under the
+ * bar. Inside a step the bar follows real progress where the script reports some
+ * (WM_SPLASH_PROGRESS, the unpacking) and otherwise moves on with the time the step usually
+ * takes, slowing down so it stops short of the step's end. It never goes back, and shows
+ * 100 only once the script says it's done (a step from 100 to 100). Until the first step it
+ * follows NSIS's bar, never back either.
  *
  * Nothing here takes part in what the installer does. build/installer-theme.nsh calls it,
  * scripts/build-nsis-splash.mjs builds it (32-bit, as NSIS is), electron-builder takes it
@@ -19,6 +28,12 @@
  * <percent> has a # where the number goes ("# %", "#%"). <dpi> 0 is the window's own, a
  * number draws as if at that DPI (for screenshots). <theme key> is the HKCU key holding
  * AppsUseLightTheme. Puts "ok" or an error on the stack.
+ *
+ * Then, from the script, with SendMessage to $HWNDPARENT:
+ *
+ *   WM_SPLASH_STEP      wParam: from | to << 8 | tenths of a second << 16, lParam: "STR:<line>"
+ *                       (an empty line keeps the one shown)
+ *   WM_SPLASH_PROGRESS  wParam: done, lParam: total, in any one unit
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -29,6 +44,7 @@
 #include <dwmapi.h>
 #include <math.h>
 #include <stdlib.h>
+#include <tlhelp32.h>
 
 /* The NSIS plugin interface, as in NSIS's pluginapi.h. */
 typedef struct stack_t {
@@ -53,7 +69,11 @@ typedef struct {
 
 #define TEXT_MAX 1024
 #define WM_SPLASH_INIT (WM_APP + 0x42)
+#define WM_SPLASH_STEP (WM_APP + 0x43)
+#define WM_SPLASH_PROGRESS (WM_APP + 0x44)
 #define TIMER_ID 0x4257
+/* Without progress of its own, a step moves on with its usual time and stops at this share of it. */
+#define STEP_CREEP_LIMIT 0.9
 #define DIP_WIDTH 300
 #define DIP_HEIGHT 340
 
@@ -71,6 +91,11 @@ static struct {
   HICON icon;
   double shown;
   int shownPercent;
+  /* The step the script said it's in. */
+  BOOL stepped;
+  WCHAR step[TEXT_MAX];
+  double stepFrom, stepTo, stepMs, stepDone, stepTotal;
+  ULONGLONG stepStarted;
 } g;
 
 static int Scale(int value) { return MulDiv(value, g.dpi, 96); }
@@ -247,10 +272,14 @@ static void Paint(HWND window) {
   WCHAR percent[96];
   PercentText(percent, 96, g.shownPercent);
   int percentHeight = TextHeight(dc, g.percentFont, percent, textWidth, flags);
+  /* What it's doing now: one line, cut short with an ellipsis rather than moving the rest. */
+  UINT stepFlags = DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX | (g.rtl ? DT_RTLREADING : 0);
+  int stepHeight = TextHeight(dc, g.percentFont, L"Ag", textWidth, stepFlags);
   int barHeight = Scale(6);
 
-  /* Logo, 20, heading, 6, line, 24, bar, 10, percent: centred as a block. */
-  int block = logo + Scale(20) + headingHeight + (lineHeight ? Scale(6) + lineHeight : 0) + Scale(24) + barHeight + Scale(10) + percentHeight;
+  /* Logo, 20, heading, 6, line, 24, bar, 10, percent, 4, step: centred as a block. The step's
+     line is always counted, so the block doesn't move when the first step arrives. */
+  int block = logo + Scale(20) + headingHeight + (lineHeight ? Scale(6) + lineHeight : 0) + Scale(24) + barHeight + Scale(10) + percentHeight + Scale(4) + stepHeight;
   int y = (h - block) / 2;
   if (g.icon) DrawIconEx(dc, (w - logo) / 2, y, g.icon, logo, logo, 0, NULL, DI_NORMAL);
   y += logo + Scale(20);
@@ -277,6 +306,11 @@ static void Paint(HWND window) {
   SelectObject(dc, g.percentFont);
   SetTextColor(dc, g.muted);
   DrawTextW(dc, percent, -1, &percentBox, flags);
+  y += percentHeight + Scale(4);
+  if (g.step[0]) {
+    RECT stepBox = { (w - textWidth) / 2, y, (w + textWidth) / 2, y + stepHeight };
+    DrawTextW(dc, g.step, -1, &stepBox, stepFlags);
+  }
 
   /* Windows 10 has no rounded corners or DWM border for this window: a 1 px line instead. */
   if (g.drawBorder || g.highContrast) {
@@ -292,16 +326,35 @@ static void Paint(HWND window) {
   EndPaint(window, &ps);
 }
 
-/* Follows the hidden progress bar, eased so it glides instead of jumping. */
-static void Tick(HWND window) {
-  if (!g.bar || !IsWindow(g.bar)) return;
+/* Where the bar is headed: inside the script's step, or the hidden bar until the first step. */
+static double Target(void) {
+  if (g.stepped) {
+    double f = 0;
+    if (g.stepTotal > 0) {
+      f = Clamp01(g.stepDone / g.stepTotal);
+    } else if (g.stepMs > 0) {
+      /* About 80 % of the step after its usual time, and never all of it. */
+      double elapsed = (double)(GetTickCount64() - g.stepStarted);
+      f = STEP_CREEP_LIMIT * (1 - exp(-2 * elapsed / g.stepMs));
+    }
+    return (g.stepFrom + (g.stepTo - g.stepFrom) * f) / 100;
+  }
+  if (!g.bar || !IsWindow(g.bar)) return g.shown;
   int pos = (int)SendMessageW(g.bar, PBM_GETPOS, 0, 0);
   int low = (int)SendMessageW(g.bar, PBM_GETRANGE, TRUE, 0);
   int high = (int)SendMessageW(g.bar, PBM_GETRANGE, FALSE, 0);
-  double target = high > low ? Clamp01((double)(pos - low) / (high - low)) : 0;
-  double next = target < g.shown ? target : g.shown + (target - g.shown) * 0.35;
+  return high > low ? Clamp01((double)(pos - low) / (high - low)) : 0;
+}
+
+/* Eased so it glides instead of jumping, and never back. */
+static void Tick(HWND window) {
+  double target = Target();
+  if (target < g.shown) target = g.shown;
+  double next = g.shown + (target - g.shown) * 0.35;
   if (target - next < 0.002) next = target;
   int percent = (int)floor(next * 100 + 1e-9);
+  /* 100 only once the script says it's done: a step from 100. */
+  if (percent > 99 && !(g.stepped && g.stepFrom >= 100)) percent = 99;
   if (next != g.shown || percent != g.shownPercent) {
     g.shown = next;
     g.shownPercent = percent;
@@ -347,6 +400,8 @@ static void Init(HWND window) {
 
   g.shown = 0;
   g.shownPercent = 0;
+  g.stepped = FALSE;
+  g.step[0] = 0;
   Tick(window);
   SetTimer(window, TIMER_ID, 50, NULL);
 
@@ -360,6 +415,31 @@ static LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l) {
   switch (message) {
     case WM_SPLASH_INIT:
       Init(window);
+      return 0;
+    case WM_SPLASH_STEP: {
+      /* Sent from the install thread; the line is the script's, copied before this returns. */
+      int from = (int)(w & 0xff), to = (int)((w >> 8) & 0xff);
+      if (from > 100) from = 100;
+      if (to > 100) to = 100;
+      if (to < from) to = from;
+      g.stepped = TRUE;
+      g.stepFrom = from;
+      g.stepTo = to;
+      g.stepMs = (double)((w >> 16) & 0xffff) * 100;
+      g.stepDone = 0;
+      g.stepTotal = 0;
+      g.stepStarted = GetTickCount64();
+      const WCHAR *text = (const WCHAR *)l;
+      if (text && text[0]) lstrcpynW(g.step, text, TEXT_MAX);
+      /* For tests: the step's from and to, plus one. */
+      SetPropW(window, L"BulwarkSplashStep", (HANDLE)(INT_PTR)((from | to << 8) + 1));
+      Tick(window);
+      InvalidateRect(window, NULL, FALSE);
+      return 0;
+    }
+    case WM_SPLASH_PROGRESS:
+      g.stepDone = (double)(ULONG_PTR)w;
+      g.stepTotal = (double)(ULONG_PTR)l;
       return 0;
     case WM_NCHITTEST: {
       /* Dragged by any point of it. */
@@ -387,6 +467,7 @@ static LRESULT CALLBACK Proc(HWND window, UINT message, WPARAM w, LPARAM l) {
     case WM_NCDESTROY:
       KillTimer(window, TIMER_ID);
       RemovePropW(window, L"BulwarkSplashPercent");
+      RemovePropW(window, L"BulwarkSplashStep");
       SetWindowLongPtrW(window, GWLP_WNDPROC, (LONG_PTR)g.old);
       g.window = NULL;
       return CallWindowProcW(g.old, window, message, w, l);
@@ -447,6 +528,70 @@ __declspec(dllexport) void __cdecl Show(HWND parent, int stringSize, LPWSTR vari
   g.old = (WNDPROC)SetWindowLongPtrW(parent, GWLP_WNDPROC, (LONG_PTR)Proc);
   SendMessageW(parent, WM_SPLASH_INIT, 0, 0);
   PushString(stacktop, L"ok", stringSize);
+}
+
+/*
+ * Whether Bulwark runs from the install folder, and ending it, for the installer's and the
+ * uninstaller's "is the app running" check. electron-builder's asks PowerShell three times,
+ * which took seven seconds of an install, and an update pays it twice: in the installer and in
+ * the old uninstaller. This asks Windows directly.
+ */
+static BOOL InsideDir(const WCHAR *exe, const WCHAR *dir) {
+  int n = lstrlenW(dir);
+  while (n > 0 && (dir[n - 1] == L'\\' || dir[n - 1] == L'/')) n--;
+  if (n == 0 || lstrlenW(exe) <= n || exe[n] != L'\\') return FALSE;
+  return CompareStringOrdinal(exe, n, dir, n, TRUE) == CSTR_EQUAL;
+}
+
+/* How many processes run from inside dir, this one aside. With stop, each is ended and waited for. */
+static int Inside(const WCHAR *dir, BOOL stop) {
+  int found = 0;
+  DWORD self = GetCurrentProcessId();
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return 0;
+  PROCESSENTRY32W entry = { sizeof(entry) };
+  for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+    if (entry.th32ProcessID == self || entry.th32ProcessID == 0) continue;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+    if (!process) continue;
+    WCHAR exe[1024];
+    DWORD size = 1024;
+    BOOL inside = QueryFullProcessImageNameW(process, 0, exe, &size) && InsideDir(exe, dir);
+    CloseHandle(process);
+    if (!inside) continue;
+    if (stop) {
+      /* One run elevated can't be ended from here: it still counts, and the script asks the person. */
+      HANDLE end = OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
+      if (end) {
+        BOOL ended = TerminateProcess(end, 1) && WaitForSingleObject(end, 5000) == WAIT_OBJECT_0;
+        CloseHandle(end);
+        if (ended) continue;
+      }
+    }
+    found++;
+  }
+  CloseHandle(snapshot);
+  return found;
+}
+
+/* BulwarkSplash::Running <dir>: "1" if a process runs from inside dir, else "0". */
+__declspec(dllexport) void __cdecl Running(HWND parent, int stringSize, LPWSTR variables, stack_t **stacktop, extra_parameters *extra) {
+  WCHAR dir[1024];
+  (void)parent;
+  (void)variables;
+  (void)extra;
+  PopString(stacktop, dir, 1024);
+  PushString(stacktop, Inside(dir, FALSE) ? L"1" : L"0", stringSize);
+}
+
+/* BulwarkSplash::Stop <dir>: ends every process running from inside dir. "1" if one is left, else "0". */
+__declspec(dllexport) void __cdecl Stop(HWND parent, int stringSize, LPWSTR variables, stack_t **stacktop, extra_parameters *extra) {
+  WCHAR dir[1024];
+  (void)parent;
+  (void)variables;
+  (void)extra;
+  PopString(stacktop, dir, 1024);
+  PushString(stacktop, Inside(dir, TRUE) ? L"1" : L"0", stringSize);
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {

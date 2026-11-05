@@ -210,8 +210,9 @@ export class OsHub extends EventEmitter<{
 
   /** `show` brings the main window up. Without it, there still has to be a page to do the work. */
   dispatch(command: OsCommand, options: { show: boolean } = { show: true }): void {
-    // A new message from outside the app is its own small window.
-    if (command.type === 'new-message' && this.quickCompose) {
+    // A new message from outside the app is its own small window. One with parameters for
+    // a plugin goes to the page, which hands them over once its composer is open.
+    if (command.type === 'new-message' && this.quickCompose && !command.params) {
       if (this.newMessageLimit.allow(Date.now())) this.quickCompose();
       return;
     }
