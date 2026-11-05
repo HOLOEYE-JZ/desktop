@@ -67,6 +67,37 @@ test.describe('the NSIS window', () => {
     expect(text).toContain('SendMessage $R2 0x2001 0 0x262626');
   });
 
+  // Controls made from the install section belong to its thread, which paints them only
+  // while it waits (ExecWait): on an update, while the old uninstaller ran, the lines got a
+  // white background next to their text. So they're made in .onGUIInit, on the window's thread.
+  test('makes its logo and lines on the window thread, not in the install section', () => {
+    const text = theme();
+    const body = (start: string, end: string) => text.slice(text.indexOf(start), text.indexOf(end, text.indexOf(start)));
+    const window = body('Function ${UN}bulwarkThemeWindow', 'FunctionEnd');
+    expect(window.length).toBeGreaterThan(0);
+    expect(window).not.toContain('CreateWindowEx');
+    expect(body('!macro bulwarkThemeStatics', '!macroend').match(/user32::CreateWindowExW\(/g)).toHaveLength(3);
+    expect(text.match(/user32::CreateWindowExW\(/g)).toHaveLength(3);
+    for (const un of ['', 'un.']) expect(body(`Function ${un}bulwarkThemeGuiInit`, 'FunctionEnd'), `${un}bulwarkThemeGuiInit`).toContain('!insertmacro bulwarkThemeStatics');
+    for (const name of ['$bulwarkLogo', '$bulwarkTitle', '$bulwarkLine']) expect(window).toContain(`SetWindowPos(p ${name}`);
+  });
+
+  test("keeps NSIS's integrity check and its message", () => {
+    // SilentInstall would hide the "verifying installer" box, and the "integrity check failed" message with it.
+    for (const file of [path.join(BUILD, 'installer-theme.nsh'), path.join(ROOT, config.nsis.include)]) {
+      expect(read(file), file).not.toMatch(/^\s*(SilentInstall|SilentUnInstall|CRCCheck)\b/m);
+    }
+  });
+
+  test('leaves out the uninstaller question for a person, and stays silent with /S', () => {
+    const text = theme();
+    // un.onInit's ${LogSet} turns silent on, only without /S, and the app check turns it off again.
+    expect(text).toMatch(/!macro customHeader\n\s+!undef LogSet\n\s+!define LogSet "!insertmacro bulwarkLogSet"\n\s+!macroend/);
+    expect(text).toMatch(/!macro bulwarkLogSet SETTING\n\s+!insertmacro LogSetMacro \$\{SETTING\}\n\s+!ifdef __UNINSTALL__\n\s+!if "\$\{__FUNCTION__\}" == "onInit"\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent silent\n/);
+    const check = text.slice(text.lastIndexOf('!macro customCheckAppRunning'));
+    expect(check).toMatch(/^!macro customCheckAppRunning\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent normal\n[\s\S]*?!insertmacro _CHECK_APP_RUNNING\n\s+!macroend/);
+  });
+
   test('has a logo for every scale from 100 to 300 %', () => {
     expect(theme()).toContain('"${BULWARK_THEME_DIR}\\installer-logo.ico"');
     const sizes = icoSizes(readFileSync(path.join(BUILD, 'installer-logo.ico')));
@@ -122,6 +153,18 @@ test.describe('the NSIS window', () => {
     expect(unSection.indexOf('!insertmacro customUnInstall')).toBeLessThan(unSection.indexOf('RMDir /r $INSTDIR'));
     const oneClick = read(path.join(TEMPLATES, 'oneClick.nsh'));
     expect(oneClick).toContain('!insertmacro MUI_PAGE_INSTFILES');
+    // The uninstaller's question: asked in un.onInit only when not silent, after ${LogSet},
+    // which customHeader can redefine (after common.nsh defines it, before uninstaller.nsh).
+    const inOrder = (text: string, parts: string[]) => {
+      const at = parts.map((part) => text.indexOf(part));
+      expect(at.every((index) => index > -1), JSON.stringify(at)).toBe(true);
+      expect([...at].sort((a, b) => a - b)).toEqual(at);
+    };
+    const unInit = uninstaller.slice(uninstaller.indexOf('Function un.onInit'), uninstaller.indexOf('FunctionEnd', uninstaller.indexOf('Function un.onInit')));
+    inOrder(unInit, ['${LogSet} on', '${GetOptions} $R0 "/S" $R1', '${If} ${Silent}\n    call un.checkAppRunning\n  ${else}', 'MessageBox MB_OKCANCEL "$(areYouSureToUninstall)"', '!insertmacro customUnInit']);
+    expect(uninstaller.split('$(areYouSureToUninstall)')).toHaveLength(2);
+    expect(read(path.join(TEMPLATES, 'common.nsh'))).toContain('!define LogSet "!insertmacro LogSetMacro"');
+    inOrder(read(path.join(TEMPLATES, 'installer.nsi')), ['!include "common.nsh"', '!insertmacro customHeader', '!include "uninstaller.nsh"']);
   });
 });
 
