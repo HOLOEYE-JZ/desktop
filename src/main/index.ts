@@ -64,6 +64,7 @@ import { closeDictionaryDownloads } from './spellcheck';
 import { isInstalledBuild, osRegistrationAllowed } from './installed';
 import { registryRoot, sendToFolder } from './features/os-default-app';
 import { asksForUninstallCleanup, uninstallCleanup } from './uninstall-cleanup';
+import { showMessageBox, useMessageBoxLook } from './message-box';
 
 // Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
 // anyone can rename it. See installed.ts.
@@ -336,7 +337,7 @@ function tellSignInsLost(lostKey: string): void {
   stateFile.data.keyLossTold = told;
   stateFile.save();
   const text = strings();
-  void dialog.showMessageBox({ type: 'info', title: 'Bulwark', message: text.signInsLostTitle, detail: text.signInsLostDetail }).catch(() => {});
+  void showMessageBox({ type: 'info', title: 'Bulwark', message: text.signInsLostTitle, detail: text.signInsLostDetail }).catch(() => {});
 }
 
 /**
@@ -774,7 +775,7 @@ function switchMode(): void {
 /** Where the page can't ask (an older webmail, an error page): the OS's question, never none. */
 function askThenSwitchMode(): void {
   const text = strings();
-  void dialog.showMessageBox({ type: 'question', title: 'Bulwark', message: text.menuSwitchModeTitle, detail: text.menuSwitchModeDetail, buttons: [text.menuSwitchModeConfirm, text.menuSwitchModeCancel], defaultId: 0, cancelId: 1, noLink: true })
+  void showMessageBox({ type: 'question', title: 'Bulwark', message: text.menuSwitchModeTitle, detail: text.menuSwitchModeDetail, buttons: [text.menuSwitchModeConfirm, text.menuSwitchModeCancel], defaultId: 0, cancelId: 1, noLink: true })
     .then(({ response }) => {
       if (response === 0) switchMode();
     });
@@ -877,11 +878,11 @@ if (gotLock) {
     event.preventDefault();
     quitFlushed = true;
     const windows = windowManager;
-    void windows.flushAll().then((summary) => {
+    void windows.flushAll().then(async (summary) => {
       if (summary.failed > 0 || summary.unsent > 0) {
         const text = strings();
         const parent = windows.focusedManaged()?.window ?? windows.mainWindow();
-        const options: Electron.MessageBoxSyncOptions = {
+        const options: Electron.MessageBoxOptions = {
           type: 'warning',
           title: 'Bulwark',
           message: summary.failed > 0 ? text.unsavedTitle : text.unsentTitle,
@@ -891,7 +892,7 @@ if (gotLock) {
           cancelId: 1,
           noLink: true,
         };
-        const choice = parent ? dialog.showMessageBoxSync(parent, options) : dialog.showMessageBoxSync(options);
+        const { response: choice } = await showMessageBox(parent ?? null, options);
         if (choice !== 0) {
           quitFlushed = false;
           switching = false;
@@ -911,6 +912,7 @@ if (gotLock) {
   app.whenReady().then(async () => {
     if (sandboxRefused({ platform: process.platform, appImage: process.env.APPIMAGE, noSandboxSwitch: app.commandLine.hasSwitch('no-sandbox'), disableSandboxEnv: process.env.ELECTRON_DISABLE_SANDBOX })) {
       const text = strings();
+      // Native on purpose: the app's own dialog window is sandboxed, and the sandbox is what's missing.
       dialog.showMessageBoxSync({ type: 'error', title: 'Bulwark', message: text.sandboxTitle, detail: text.sandboxDetail, buttons: [text.ok], noLink: true });
       app.exit(1);
       return;
@@ -920,11 +922,17 @@ if (gotLock) {
     showPolicyProblemsInAbout();
     policies.on('changed', showPolicyProblemsInAbout);
     const theme = new ThemeController(stateFile);
+    // The shell's own questions take the app's theme, the one its page last reported.
+    useMessageBoxLook(() => {
+      const colours = theme.colours();
+      return { dark: colours.dark, background: colours.background, foreground: colours.symbol };
+    });
     await boot(theme);
     policies.watch();
     watchPolicyForRestart(bootedDecision!);
   }).catch((error) => {
     console.error(error);
+    // Native on purpose: the start failed, and nothing of the app's can be shown.
     dialog.showErrorBox('Bulwark', String(error instanceof Error ? error.message : error));
     app.exit(1);
   });

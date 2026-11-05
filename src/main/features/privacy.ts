@@ -40,6 +40,7 @@ import { strings } from '../strings';
 import { addWipeStep } from './local-wipe';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
+import { showMessageBox } from '../message-box';
 
 declare const __BULWARK_TEST_BUILD__: boolean;
 
@@ -298,7 +299,7 @@ export class PrivacyManager extends EventEmitter<PrivacyEvents> {
   private async confirm(window: BrowserWindow | null, box: Pick<MessageBoxOptions, 'message' | 'detail'>, yes: string): Promise<boolean> {
     const text = strings();
     const options: MessageBoxOptions = { type: 'question', title: 'Bulwark', buttons: [yes, text.cancel], defaultId: 1, cancelId: 1, noLink: true, ...box };
-    const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+    const { response } = window ? await showMessageBox(window, options) : await showMessageBox(options);
     return response === 0;
   }
 

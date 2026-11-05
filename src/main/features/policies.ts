@@ -15,7 +15,7 @@ import { EventEmitter } from 'node:events';
 import { lstatSync, readFileSync, watch as watchFile, type Stats } from 'node:fs';
 import { createRequire } from 'node:module';
 import { userInfo } from 'node:os';
-import { app, dialog, ipcMain, systemPreferences, type CommandLine, type Session } from 'electron';
+import { app, ipcMain, systemPreferences, type CommandLine, type Session } from 'electron';
 import { CHANNEL } from '../../shared/bridge';
 import {
   DEFAULT_POLICY_SNAPSHOT,
@@ -60,6 +60,7 @@ import { keystorePolicyChanged, setKeystoreOffPolicy } from '../keystore-policy'
 import { setKeystoreAllowedOrigins } from './keystore';
 import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
+import { showMessageBox } from '../message-box';
 
 // Set by build.mjs: true only with --test. Dropped from what a package holds, since a
 // renamed Bulwark.exe would pass any check on app.isPackaged.
@@ -392,6 +393,6 @@ export const policiesFeature: Feature = {
 
 /** Asks once per change. The answer can wait: a window with work in it isn't taken away. */
 export async function askToRestart(message: string, detail: string, restart: string, later: string): Promise<boolean> {
-  const { response } = await dialog.showMessageBox({ type: 'info', title: 'Bulwark', message, detail, buttons: [restart, later], defaultId: 0, cancelId: 1, noLink: true });
+  const { response } = await showMessageBox({ type: 'info', title: 'Bulwark', message, detail, buttons: [restart, later], defaultId: 0, cancelId: 1, noLink: true });
   return response === 0;
 }

@@ -8,16 +8,17 @@ import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { app, clipboard, dialog, powerMonitor } from 'electron';
+import { app, clipboard, powerMonitor } from 'electron';
 import { addWipeStep } from './local-wipe';
 import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
-import { DialogWindows } from '../dialog-window';
+import { dialogWindows } from '../dialog-window';
 import { showDialogSurface } from '../dialog-surfaces';
 import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { Feature } from './index';
 import { writeMarkedFile } from './os-files';
 import { safeDragFileName } from './os-rules';
+import { showMessageBox } from '../message-box';
 
 /** In Electron, but left out of its types as experimental. */
 function writeClipboardBuffer(format: string, data: Buffer): void {
@@ -91,9 +92,9 @@ export const dialogsFeature: Feature = {
       if (labels.length === 0) throw new Error('Not a question');
       if (waitingQuestions >= MAX_WAITING_QUESTIONS) return labels.length - 1;
       // In instance mode the page writes the rest of the box, so this is what tells the
-      // server's questions from the app's own. macOS shows no title, so there it goes under
-      // the text. Standalone, the page is the app's own build: its questions are the app's,
-      // and its internal address would only look broken.
+      // server's questions from the app's own. The app's dialog window shows no title, so
+      // it goes under the text. Standalone, the page is the app's own build: its questions
+      // are the app's, and its internal address would only look broken.
       const standalone = ctx.mode === 'standalone';
       const from = standalone ? strings().windowNames.main : strings().pageQuestionFrom.replaceAll('{caller}', new URL(ctx.origin).host);
       const text = typeof detail === 'string' ? detail.slice(0, MAX_TEXT) : undefined;
@@ -101,7 +102,7 @@ export const dialogsFeature: Feature = {
         type: type === 'info' || type === 'warning' || type === 'question' ? type : 'question',
         title: from,
         message: message.slice(0, MAX_TEXT),
-        detail: process.platform === 'darwin' && !standalone ? [text, from].filter(Boolean).join('\n\n') : text,
+        detail: !standalone ? [text, from].filter(Boolean).join('\n\n') : text,
         buttons: labels,
         defaultId: typeof defaultId === 'number' && defaultId >= 0 && defaultId < labels.length ? defaultId : labels.length - 1,
         cancelId: labels.length - 1,
@@ -109,14 +110,14 @@ export const dialogsFeature: Feature = {
       };
       waitingQuestions += 1;
       try {
-        const answer = window ? await dialog.showMessageBox(window, settings) : await dialog.showMessageBox(settings);
+        const answer = window ? await showMessageBox(window, settings) : await showMessageBox(settings);
         return answer.response;
       } finally {
         waitingQuestions -= 1;
       }
     });
 
-    const windows = new DialogWindows();
+    const windows = dialogWindows();
     ctx.handle(CHANNEL.dialogsShow, (event, window, request) => windows.ask(event.sender, window, request));
     ctx.on(CHANNEL.dialogsCancel, (event, _window, id) => windows.cancel(event.sender, id));
     // The page's own dialogs in windows of their own (dialog-surfaces.ts).

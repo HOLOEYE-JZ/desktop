@@ -25,7 +25,7 @@
 import { createHash, createHmac } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, powerMonitor, safeStorage, systemPreferences } from 'electron';
+import { app, BrowserWindow, powerMonitor, safeStorage, systemPreferences } from 'electron';
 import { CHANNEL, type AppLockStatus, type OsUnlockAnswer, type OsUnlockKind, type PinStepAnswer } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { AppLockHello, HELLO_SALT_BYTES, helloKeyName, removeAllHelloKeys, type HelloAnswer, type HelloKeys } from '../app-lock-hello';
@@ -38,6 +38,7 @@ import { strings } from '../strings';
 import { replacingRenderer } from '../windows';
 import { addWipeStep, finishWipeForPage, runLocalWipe, wipeForPage } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
+import { showMessageBox } from '../message-box';
 
 const OS_KEY_NAME = 'app-lock-key';
 /** A PIN record or a database key. Nothing here wraps anything big. */
@@ -205,7 +206,7 @@ function setup(ctx: FeatureContext): void {
   /** The first button is the yes. A no holds for this run, so nothing can keep asking. */
   const askOnce = (message: string, detail: string, yes: string, no: string, window: BrowserWindow | null) => {
     const options = { type: 'question' as const, message, detail, buttons: [yes, no], defaultId: 1, cancelId: 1, noLink: true };
-    return (window ? dialog.showMessageBox(window, options) : dialog.showMessageBox(options)).then(({ response }) => response === 0);
+    return (window ? showMessageBox(window, options) : showMessageBox(options)).then(({ response }) => response === 0);
   };
 
   let enrollDeclined = false;
@@ -258,7 +259,7 @@ function setup(ctx: FeatureContext): void {
         cancelId: 1,
         noLink: true,
       };
-      const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+      const { response } = window ? await showMessageBox(window, options) : await showMessageBox(options);
       if (response !== 0) return false;
     }
     appLockGate.forget();

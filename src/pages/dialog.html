@@ -8,7 +8,7 @@
       /* Drawn like the webmail's Dialog and ConfirmDialog (components/ui): the page sends its colours, font and corners. */
       :root { --background: #fff; --foreground: #0f172a; --muted: #f1f5f9; --muted-foreground: #59687c; --border: #e2e8f0; --input: #e2e8f0; --primary: #185aea; --primary-foreground: #fff; --destructive: #dc2626; --destructive-foreground: #fff; --accent: #dbeafe; --accent-foreground: #1e40af; --ring: #2563eb; --radius: 8px; --radius-sm: 6px; --font: system-ui, sans-serif; }
       html, body { margin: 0; background: transparent; }
-      body { padding: 24px; font-family: var(--font); color: var(--foreground); overflow: hidden; user-select: none; cursor: default; -webkit-font-smoothing: antialiased; font-feature-settings: "rlig" 1, "calt" 1; }
+      body { padding: 48px; font-family: var(--font); color: var(--foreground); overflow: hidden; user-select: none; cursor: default; -webkit-font-smoothing: antialiased; font-feature-settings: "rlig" 1, "calt" 1; }
       .card { position: relative; box-sizing: border-box; width: 448px; display: flex; flex-direction: column; background: var(--background); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 20px 25px -5px rgb(0 0 0 / .18), 0 8px 10px -6px rgb(0 0 0 / .14); }
       .dark .card { box-shadow: 0 20px 25px -5px rgb(0 0 0 / .5), 0 8px 10px -6px rgb(0 0 0 / .45); }
       /* The header is where the window is moved from; what can be clicked in it isn't. */
@@ -25,6 +25,15 @@
       .body:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; }
       .message { margin: 0; font-size: .875rem; line-height: 1.25rem; color: var(--muted-foreground); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; cursor: text; }
       .message strong { font-weight: 600; }
+      .badge.error { color: var(--destructive); }
+      .links { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+      .link { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--background); color: var(--foreground); text-align: start; outline: none; }
+      .link:hover { background: var(--muted); }
+      .link:focus-visible { box-shadow: 0 0 0 2px var(--background), 0 0 0 4px var(--ring); }
+      .link-title { font-size: .875rem; font-weight: 500; overflow-wrap: anywhere; }
+      .link-detail { font-size: .75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
+      .check { display: flex; align-items: center; gap: 8px; margin-inline-end: auto; font-size: .875rem; color: var(--foreground); user-select: none; }
+      .check input { width: 16px; height: 16px; margin: 0; accent-color: var(--primary); }
       .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 24px; flex-shrink: 0; }
       button { font: inherit; cursor: default; }
       .button { display: inline-flex; align-items: center; justify-content: center; height: 40px; padding: 0 16px; border-radius: var(--radius-sm); font-size: 1rem; font-weight: 500; border: 1px solid transparent; transition: background-color .2s, box-shadow .2s; outline: none; }

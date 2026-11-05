@@ -6,6 +6,8 @@
 const { dialog } = require('electron');
 
 globalThis.__prompts = [];
+// The app's own prompt windows come here too (src/main/message-box.ts).
+globalThis.__bulwarkNativePrompts = true;
 globalThis.__answer = JSON.parse(process.env.BULWARK_TEST_PROMPT_ANSWER || '{"response":-1}');
 dialog.showMessageBox = async (...args) => {
   const options = args[args.length - 1];

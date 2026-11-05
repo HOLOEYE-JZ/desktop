@@ -9,12 +9,13 @@
  * failed sign-in leaves nothing behind, and sign-out takes it out again.
  */
 
-import { BrowserWindow, dialog, type MessageBoxOptions } from 'electron';
+import { BrowserWindow, type MessageBoxOptions } from 'electron';
 import type { ServerPrepareResult, SessionUrls } from '../shared/bridge';
 import type { CorsInjector } from './cors';
 import { isPrivateHost, serverOrigin } from './server-address';
 import type { StateFile } from './state';
 import { strings } from './strings';
+import { showMessageBox } from './message-box';
 
 export interface ServerRegistryOptions {
   state: StateFile;
@@ -86,7 +87,7 @@ export class ServerRegistry {
   private async ask(box: Omit<MessageBoxOptions, 'title' | 'buttons' | 'defaultId' | 'cancelId' | 'noLink'>, parent: BrowserWindow | null): Promise<boolean> {
     const text = strings();
     const options: MessageBoxOptions = { title: 'Bulwark', buttons: [text.allow, text.cancel], defaultId: 1, cancelId: 1, noLink: true, ...box };
-    const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+    const { response } = parent ? await showMessageBox(parent, options) : await showMessageBox(options);
     return response === 0;
   }
 

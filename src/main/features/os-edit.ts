@@ -42,7 +42,7 @@ import { createReadStream, mkdirSync, readdirSync, readFileSync, rmSync, watch, 
 import { chmod, mkdir, open as openFile, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { app, dialog, shell, type WebContents } from 'electron';
+import { app, shell, type WebContents } from 'electron';
 import { CHANNEL, type EditBeginResult, type EditClearResult, type EditFile, type EditOpenResult, type EditReadResult, type EditSession } from '../../shared/bridge';
 import { allowEditExtensionForTest, EDIT_CHANGED_KEEP_MS, EDIT_CHANGED_MAX_MS, EDIT_LAST_CALL_MS, EDIT_TAIL_BYTES, EDIT_UNCHANGED_KEEP_MS, editFileLooksWhole, editFileName, editNeedsMark, isEditTempName } from '../../shared/edit-rules';
 import { strings } from '../strings';
@@ -51,6 +51,7 @@ import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { addWipeStep } from './local-wipe';
 import type { OsHub } from './os-hub';
 import { isInstalledBuild } from '../installed';
+import { showMessageBox } from '../message-box';
 
 declare const __BULWARK_TEST_BUILD__: boolean;
 
@@ -770,7 +771,7 @@ export function setupEdit(hub: OsHub): EditHandle {
   const ask = async (message: string, detail: string, confirm: string): Promise<boolean> => {
     const options = { type: 'warning' as const, title: 'Bulwark', message, detail, buttons: [confirm, strings().editCancel], defaultId: 1, cancelId: 1, noLink: true };
     const parent = windows.mainWindow();
-    const answer = parent && !parent.isDestroyed() ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+    const answer = parent && !parent.isDestroyed() ? await showMessageBox(parent, options) : await showMessageBox(options);
     return answer.response === 0;
   };
 

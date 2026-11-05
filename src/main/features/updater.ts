@@ -16,7 +16,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { app, BrowserWindow, dialog, Notification, powerMonitor } from 'electron';
+import { app, BrowserWindow, Notification, powerMonitor } from 'electron';
 import type { AppUpdater, CancellationToken, UpdateInfo } from 'electron-updater';
 import { CHANNEL, type UpdateChannel, type UpdateState } from '../../shared/bridge';
 import { openExternally } from '../navigation';
@@ -41,6 +41,7 @@ import { fill, strings } from '../strings';
 import type { Feature, FeatureContext } from './index';
 import { policies } from './policies';
 import { isInstalledBuild } from '../installed';
+import { showMessageBox } from '../message-box';
 
 declare const __BULWARK_UPDATER_TEST__: boolean;
 
@@ -405,8 +406,8 @@ class Updater {
       noLink: true,
     };
     const parent = BrowserWindow.getFocusedWindow();
-    if (parent) await dialog.showMessageBox(parent, options);
-    else await dialog.showMessageBox(options);
+    if (parent) await showMessageBox(parent, options);
+    else await showMessageBox(options);
   }
 
   /** The normal quit. If a page stays, the windows manager says so and this is called off. */
@@ -438,7 +439,7 @@ class Updater {
         cancelId: 1,
         noLink: true,
       };
-      const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+      const { response } = parent ? await showMessageBox(parent, options) : await showMessageBox(options);
       if (response !== 0) return this.state();
     }
     state.data.updateChannel = channel;
@@ -465,7 +466,7 @@ class Updater {
       noLink: true,
     };
     const parent = BrowserWindow.getFocusedWindow();
-    const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+    const { response } = parent ? await showMessageBox(parent, options) : await showMessageBox(options);
     // The answer took a while: is this still what's on offer?
     if (response !== 0 || this.status !== 'older-available' || this.target !== target || !this.allowed) return this.state();
     this.setStatus('downloading', target, 0);
