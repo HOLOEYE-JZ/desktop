@@ -340,7 +340,7 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
   test('the settings page shows the keys, takes new ones, and says when another app has them', async () => {
     const taken = 'CommandOrControl+Alt+Shift+F7';
     const origin = new URL(page.url()).origin;
-    await page.goto(`${origin}/settings/general`);
+    await page.goto(`${origin}/settings/desktop`);
     const keys = page.getByTestId('quick-compose-keys');
     await keys.waitFor({ state: 'visible', timeout: 60_000 });
     await expect(keys).toHaveText('Ctrl+Alt+Shift+F9');
@@ -425,7 +425,7 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
       await expect(lockForm).toBeVisible({ timeout: 30_000 });
     };
 
-    await page.goto(`${new URL(page.url()).origin}/settings/general`);
+    await page.goto(`${new URL(page.url()).origin}/settings/privacy`);
     const toggle = page.getByTestId('app-lock-switch');
     await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: 60_000 });
     await toggle.click();

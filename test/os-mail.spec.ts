@@ -364,7 +364,7 @@ for (const { label, url } of STALWARTS) {
 
     test('the Desktop app section in settings shows and changes what main holds', async () => {
       const { app, page } = running;
-      await page.goto(`${new URL(page.url()).origin}/settings/general`);
+      await page.goto(`${new URL(page.url()).origin}/settings/desktop`);
       const section = page.locator('#desktop-app').or(page.getByRole('heading', { name: 'Desktop app' })).first();
       await section.waitFor({ timeout: 60_000 });
       await section.scrollIntoViewIfNeeded();
