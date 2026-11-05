@@ -1,5 +1,6 @@
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -26,6 +27,8 @@ const read = (file: string) => readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
 const theme = () => read(path.join(BUILD, 'installer-theme.nsh'));
 const splash = () => read(path.join(ROOT, 'native', 'nsis-splash', 'splash.c'));
 const STRINGS = ['bulwarkInstalling', 'bulwarkUpdating', 'bulwarkRemoving', 'bulwarkOpensAfter', 'bulwarkRestartsAfter', 'bulwarkProfileStays', 'bulwarkPercent'];
+/** The line under the bar, step by step (installer-theme.nsh). */
+const STEP_STRINGS = ['bulwarkStepRemoveOld', 'bulwarkStepUnpack', 'bulwarkStepShortcuts', 'bulwarkStepRegister', 'bulwarkStepStart', 'bulwarkStepUnregister', 'bulwarkStepRemoveFiles'];
 
 /** id -> language id -> text, from build/installer-strings.nsh. */
 function strings(): Map<string, Map<number, string>> {
@@ -114,6 +117,51 @@ test.describe('the NSIS window', () => {
     expect(source).toContain('case WM_PAINT:');
   });
 
+  // NSIS's own bar restarted with each part: the unpacking took it to 100 %, the copy after it
+  // started over. The script now tells the window each step and its share of the bar.
+  test('has one bar for the whole run: the steps follow on, and only the last reaches 100', () => {
+    const text = theme();
+    const step = (name: string) => {
+      const found = new RegExp(`^!define BULWARK_STEP_${name} "(\\d+) (\\d+) (\\d+)"$`, 'm').exec(text);
+      expect(found, name).toBeTruthy();
+      return { from: Number(found![1]), to: Number(found![2]), tenths: Number(found![3]) };
+    };
+    const runs = {
+      fresh: ['FRESH_PAYLOAD', 'FRESH_UNPACK', 'FRESH_PLACE', 'FRESH_SHORTCUTS', 'REGISTER', 'START'],
+      update: ['UPDATE_OLD', 'UPDATE_UNPACK', 'UPDATE_PLACE', 'UPDATE_SHORTCUTS', 'REGISTER', 'START'],
+      uninstall: ['UN_WINDOWS', 'UN_FILES'],
+    };
+    for (const [run, names] of Object.entries(runs)) {
+      const steps = names.map(step);
+      expect(steps[0].from, run).toBe(0);
+      for (let i = 1; i < steps.length; i += 1) expect(steps[i].from, `${run} ${names[i]}`).toBe(steps[i - 1].to);
+      for (const [i, one] of steps.entries()) expect(one.to, `${run} ${names[i]}`).toBeGreaterThan(one.from);
+      expect(steps.at(-1)!.to, run).toBe(100);
+    }
+    expect(step('DONE')).toEqual({ from: 100, to: 100, tenths: 0 });
+    // Sent where electron-builder's template does each part.
+    const include = read(path.join(ROOT, config.nsis.include));
+    expect(include).toMatch(/!macro customInstall\n\s+!ifmacrodef bulwarkThemeRegisterStep\n\s+!insertmacro bulwarkThemeRegisterStep\n[\s\S]*?!insertmacro bulwarkThemeDoneStep\n\s+!endif\n!macroend/);
+    expect(include).toMatch(/!insertmacro bulwarkThemeUninstallFilesStep\n\s+!endif\n!macroend\s*$/);
+    const extract = read(path.join(BUILD, 'installer-extract.nsh'));
+    expect(extract).toContain('Nsis7z::ExtractWithCallback "${FILE}" $R9');
+    // The window never goes back, and shows 100 only after the last step.
+    const source = splash();
+    expect(source).toContain('if (target < g.shown) target = g.shown;');
+    expect(source).toContain('if (percent > 99 && !(g.stepped && g.stepFrom >= 100)) percent = 99;');
+  });
+
+  test('asks Windows, not PowerShell, whether Bulwark is running', () => {
+    const text = theme();
+    expect(text).not.toContain('IS_POWERSHELL_AVAILABLE');
+    expect(text).not.toContain('_CHECK_APP_RUNNING');
+    expect(text.split('!insertmacro bulwarkCheckAppRunning')).toHaveLength(3);
+    const speed = read(path.join(BUILD, 'installer-speed.nsh'));
+    expect(speed).toContain('BulwarkSplash::Running "$INSTDIR"');
+    expect(speed).toContain('BulwarkSplash::Stop "$INSTDIR"');
+    expect(speed).not.toContain('nsExec');
+  });
+
   test("keeps NSIS's integrity check and its message", () => {
     // SilentInstall would hide the "verifying installer" box, and the "integrity check failed" message with it.
     for (const file of [path.join(BUILD, 'installer-theme.nsh'), path.join(ROOT, config.nsis.include)]) {
@@ -127,7 +175,7 @@ test.describe('the NSIS window', () => {
     expect(text).toMatch(/!macro customHeader\n\s+!undef LogSet\n\s+!define LogSet "!insertmacro bulwarkLogSet"\n\s+!macroend/);
     expect(text).toMatch(/!macro bulwarkLogSet SETTING\n\s+!insertmacro LogSetMacro \$\{SETTING\}\n\s+!ifdef __UNINSTALL__\n\s+!if "\$\{__FUNCTION__\}" == "onInit"\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent silent\n/);
     const check = text.slice(text.lastIndexOf('!macro customCheckAppRunning'));
-    expect(check).toMatch(/^!macro customCheckAppRunning\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent normal\n[\s\S]*?!insertmacro _CHECK_APP_RUNNING\n\s+!macroend/);
+    expect(check).toMatch(/^!macro customCheckAppRunning\n[\s\S]*?\$\{GetOptions\} \$R0 "\/S" \$R1\n\s+\$\{If\} \$\{Errors\}\n\s+SetSilent normal\n[\s\S]*?!insertmacro bulwarkCheckAppRunning\n\s+!macroend/);
   });
 
   test('has a logo for every scale from 100 to 250 %, and 256 above', () => {
@@ -142,7 +190,7 @@ test.describe('the NSIS window', () => {
     const languages: string[] = config.nsis.installerLanguages;
     const ids = languages.map((language) => lcid[language] as number);
     expect(ids.every((id) => typeof id === 'number')).toBe(true);
-    for (const name of STRINGS) {
+    for (const name of [...STRINGS, ...STEP_STRINGS]) {
       const texts = table.get(name);
       expect(texts, name).toBeTruthy();
       // Exactly those: one more would be a language makensis doesn't load, and fails the build.
@@ -153,7 +201,8 @@ test.describe('the NSIS window', () => {
           expect(value, `${name} ${id}`).toMatch(/^[^#]{0,2}#[^#]{0,2}$/);
           continue;
         }
-        if (name !== 'bulwarkProfileStays') expect(value, `${name} ${id}`).toContain('${PRODUCT_NAME}');
+        if (english.includes('${PRODUCT_NAME}')) expect(value, `${name} ${id}`).toContain('${PRODUCT_NAME}');
+        else expect(value, `${name} ${id}`).not.toContain('${PRODUCT_NAME}');
         if (id !== 1033) expect(value, `${name} ${id} is not translated`).not.toBe(english);
       }
     }
@@ -164,6 +213,27 @@ test.describe('the NSIS window', () => {
     expect(table.get('bulwarkUpdating')!.get(1031)).toBe('${PRODUCT_NAME} wird aktualisiert…');
     expect(table.get('bulwarkRemoving')!.get(1031)).toBe('${PRODUCT_NAME} wird deinstalliert…');
     expect(table.get('bulwarkPercent')!.get(1033)).toBe('#%');
+    // The steps in English, and in German as Windows says them.
+    expect(STEP_STRINGS.map((name) => table.get(name)!.get(1033))).toEqual([
+      'Removing the old version…',
+      'Unpacking files…',
+      'Setting up shortcuts…',
+      'Registering ${PRODUCT_NAME}…',
+      'Starting ${PRODUCT_NAME}…',
+      'Removing ${PRODUCT_NAME} from Windows…',
+      'Removing files…',
+    ]);
+    expect(STEP_STRINGS.map((name) => table.get(name)!.get(1031))).toEqual([
+      'Alte Version wird entfernt…',
+      'Dateien werden entpackt…',
+      'Verknüpfungen werden erstellt…',
+      '${PRODUCT_NAME} wird registriert…',
+      '${PRODUCT_NAME} wird gestartet…',
+      '${PRODUCT_NAME} wird aus Windows entfernt…',
+      'Dateien werden entfernt…',
+    ]);
+    // Each line is a step's, and the window shows it.
+    for (const name of STEP_STRINGS) expect(theme(), name).toContain(`"$(${name})"`);
     expect(table.get('bulwarkPercent')!.get(1031)).toBe('# %');
     // makensis reads it as UTF-8 only with the mark.
     expect([...readFileSync(path.join(BUILD, 'installer-strings.nsh')).subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
@@ -192,6 +262,23 @@ test.describe('the NSIS window', () => {
     expect(unSection.indexOf('!insertmacro customUnInstall')).toBeLessThan(unSection.indexOf('RMDir /r $INSTDIR'));
     const oneClick = read(path.join(TEMPLATES, 'oneClick.nsh'));
     expect(oneClick).toContain('!insertmacro MUI_PAGE_INSTFILES');
+    // installer-extract.nsh replaces extractUsing7za from the app check, which electron-builder
+    // inserts after it defines the macro and before it unpacks; the files step goes in its hook
+    // right after the unpacking. Ours keeps its retry loop word for word.
+    expect(section.indexOf('!include installer.nsh')).toBeLessThan(section.indexOf('!insertmacro CHECK_APP_RUNNING'));
+    expect(section.indexOf('!insertmacro CHECK_APP_RUNNING')).toBeLessThan(section.indexOf('!insertmacro installApplicationFiles'));
+    expect(read(path.join(TEMPLATES, 'include', 'installer.nsh'))).toContain('!include "extractAppPackage.nsh"');
+    const extract = read(path.join(TEMPLATES, 'include', 'extractAppPackage.nsh'));
+    const parts = ['!macro extractEmbeddedAppPackage', '!insertmacro decompress', '!insertmacro custom_files_post_decompression', '!macro custom_files_post_decompression', '!insertmacro customFiles_arm64', '!insertmacro customFiles_x64', '!macro extractUsing7za FILE'];
+    const where = parts.map((part) => extract.indexOf(part));
+    expect(where.every((index) => index > -1), JSON.stringify(where)).toBe(true);
+    expect([...where].sort((a, b) => a - b)).toEqual(where);
+    const theirs = extract.slice(extract.indexOf('!macro extractUsing7za FILE'));
+    const ours = read(path.join(BUILD, 'installer-extract.nsh'));
+    expect(theirs.slice(0, theirs.indexOf('  Nsis7z::Extract "${FILE}"'))).toBe('!macro extractUsing7za FILE\n  Push $OUTDIR\n  CreateDirectory "$PLUGINSDIR\\7z-out"\n  ClearErrors\n  SetOutPath "$PLUGINSDIR\\7z-out"\n');
+    const loop = (text: string) => text.slice(text.indexOf('  # Retry counter'), text.indexOf('!macroend', text.indexOf('  # Retry counter')));
+    expect(loop(ours)).toBe(loop(theirs));
+    expect(loop(ours)).toContain('DoneExtract7za:');
     // The uninstaller's question: asked in un.onInit only when not silent, after ${LogSet},
     // which customHeader can redefine (after common.nsh defines it, before uninstaller.nsh).
     const inOrder = (text: string, parts: string[]) => {
@@ -292,6 +379,177 @@ test.describe('the plugin', () => {
       expect(shown, `window ${shown}, bar ${bar}`).toBeGreaterThanOrEqual(Number(bar));
       expect(shown - Number(bar), `window ${shown}, bar ${bar}`).toBeLessThanOrEqual(6);
     } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+
+  // The installers' "is Bulwark running?" (installer-speed.nsh): a copy of cmd.exe running
+  // from a folder stands in for the app.
+  test('finds what runs from the install folder, and only there, and ends it', async () => {
+    buildPlugin();
+    const dir = mkdtempSync(path.join(tmpdir(), 'bw-running-'));
+    try {
+      const folder = path.join(dir, 'app');
+      mkdirSync(folder);
+      copyFileSync(path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe'), path.join(folder, 'BulwarkTest.exe'));
+      const child = spawn(path.join(folder, 'BulwarkTest.exe'), ['/d', '/c', 'ping -n 120 127.0.0.1 >nul'], { stdio: 'ignore', windowsHide: true });
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      const report = path.join(dir, 'report.txt');
+      const script = path.join(dir, 'probe.nsi');
+      writeFileSync(
+        script,
+        [
+          'Unicode true',
+          `!addplugindir /x86-unicode "${path.dirname(PLUGIN)}"`,
+          `OutFile "${path.join(dir, 'probe.exe')}"`,
+          'RequestExecutionLevel user',
+          'SilentInstall silent',
+          'Section',
+          `  BulwarkSplash::Running "${folder}"`,
+          '  Pop $0',
+          `  BulwarkSplash::Running "${folder}\\"`,
+          '  Pop $1',
+          `  BulwarkSplash::Running "${folder}-other"`,
+          '  Pop $2',
+          `  BulwarkSplash::Running "${dir}"`,
+          '  Pop $3',
+          `  BulwarkSplash::Stop "${folder}"`,
+          '  Pop $4',
+          `  BulwarkSplash::Running "${folder}"`,
+          '  Pop $5',
+          `  FileOpen $9 "${report}" w`,
+          '  FileWrite $9 "$0 $1 $2 $3 $4 $5"',
+          '  FileClose $9',
+          'SectionEnd',
+        ].join('\n'),
+      );
+      const made = spawnSync(makensis()!, ['-V2', script], { encoding: 'utf8' });
+      expect(made.status, made.stdout + made.stderr).toBe(0);
+      const ran = spawnSync(path.join(dir, 'probe.exe'), [], { timeout: 60_000 });
+      expect(ran.status).toBe(0);
+      // In the folder, with or without a trailing backslash, and in any folder below the one
+      // asked about; never in one whose name only starts the same. Ended, and then gone.
+      expect(readFileSync(report, 'utf8').trim()).toBe('1 1 0 1 0 0');
+      await exited;
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+});
+
+// A real update, captured on the window: version 1.0.0 installed quietly, then 1.0.1 run as
+// the app runs it (--updated), while test/support/splash-watch.ps1 reads what the window
+// shows. With the theme only, no Bulwark registration (installer.nsh writes the real names),
+// in a folder under TEMP. 60 MB of files, stored, so the unpacking and the move take long
+// enough to be seen.
+test.describe('an update, as the window shows it', () => {
+  test.skip(!canBuild, "needs Windows, MSVC and electron-builder's NSIS");
+  test.setTimeout(600_000);
+
+  test('the percent only goes forward, through the steps, and reaches 100 only at the end', async () => {
+    buildPlugin();
+    const dir = mkdtempSync(path.join(tmpdir(), 'bw-update-'));
+    const installTo = path.join(dir, 'installed');
+    const cache = path.join(process.env.LOCALAPPDATA ?? '', 'bulwark-installer-update-updater');
+    const builds: Record<string, string> = {};
+    try {
+      const app = path.join(dir, 'app');
+      mkdirSync(path.join(app, 'resources'), { recursive: true });
+      writeFileSync(path.join(app, 'BulwarkTest.exe'), 'MZ');
+      for (let i = 0; i < 6; i += 1) writeFileSync(path.join(app, 'resources', `part-${i}.bin`), randomBytes(10 * 1024 * 1024));
+      const include = path.join(dir, 'theme-only.nsh');
+      writeFileSync(
+        include,
+        [
+          '!include "FileFunc.nsh"',
+          '!include "LogicLib.nsh"',
+          `!include "${path.join(BUILD, 'installer-theme.nsh')}"`,
+          '!macro customInstall',
+          '  !ifmacrodef bulwarkThemeRegisterStep',
+          '    !insertmacro bulwarkThemeRegisterStep',
+          '  !endif',
+          '  !ifmacrodef bulwarkThemeDoneStep',
+          '    !insertmacro bulwarkThemeDoneStep',
+          '  !endif',
+          '!macroend',
+          '!macro customUnInstall',
+          '  !insertmacro bulwarkThemeUninstallerPage',
+          '  !ifmacrodef bulwarkThemeUninstallFilesStep',
+          '    !insertmacro bulwarkThemeUninstallFilesStep',
+          '  !endif',
+          '!macroend',
+        ].join('\n'),
+      );
+      const electron = JSON.parse(readFileSync(path.join(ROOT, 'node_modules', 'electron', 'package.json'), 'utf8')).version;
+      const cli = path.join(ROOT, 'node_modules', 'electron-builder', 'cli.js');
+      for (const version of ['1.0.0', '1.0.1']) {
+        const project = path.join(dir, `project-${version}`);
+        mkdirSync(project);
+        writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'bulwark-installer-update', productName: 'Bulwark Test', version, description: 'Test', author: 'Test' }));
+        const out = path.join(project, 'out');
+        writeFileSync(
+          path.join(project, 'config.json'),
+          JSON.stringify({
+            appId: 'org.bulwarkmail.desktop.installerupdate',
+            productName: 'Bulwark Test',
+            electronVersion: electron,
+            compression: 'store',
+            directories: { output: out, buildResources: BUILD },
+            publish: null,
+            win: { icon: path.join(BUILD, 'icon.ico'), executableName: 'BulwarkTest', signAndEditExecutable: false, target: [{ target: 'nsis', arch: ['x64'] }] },
+            // Never starts the app: NSIS would start it through Explorer, on the visible desktop.
+            nsis: { ...config.nsis, include, runAfterFinish: false, createStartMenuShortcut: false, shortcutName: 'Bulwark Test', uninstallDisplayName: 'Bulwark Test Update', artifactName: 'BulwarkTest-Setup-${version}.${ext}' },
+          }),
+        );
+        const made = spawnSync(process.execPath, [cli, '--win', 'nsis', '--x64', '--prepackaged', app, '--projectDir', project, '--config', path.join(project, 'config.json'), '--publish', 'never'], {
+          encoding: 'utf8',
+          cwd: project,
+          env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+          timeout: 240_000,
+        });
+        expect(made.status, made.stdout + made.stderr).toBe(0);
+        builds[version] = path.join(out, `BulwarkTest-Setup-${version}.exe`);
+      }
+
+      const installed = spawnSync(builds['1.0.0'], ['/S', `/D=${installTo}`], { timeout: 120_000 });
+      expect(installed.status).toBe(0);
+      expect(existsSync(path.join(installTo, 'resources', 'part-5.bin'))).toBe(true);
+
+      const lines = path.join(dir, 'splash.txt');
+      const stop = path.join(dir, 'stop');
+      const watch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(ROOT, 'test', 'support', 'splash-watch.ps1'), '-Name', 'BulwarkTest-Setup', '-Out', lines, '-Stop', stop], { stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
+      const watched = new Promise<void>((resolve) => watch.once('exit', () => resolve()));
+      await new Promise<void>((resolve) => watch.stdout!.on('data', (chunk) => String(chunk).includes('ready') && resolve()));
+      const updated = spawnSync(builds['1.0.1'], ['--updated'], { timeout: 240_000 });
+      writeFileSync(stop, '');
+      await watched;
+      expect(updated.status).toBe(0);
+      expect(existsSync(path.join(installTo, 'resources', 'part-5.bin'))).toBe(true);
+
+      const seen = readFileSync(lines, 'utf8')
+        .trim()
+        .split(/\r?\n/)
+        .map((line) => line.split(' '))
+        .map(([, percent, from, to]) => ({ percent: Number(percent), from: from === '-' ? -1 : Number(from), to: to === '-' ? -1 : Number(to) }));
+      const percents = seen.map((one) => one.percent);
+      expect(percents.length, 'the window was seen').toBeGreaterThan(10);
+      for (let i = 1; i < percents.length; i += 1) expect(percents[i], `went back: ${percents.slice(Math.max(0, i - 5), i + 1).join(' ')}`).toBeGreaterThanOrEqual(percents[i - 1]);
+      // 100 only once the last step said so.
+      for (const one of seen) if (one.percent === 100) expect(one.from, 'a 100 before the end').toBe(100);
+      // Through the steps of an update, in order: the old version first, then the unpacking.
+      const theme = read(path.join(BUILD, 'installer-theme.nsh'));
+      const share = (name: string) => new RegExp(`^!define BULWARK_STEP_${name} "(\\d+) (\\d+) \\d+"$`, 'm').exec(theme)!.slice(1, 3).map(Number);
+      const steps = [...new Set(seen.filter((one) => one.from >= 0).map((one) => `${one.from}-${one.to}`))];
+      const expected = ['UPDATE_OLD', 'UPDATE_UNPACK', 'UPDATE_PLACE', 'UPDATE_SHORTCUTS', 'REGISTER', 'DONE'].map((name) => share(name).join('-'));
+      expect(steps.filter((step) => expected.includes(step))).toEqual(expected.filter((step) => steps.includes(step)));
+      expect(steps).toContain(expected[0]);
+      expect(steps).toContain(expected[1]);
+    } finally {
+      const uninstaller = existsSync(installTo) ? readdirSync(installTo).find((name) => /^Uninstall .*\.exe$/.test(name)) : undefined;
+      if (uninstaller) spawnSync(path.join(installTo, uninstaller), ['/S'], { timeout: 120_000 });
+      // The uninstaller removes the folder from a copy of itself, a moment later.
+      for (let i = 0; i < 40 && existsSync(installTo); i += 1) await new Promise((resolve) => setTimeout(resolve, 250));
+      rmSync(cache, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     }
   });

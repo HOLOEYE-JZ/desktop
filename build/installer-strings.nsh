@@ -9,6 +9,8 @@
 ;   bulwarkRestartsAfter  under the second
 ;   bulwarkProfileStays   under the third: the uninstaller leaves the profile (%APPDATA%\Bulwark)
 ;   bulwarkPercent        the progress, # for the number, as the language writes a percentage
+;   bulwarkStep...        the line under the bar: what the installer or uninstaller does now
+;                         (installer-theme.nsh, bulwarkStep). Windows' own words for these.
 
 ; English
 LangString bulwarkInstalling 1033 "Installing ${PRODUCT_NAME}…"
@@ -18,6 +20,13 @@ LangString bulwarkOpensAfter 1033 "${PRODUCT_NAME} opens once it's installed."
 LangString bulwarkRestartsAfter 1033 "${PRODUCT_NAME} restarts once it's updated."
 LangString bulwarkProfileStays 1033 "Your mail profile stays on this computer."
 LangString bulwarkPercent 1033 "#%"
+LangString bulwarkStepRemoveOld 1033 "Removing the old version…"
+LangString bulwarkStepUnpack 1033 "Unpacking files…"
+LangString bulwarkStepShortcuts 1033 "Setting up shortcuts…"
+LangString bulwarkStepRegister 1033 "Registering ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1033 "Starting ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1033 "Removing ${PRODUCT_NAME} from Windows…"
+LangString bulwarkStepRemoveFiles 1033 "Removing files…"
 
 ; German
 LangString bulwarkInstalling 1031 "${PRODUCT_NAME} wird installiert…"
@@ -27,6 +36,13 @@ LangString bulwarkOpensAfter 1031 "${PRODUCT_NAME} wird danach geöffnet."
 LangString bulwarkRestartsAfter 1031 "${PRODUCT_NAME} wird danach neu gestartet."
 LangString bulwarkProfileStays 1031 "Ihr Mailprofil bleibt auf diesem Computer."
 LangString bulwarkPercent 1031 "# %"
+LangString bulwarkStepRemoveOld 1031 "Alte Version wird entfernt…"
+LangString bulwarkStepUnpack 1031 "Dateien werden entpackt…"
+LangString bulwarkStepShortcuts 1031 "Verknüpfungen werden erstellt…"
+LangString bulwarkStepRegister 1031 "${PRODUCT_NAME} wird registriert…"
+LangString bulwarkStepStart 1031 "${PRODUCT_NAME} wird gestartet…"
+LangString bulwarkStepUnregister 1031 "${PRODUCT_NAME} wird aus Windows entfernt…"
+LangString bulwarkStepRemoveFiles 1031 "Dateien werden entfernt…"
 
 ; French
 LangString bulwarkInstalling 1036 "Installation de ${PRODUCT_NAME}…"
@@ -36,6 +52,13 @@ LangString bulwarkOpensAfter 1036 "${PRODUCT_NAME} s’ouvrira une fois install�
 LangString bulwarkRestartsAfter 1036 "${PRODUCT_NAME} redémarrera une fois mis à jour."
 LangString bulwarkProfileStays 1036 "Votre profil de messagerie reste sur cet ordinateur."
 LangString bulwarkPercent 1036 "# %"
+LangString bulwarkStepRemoveOld 1036 "Suppression de l’ancienne version…"
+LangString bulwarkStepUnpack 1036 "Décompression des fichiers…"
+LangString bulwarkStepShortcuts 1036 "Création des raccourcis…"
+LangString bulwarkStepRegister 1036 "Inscription de ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1036 "Démarrage de ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1036 "Suppression de ${PRODUCT_NAME} de Windows…"
+LangString bulwarkStepRemoveFiles 1036 "Suppression des fichiers…"
 
 ; Spanish
 LangString bulwarkInstalling 3082 "Instalando ${PRODUCT_NAME}…"
@@ -45,6 +68,13 @@ LangString bulwarkOpensAfter 3082 "${PRODUCT_NAME} se abrirá cuando termine la 
 LangString bulwarkRestartsAfter 3082 "${PRODUCT_NAME} se reiniciará cuando termine la actualización."
 LangString bulwarkProfileStays 3082 "Su perfil de correo se queda en este equipo."
 LangString bulwarkPercent 3082 "# %"
+LangString bulwarkStepRemoveOld 3082 "Quitando la versión anterior…"
+LangString bulwarkStepUnpack 3082 "Descomprimiendo archivos…"
+LangString bulwarkStepShortcuts 3082 "Creando accesos directos…"
+LangString bulwarkStepRegister 3082 "Registrando ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 3082 "Iniciando ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 3082 "Quitando ${PRODUCT_NAME} de Windows…"
+LangString bulwarkStepRemoveFiles 3082 "Quitando archivos…"
 
 ; Chinese (Simplified)
 LangString bulwarkInstalling 2052 "正在安装 ${PRODUCT_NAME}…"
@@ -54,6 +84,13 @@ LangString bulwarkOpensAfter 2052 "安装完成后将打开 ${PRODUCT_NAME}。"
 LangString bulwarkRestartsAfter 2052 "更新完成后将重新启动 ${PRODUCT_NAME}。"
 LangString bulwarkProfileStays 2052 "您的邮件配置文件会保留在这台电脑上。"
 LangString bulwarkPercent 2052 "#%"
+LangString bulwarkStepRemoveOld 2052 "正在删除旧版本…"
+LangString bulwarkStepUnpack 2052 "正在解压文件…"
+LangString bulwarkStepShortcuts 2052 "正在创建快捷方式…"
+LangString bulwarkStepRegister 2052 "正在注册 ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 2052 "正在启动 ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 2052 "正在从 Windows 中移除 ${PRODUCT_NAME}…"
+LangString bulwarkStepRemoveFiles 2052 "正在删除文件…"
 
 ; Chinese (Traditional)
 LangString bulwarkInstalling 1028 "正在安裝 ${PRODUCT_NAME}…"
@@ -63,6 +100,13 @@ LangString bulwarkOpensAfter 1028 "安裝完成後將開啟 ${PRODUCT_NAME}。"
 LangString bulwarkRestartsAfter 1028 "更新完成後將重新啟動 ${PRODUCT_NAME}。"
 LangString bulwarkProfileStays 1028 "您的郵件設定檔會保留在這台電腦上。"
 LangString bulwarkPercent 1028 "#%"
+LangString bulwarkStepRemoveOld 1028 "正在移除舊版本…"
+LangString bulwarkStepUnpack 1028 "正在解壓縮檔案…"
+LangString bulwarkStepShortcuts 1028 "正在建立捷徑…"
+LangString bulwarkStepRegister 1028 "正在註冊 ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1028 "正在啟動 ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1028 "正在從 Windows 移除 ${PRODUCT_NAME}…"
+LangString bulwarkStepRemoveFiles 1028 "正在移除檔案…"
 
 ; Japanese
 LangString bulwarkInstalling 1041 "${PRODUCT_NAME} をインストールしています…"
@@ -72,6 +116,13 @@ LangString bulwarkOpensAfter 1041 "インストールが終わると ${PRODUCT_N
 LangString bulwarkRestartsAfter 1041 "更新が終わると ${PRODUCT_NAME} が再起動します。"
 LangString bulwarkProfileStays 1041 "メールのプロファイルはこのコンピューターに残ります。"
 LangString bulwarkPercent 1041 "#%"
+LangString bulwarkStepRemoveOld 1041 "古いバージョンを削除しています…"
+LangString bulwarkStepUnpack 1041 "ファイルを展開しています…"
+LangString bulwarkStepShortcuts 1041 "ショートカットを作成しています…"
+LangString bulwarkStepRegister 1041 "${PRODUCT_NAME} を登録しています…"
+LangString bulwarkStepStart 1041 "${PRODUCT_NAME} を起動しています…"
+LangString bulwarkStepUnregister 1041 "Windows から ${PRODUCT_NAME} を削除しています…"
+LangString bulwarkStepRemoveFiles 1041 "ファイルを削除しています…"
 
 ; Korean
 LangString bulwarkInstalling 1042 "${PRODUCT_NAME} 설치 중…"
@@ -81,6 +132,13 @@ LangString bulwarkOpensAfter 1042 "설치가 끝나면 ${PRODUCT_NAME}이(가) �
 LangString bulwarkRestartsAfter 1042 "업데이트가 끝나면 ${PRODUCT_NAME}이(가) 다시 시작됩니다."
 LangString bulwarkProfileStays 1042 "메일 프로필은 이 컴퓨터에 남아 있습니다."
 LangString bulwarkPercent 1042 "#%"
+LangString bulwarkStepRemoveOld 1042 "이전 버전 제거 중…"
+LangString bulwarkStepUnpack 1042 "파일 압축 푸는 중…"
+LangString bulwarkStepShortcuts 1042 "바로 가기 만드는 중…"
+LangString bulwarkStepRegister 1042 "${PRODUCT_NAME} 등록 중…"
+LangString bulwarkStepStart 1042 "${PRODUCT_NAME} 시작 중…"
+LangString bulwarkStepUnregister 1042 "Windows에서 ${PRODUCT_NAME} 제거 중…"
+LangString bulwarkStepRemoveFiles 1042 "파일 제거 중…"
 
 ; Italian
 LangString bulwarkInstalling 1040 "Installazione di ${PRODUCT_NAME}…"
@@ -90,6 +148,13 @@ LangString bulwarkOpensAfter 1040 "${PRODUCT_NAME} si aprirà al termine dell’
 LangString bulwarkRestartsAfter 1040 "${PRODUCT_NAME} si riavvierà al termine dell’aggiornamento."
 LangString bulwarkProfileStays 1040 "Il tuo profilo di posta resta su questo computer."
 LangString bulwarkPercent 1040 "#%"
+LangString bulwarkStepRemoveOld 1040 "Rimozione della versione precedente…"
+LangString bulwarkStepUnpack 1040 "Estrazione dei file…"
+LangString bulwarkStepShortcuts 1040 "Creazione dei collegamenti…"
+LangString bulwarkStepRegister 1040 "Registrazione di ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1040 "Avvio di ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1040 "Rimozione di ${PRODUCT_NAME} da Windows…"
+LangString bulwarkStepRemoveFiles 1040 "Rimozione dei file…"
 
 ; Dutch
 LangString bulwarkInstalling 1043 "${PRODUCT_NAME} wordt geïnstalleerd…"
@@ -99,6 +164,13 @@ LangString bulwarkOpensAfter 1043 "${PRODUCT_NAME} wordt daarna geopend."
 LangString bulwarkRestartsAfter 1043 "${PRODUCT_NAME} wordt daarna opnieuw gestart."
 LangString bulwarkProfileStays 1043 "Uw e-mailprofiel blijft op deze computer staan."
 LangString bulwarkPercent 1043 "#%"
+LangString bulwarkStepRemoveOld 1043 "Oude versie wordt verwijderd…"
+LangString bulwarkStepUnpack 1043 "Bestanden worden uitgepakt…"
+LangString bulwarkStepShortcuts 1043 "Snelkoppelingen worden gemaakt…"
+LangString bulwarkStepRegister 1043 "${PRODUCT_NAME} wordt geregistreerd…"
+LangString bulwarkStepStart 1043 "${PRODUCT_NAME} wordt gestart…"
+LangString bulwarkStepUnregister 1043 "${PRODUCT_NAME} wordt uit Windows verwijderd…"
+LangString bulwarkStepRemoveFiles 1043 "Bestanden worden verwijderd…"
 
 ; Danish
 LangString bulwarkInstalling 1030 "Installerer ${PRODUCT_NAME}…"
@@ -108,6 +180,13 @@ LangString bulwarkOpensAfter 1030 "${PRODUCT_NAME} åbnes, når installationen e
 LangString bulwarkRestartsAfter 1030 "${PRODUCT_NAME} genstartes, når opdateringen er færdig."
 LangString bulwarkProfileStays 1030 "Din mailprofil bliver på denne computer."
 LangString bulwarkPercent 1030 "# %"
+LangString bulwarkStepRemoveOld 1030 "Fjerner den gamle version…"
+LangString bulwarkStepUnpack 1030 "Pakker filer ud…"
+LangString bulwarkStepShortcuts 1030 "Opretter genveje…"
+LangString bulwarkStepRegister 1030 "Registrerer ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1030 "Starter ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1030 "Fjerner ${PRODUCT_NAME} fra Windows…"
+LangString bulwarkStepRemoveFiles 1030 "Fjerner filer…"
 
 ; Swedish
 LangString bulwarkInstalling 1053 "Installerar ${PRODUCT_NAME}…"
@@ -117,6 +196,13 @@ LangString bulwarkOpensAfter 1053 "${PRODUCT_NAME} öppnas när installationen �
 LangString bulwarkRestartsAfter 1053 "${PRODUCT_NAME} startas om när uppdateringen är klar."
 LangString bulwarkProfileStays 1053 "Din e-postprofil finns kvar på den här datorn."
 LangString bulwarkPercent 1053 "# %"
+LangString bulwarkStepRemoveOld 1053 "Tar bort den gamla versionen…"
+LangString bulwarkStepUnpack 1053 "Packar upp filer…"
+LangString bulwarkStepShortcuts 1053 "Skapar genvägar…"
+LangString bulwarkStepRegister 1053 "Registrerar ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1053 "Startar ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1053 "Tar bort ${PRODUCT_NAME} från Windows…"
+LangString bulwarkStepRemoveFiles 1053 "Tar bort filer…"
 
 ; Norwegian (Bokmål)
 LangString bulwarkInstalling 1044 "Installerer ${PRODUCT_NAME}…"
@@ -126,6 +212,13 @@ LangString bulwarkOpensAfter 1044 "${PRODUCT_NAME} åpnes når installasjonen er
 LangString bulwarkRestartsAfter 1044 "${PRODUCT_NAME} starter på nytt når oppdateringen er ferdig."
 LangString bulwarkProfileStays 1044 "E-postprofilen din blir værende på denne datamaskinen."
 LangString bulwarkPercent 1044 "# %"
+LangString bulwarkStepRemoveOld 1044 "Fjerner den gamle versjonen…"
+LangString bulwarkStepUnpack 1044 "Pakker ut filer…"
+LangString bulwarkStepShortcuts 1044 "Oppretter snarveier…"
+LangString bulwarkStepRegister 1044 "Registrerer ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1044 "Starter ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1044 "Fjerner ${PRODUCT_NAME} fra Windows…"
+LangString bulwarkStepRemoveFiles 1044 "Fjerner filer…"
 
 ; Finnish
 LangString bulwarkInstalling 1035 "Asennetaan sovellusta ${PRODUCT_NAME}…"
@@ -135,6 +228,13 @@ LangString bulwarkOpensAfter 1035 "${PRODUCT_NAME} avautuu, kun asennus on valmi
 LangString bulwarkRestartsAfter 1035 "${PRODUCT_NAME} käynnistyy uudelleen, kun päivitys on valmis."
 LangString bulwarkProfileStays 1035 "Sähköpostiprofiilisi jää tälle tietokoneelle."
 LangString bulwarkPercent 1035 "# %"
+LangString bulwarkStepRemoveOld 1035 "Poistetaan vanhaa versiota…"
+LangString bulwarkStepUnpack 1035 "Puretaan tiedostoja…"
+LangString bulwarkStepShortcuts 1035 "Luodaan pikakuvakkeita…"
+LangString bulwarkStepRegister 1035 "Rekisteröidään sovellusta ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1035 "Käynnistetään sovellusta ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1035 "Poistetaan sovellusta ${PRODUCT_NAME} Windowsista…"
+LangString bulwarkStepRemoveFiles 1035 "Poistetaan tiedostoja…"
 
 ; Russian
 LangString bulwarkInstalling 1049 "Установка ${PRODUCT_NAME}…"
@@ -144,6 +244,13 @@ LangString bulwarkOpensAfter 1049 "${PRODUCT_NAME} откроется после
 LangString bulwarkRestartsAfter 1049 "${PRODUCT_NAME} перезапустится после обновления."
 LangString bulwarkProfileStays 1049 "Ваш почтовый профиль останется на этом компьютере."
 LangString bulwarkPercent 1049 "# %"
+LangString bulwarkStepRemoveOld 1049 "Удаление старой версии…"
+LangString bulwarkStepUnpack 1049 "Распаковка файлов…"
+LangString bulwarkStepShortcuts 1049 "Создание ярлыков…"
+LangString bulwarkStepRegister 1049 "Регистрация ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1049 "Запуск ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1049 "Удаление ${PRODUCT_NAME} из Windows…"
+LangString bulwarkStepRemoveFiles 1049 "Удаление файлов…"
 
 ; Portuguese (Portugal)
 LangString bulwarkInstalling 2070 "A instalar o ${PRODUCT_NAME}…"
@@ -153,6 +260,13 @@ LangString bulwarkOpensAfter 2070 "O ${PRODUCT_NAME} abre quando a instalação 
 LangString bulwarkRestartsAfter 2070 "O ${PRODUCT_NAME} reinicia quando a atualização terminar."
 LangString bulwarkProfileStays 2070 "O seu perfil de correio fica neste computador."
 LangString bulwarkPercent 2070 "# %"
+LangString bulwarkStepRemoveOld 2070 "A remover a versão anterior…"
+LangString bulwarkStepUnpack 2070 "A descompactar ficheiros…"
+LangString bulwarkStepShortcuts 2070 "A criar atalhos…"
+LangString bulwarkStepRegister 2070 "A registar o ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 2070 "A iniciar o ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 2070 "A remover o ${PRODUCT_NAME} do Windows…"
+LangString bulwarkStepRemoveFiles 2070 "A remover ficheiros…"
 
 ; Portuguese (Brazil)
 LangString bulwarkInstalling 1046 "Instalando o ${PRODUCT_NAME}…"
@@ -162,6 +276,13 @@ LangString bulwarkOpensAfter 1046 "O ${PRODUCT_NAME} será aberto quando a insta
 LangString bulwarkRestartsAfter 1046 "O ${PRODUCT_NAME} será reiniciado quando a atualização terminar."
 LangString bulwarkProfileStays 1046 "Seu perfil de e-mail continua neste computador."
 LangString bulwarkPercent 1046 "#%"
+LangString bulwarkStepRemoveOld 1046 "Removendo a versão anterior…"
+LangString bulwarkStepUnpack 1046 "Descompactando arquivos…"
+LangString bulwarkStepShortcuts 1046 "Criando atalhos…"
+LangString bulwarkStepRegister 1046 "Registrando o ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1046 "Iniciando o ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1046 "Removendo o ${PRODUCT_NAME} do Windows…"
+LangString bulwarkStepRemoveFiles 1046 "Removendo arquivos…"
 
 ; Polish
 LangString bulwarkInstalling 1045 "Instalowanie aplikacji ${PRODUCT_NAME}…"
@@ -171,6 +292,13 @@ LangString bulwarkOpensAfter 1045 "Aplikacja ${PRODUCT_NAME} otworzy się po zak
 LangString bulwarkRestartsAfter 1045 "Aplikacja ${PRODUCT_NAME} uruchomi się ponownie po zakończeniu aktualizacji."
 LangString bulwarkProfileStays 1045 "Twój profil poczty pozostanie na tym komputerze."
 LangString bulwarkPercent 1045 "#%"
+LangString bulwarkStepRemoveOld 1045 "Usuwanie starej wersji…"
+LangString bulwarkStepUnpack 1045 "Rozpakowywanie plików…"
+LangString bulwarkStepShortcuts 1045 "Tworzenie skrótów…"
+LangString bulwarkStepRegister 1045 "Rejestrowanie aplikacji ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1045 "Uruchamianie aplikacji ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1045 "Usuwanie aplikacji ${PRODUCT_NAME} z systemu Windows…"
+LangString bulwarkStepRemoveFiles 1045 "Usuwanie plików…"
 
 ; Ukrainian
 LangString bulwarkInstalling 1058 "Встановлення ${PRODUCT_NAME}…"
@@ -180,6 +308,13 @@ LangString bulwarkOpensAfter 1058 "${PRODUCT_NAME} відкриється піс
 LangString bulwarkRestartsAfter 1058 "${PRODUCT_NAME} перезапуститься після оновлення."
 LangString bulwarkProfileStays 1058 "Ваш поштовий профіль залишиться на цьому комп’ютері."
 LangString bulwarkPercent 1058 "#%"
+LangString bulwarkStepRemoveOld 1058 "Видалення старої версії…"
+LangString bulwarkStepUnpack 1058 "Розпакування файлів…"
+LangString bulwarkStepShortcuts 1058 "Створення ярликів…"
+LangString bulwarkStepRegister 1058 "Реєстрація ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1058 "Запуск ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1058 "Видалення ${PRODUCT_NAME} з Windows…"
+LangString bulwarkStepRemoveFiles 1058 "Видалення файлів…"
 
 ; Czech
 LangString bulwarkInstalling 1029 "Instalace aplikace ${PRODUCT_NAME}…"
@@ -189,6 +324,13 @@ LangString bulwarkOpensAfter 1029 "Aplikace ${PRODUCT_NAME} se po instalaci otev
 LangString bulwarkRestartsAfter 1029 "Aplikace ${PRODUCT_NAME} se po aktualizaci znovu spustí."
 LangString bulwarkProfileStays 1029 "Váš poštovní profil zůstane v tomto počítači."
 LangString bulwarkPercent 1029 "# %"
+LangString bulwarkStepRemoveOld 1029 "Odebírání staré verze…"
+LangString bulwarkStepUnpack 1029 "Rozbalování souborů…"
+LangString bulwarkStepShortcuts 1029 "Vytváření zástupců…"
+LangString bulwarkStepRegister 1029 "Registrace aplikace ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1029 "Spouštění aplikace ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1029 "Odebírání aplikace ${PRODUCT_NAME} ze systému Windows…"
+LangString bulwarkStepRemoveFiles 1029 "Odebírání souborů…"
 
 ; Slovak
 LangString bulwarkInstalling 1051 "Inštalácia aplikácie ${PRODUCT_NAME}…"
@@ -198,6 +340,13 @@ LangString bulwarkOpensAfter 1051 "Aplikácia ${PRODUCT_NAME} sa po inštalácii
 LangString bulwarkRestartsAfter 1051 "Aplikácia ${PRODUCT_NAME} sa po aktualizácii znova spustí."
 LangString bulwarkProfileStays 1051 "Váš poštový profil zostane v tomto počítači."
 LangString bulwarkPercent 1051 "# %"
+LangString bulwarkStepRemoveOld 1051 "Odstraňovanie starej verzie…"
+LangString bulwarkStepUnpack 1051 "Rozbaľovanie súborov…"
+LangString bulwarkStepShortcuts 1051 "Vytváranie odkazov…"
+LangString bulwarkStepRegister 1051 "Registrácia aplikácie ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1051 "Spúšťanie aplikácie ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1051 "Odstraňovanie aplikácie ${PRODUCT_NAME} zo systému Windows…"
+LangString bulwarkStepRemoveFiles 1051 "Odstraňovanie súborov…"
 
 ; Hungarian
 LangString bulwarkInstalling 1038 "A(z) ${PRODUCT_NAME} telepítése…"
@@ -207,6 +356,13 @@ LangString bulwarkOpensAfter 1038 "A(z) ${PRODUCT_NAME} a telepítés után megn
 LangString bulwarkRestartsAfter 1038 "A(z) ${PRODUCT_NAME} a frissítés után újraindul."
 LangString bulwarkProfileStays 1038 "A levelezési profilja ezen a számítógépen marad."
 LangString bulwarkPercent 1038 "#%"
+LangString bulwarkStepRemoveOld 1038 "A régi verzió eltávolítása…"
+LangString bulwarkStepUnpack 1038 "Fájlok kibontása…"
+LangString bulwarkStepShortcuts 1038 "Parancsikonok létrehozása…"
+LangString bulwarkStepRegister 1038 "A(z) ${PRODUCT_NAME} regisztrálása…"
+LangString bulwarkStepStart 1038 "A(z) ${PRODUCT_NAME} indítása…"
+LangString bulwarkStepUnregister 1038 "A(z) ${PRODUCT_NAME} eltávolítása a Windowsból…"
+LangString bulwarkStepRemoveFiles 1038 "Fájlok eltávolítása…"
 
 ; Arabic
 LangString bulwarkInstalling 1025 "جارٍ تثبيت ${PRODUCT_NAME}…"
@@ -216,6 +372,13 @@ LangString bulwarkOpensAfter 1025 "سيُفتح ${PRODUCT_NAME} بعد اكتم�
 LangString bulwarkRestartsAfter 1025 "سيُعاد تشغيل ${PRODUCT_NAME} بعد اكتمال التحديث."
 LangString bulwarkProfileStays 1025 "يبقى ملف تعريف البريد الخاص بك على هذا الكمبيوتر."
 LangString bulwarkPercent 1025 "#٪"
+LangString bulwarkStepRemoveOld 1025 "جارٍ إزالة الإصدار القديم…"
+LangString bulwarkStepUnpack 1025 "جارٍ فك ضغط الملفات…"
+LangString bulwarkStepShortcuts 1025 "جارٍ إنشاء الاختصارات…"
+LangString bulwarkStepRegister 1025 "جارٍ تسجيل ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1025 "جارٍ تشغيل ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1025 "جارٍ إزالة ${PRODUCT_NAME} من Windows…"
+LangString bulwarkStepRemoveFiles 1025 "جارٍ إزالة الملفات…"
 
 ; Turkish
 LangString bulwarkInstalling 1055 "${PRODUCT_NAME} yükleniyor…"
@@ -225,6 +388,13 @@ LangString bulwarkOpensAfter 1055 "${PRODUCT_NAME}, yükleme bitince açılır."
 LangString bulwarkRestartsAfter 1055 "${PRODUCT_NAME}, güncelleme bitince yeniden başlar."
 LangString bulwarkProfileStays 1055 "Posta profiliniz bu bilgisayarda kalır."
 LangString bulwarkPercent 1055 "%#"
+LangString bulwarkStepRemoveOld 1055 "Eski sürüm kaldırılıyor…"
+LangString bulwarkStepUnpack 1055 "Dosyalar ayıklanıyor…"
+LangString bulwarkStepShortcuts 1055 "Kısayollar oluşturuluyor…"
+LangString bulwarkStepRegister 1055 "${PRODUCT_NAME} kaydediliyor…"
+LangString bulwarkStepStart 1055 "${PRODUCT_NAME} başlatılıyor…"
+LangString bulwarkStepUnregister 1055 "${PRODUCT_NAME} Windows’tan kaldırılıyor…"
+LangString bulwarkStepRemoveFiles 1055 "Dosyalar kaldırılıyor…"
 
 ; Thai
 LangString bulwarkInstalling 1054 "กำลังติดตั้ง ${PRODUCT_NAME}…"
@@ -234,6 +404,13 @@ LangString bulwarkOpensAfter 1054 "${PRODUCT_NAME} จะเปิดขึ้�
 LangString bulwarkRestartsAfter 1054 "${PRODUCT_NAME} จะเริ่มใหม่เมื่ออัปเดตเสร็จ"
 LangString bulwarkProfileStays 1054 "โปรไฟล์อีเมลของคุณจะยังอยู่ในคอมพิวเตอร์เครื่องนี้"
 LangString bulwarkPercent 1054 "#%"
+LangString bulwarkStepRemoveOld 1054 "กำลังลบเวอร์ชันเก่า…"
+LangString bulwarkStepUnpack 1054 "กำลังแตกไฟล์…"
+LangString bulwarkStepShortcuts 1054 "กำลังสร้างทางลัด…"
+LangString bulwarkStepRegister 1054 "กำลังลงทะเบียน ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1054 "กำลังเริ่ม ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1054 "กำลังลบ ${PRODUCT_NAME} ออกจาก Windows…"
+LangString bulwarkStepRemoveFiles 1054 "กำลังลบไฟล์…"
 
 ; Vietnamese
 LangString bulwarkInstalling 1066 "Đang cài đặt ${PRODUCT_NAME}…"
@@ -243,6 +420,13 @@ LangString bulwarkOpensAfter 1066 "${PRODUCT_NAME} sẽ mở khi cài đặt xon
 LangString bulwarkRestartsAfter 1066 "${PRODUCT_NAME} sẽ khởi động lại khi cập nhật xong."
 LangString bulwarkProfileStays 1066 "Hồ sơ thư của bạn vẫn được giữ trên máy tính này."
 LangString bulwarkPercent 1066 "#%"
+LangString bulwarkStepRemoveOld 1066 "Đang gỡ bỏ phiên bản cũ…"
+LangString bulwarkStepUnpack 1066 "Đang giải nén tệp…"
+LangString bulwarkStepShortcuts 1066 "Đang tạo lối tắt…"
+LangString bulwarkStepRegister 1066 "Đang đăng ký ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1066 "Đang khởi động ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1066 "Đang gỡ ${PRODUCT_NAME} khỏi Windows…"
+LangString bulwarkStepRemoveFiles 1066 "Đang xóa tệp…"
 
 ; Catalan
 LangString bulwarkInstalling 1027 "S’està instal·lant ${PRODUCT_NAME}…"
@@ -252,6 +436,13 @@ LangString bulwarkOpensAfter 1027 "${PRODUCT_NAME} s’obrirà quan acabi la ins
 LangString bulwarkRestartsAfter 1027 "${PRODUCT_NAME} es reiniciarà quan acabi l’actualització."
 LangString bulwarkProfileStays 1027 "El vostre perfil de correu es queda en aquest ordinador."
 LangString bulwarkPercent 1027 "# %"
+LangString bulwarkStepRemoveOld 1027 "S’està suprimint la versió anterior…"
+LangString bulwarkStepUnpack 1027 "S’estan descomprimint els fitxers…"
+LangString bulwarkStepShortcuts 1027 "S’estan creant les dreceres…"
+LangString bulwarkStepRegister 1027 "S’està registrant ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1027 "S’està iniciant ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1027 "S’està suprimint ${PRODUCT_NAME} del Windows…"
+LangString bulwarkStepRemoveFiles 1027 "S’estan suprimint els fitxers…"
 
 ; Estonian
 LangString bulwarkInstalling 1061 "Rakenduse ${PRODUCT_NAME} installimine…"
@@ -261,6 +452,13 @@ LangString bulwarkOpensAfter 1061 "${PRODUCT_NAME} avaneb pärast installimist."
 LangString bulwarkRestartsAfter 1061 "${PRODUCT_NAME} taaskäivitub pärast värskendamist."
 LangString bulwarkProfileStays 1061 "Teie meiliprofiil jääb sellesse arvutisse."
 LangString bulwarkPercent 1061 "# %"
+LangString bulwarkStepRemoveOld 1061 "Vana versiooni eemaldamine…"
+LangString bulwarkStepUnpack 1061 "Failide lahtipakkimine…"
+LangString bulwarkStepShortcuts 1061 "Otseteede loomine…"
+LangString bulwarkStepRegister 1061 "Rakenduse ${PRODUCT_NAME} registreerimine…"
+LangString bulwarkStepStart 1061 "Rakenduse ${PRODUCT_NAME} käivitamine…"
+LangString bulwarkStepUnregister 1061 "Rakenduse ${PRODUCT_NAME} eemaldamine Windowsist…"
+LangString bulwarkStepRemoveFiles 1061 "Failide eemaldamine…"
 
 ; Hebrew
 LangString bulwarkInstalling 1037 "מתקין את ${PRODUCT_NAME}…"
@@ -270,6 +468,13 @@ LangString bulwarkOpensAfter 1037 "${PRODUCT_NAME} ייפתח בסיום ההת�
 LangString bulwarkRestartsAfter 1037 "${PRODUCT_NAME} יופעל מחדש בסיום העדכון."
 LangString bulwarkProfileStays 1037 "פרופיל הדואר שלך נשאר במחשב הזה."
 LangString bulwarkPercent 1037 "#%"
+LangString bulwarkStepRemoveOld 1037 "מסיר את הגרסה הישנה…"
+LangString bulwarkStepUnpack 1037 "מחלץ קבצים…"
+LangString bulwarkStepShortcuts 1037 "יוצר קיצורי דרך…"
+LangString bulwarkStepRegister 1037 "רושם את ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1037 "מפעיל את ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1037 "מסיר את ${PRODUCT_NAME} מ-Windows…"
+LangString bulwarkStepRemoveFiles 1037 "מסיר קבצים…"
 
 ; Latvian
 LangString bulwarkInstalling 1062 "Notiek ${PRODUCT_NAME} instalēšana…"
@@ -279,6 +484,13 @@ LangString bulwarkOpensAfter 1062 "${PRODUCT_NAME} tiks atvērts pēc instalēš
 LangString bulwarkRestartsAfter 1062 "${PRODUCT_NAME} tiks restartēts pēc atjaunināšanas."
 LangString bulwarkProfileStays 1062 "Jūsu pasta profils paliek šajā datorā."
 LangString bulwarkPercent 1062 "#%"
+LangString bulwarkStepRemoveOld 1062 "Notiek vecās versijas noņemšana…"
+LangString bulwarkStepUnpack 1062 "Notiek failu izpakošana…"
+LangString bulwarkStepShortcuts 1062 "Notiek saīšņu izveide…"
+LangString bulwarkStepRegister 1062 "Notiek ${PRODUCT_NAME} reģistrēšana…"
+LangString bulwarkStepStart 1062 "Notiek ${PRODUCT_NAME} palaišana…"
+LangString bulwarkStepUnregister 1062 "Notiek ${PRODUCT_NAME} noņemšana no Windows…"
+LangString bulwarkStepRemoveFiles 1062 "Notiek failu noņemšana…"
 
 ; Mongolian
 LangString bulwarkInstalling 1104 "${PRODUCT_NAME}-г суулгаж байна…"
@@ -288,6 +500,13 @@ LangString bulwarkOpensAfter 1104 "Суулгаж дууссаны дараа ${
 LangString bulwarkRestartsAfter 1104 "Шинэчилж дууссаны дараа ${PRODUCT_NAME} дахин эхэлнэ."
 LangString bulwarkProfileStays 1104 "Таны имэйлийн профайл энэ компьютерт үлдэнэ."
 LangString bulwarkPercent 1104 "#%"
+LangString bulwarkStepRemoveOld 1104 "Хуучин хувилбарыг устгаж байна…"
+LangString bulwarkStepUnpack 1104 "Файлуудыг задалж байна…"
+LangString bulwarkStepShortcuts 1104 "Товчлол үүсгэж байна…"
+LangString bulwarkStepRegister 1104 "${PRODUCT_NAME}-г бүртгэж байна…"
+LangString bulwarkStepStart 1104 "${PRODUCT_NAME}-г эхлүүлж байна…"
+LangString bulwarkStepUnregister 1104 "${PRODUCT_NAME}-г Windows-оос устгаж байна…"
+LangString bulwarkStepRemoveFiles 1104 "Файлуудыг устгаж байна…"
 
 ; Romanian
 LangString bulwarkInstalling 1048 "Se instalează ${PRODUCT_NAME}…"
@@ -297,3 +516,10 @@ LangString bulwarkOpensAfter 1048 "${PRODUCT_NAME} se va deschide după instalar
 LangString bulwarkRestartsAfter 1048 "${PRODUCT_NAME} va reporni după actualizare."
 LangString bulwarkProfileStays 1048 "Profilul dvs. de e-mail rămâne pe acest computer."
 LangString bulwarkPercent 1048 "# %"
+LangString bulwarkStepRemoveOld 1048 "Se elimină versiunea veche…"
+LangString bulwarkStepUnpack 1048 "Se dezarhivează fișierele…"
+LangString bulwarkStepShortcuts 1048 "Se creează comenzile rapide…"
+LangString bulwarkStepRegister 1048 "Se înregistrează ${PRODUCT_NAME}…"
+LangString bulwarkStepStart 1048 "Se pornește ${PRODUCT_NAME}…"
+LangString bulwarkStepUnregister 1048 "Se elimină ${PRODUCT_NAME} din Windows…"
+LangString bulwarkStepRemoveFiles 1048 "Se elimină fișierele…"
