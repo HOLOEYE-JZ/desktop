@@ -14,7 +14,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { app, shell } from 'electron';
 import type { OsDefaultAppStatus } from '../../shared/bridge';
@@ -23,11 +23,12 @@ import type { OsHub } from './os-hub';
 import { effectivePolicyValue } from '../../shared/policy-schema';
 import { policies } from './policies';
 import {
+  isOurSendToShortcut,
   needsOpenWithRegistration,
   needsRegistration,
   SEND_TO_NAME,
   sendToShortcut,
-  sendToShortcutCurrent,
+  sendToShortcutAction,
   WINDOWS_APP_NAME,
   WINDOWS_ATTACH_PROGID,
   WINDOWS_URLS,
@@ -102,26 +103,44 @@ export async function registerOnWindows(exe: string): Promise<boolean> {
   return results.every(Boolean);
 }
 
+function sendToLink(): string | null {
+  const folder = sendToFolder();
+  return folder ? path.join(folder, `${SEND_TO_NAME}.lnk`) : null;
+}
+
+/** The shortcut of our name: undefined for none, null for a file that isn't a readable shortcut. */
+function readSendTo(link: string): Electron.ShortcutDetails | null | undefined {
+  if (!existsSync(link)) return undefined;
+  try {
+    return shell.readShortcutLink(link);
+  } catch {
+    return null;
+  }
+}
+
+/** The Send to shortcut, pointed at this exe where it's ours (sendToShortcutAction). */
+function repairSendTo(exe: string, keysRewritten: boolean): boolean {
+  const link = sendToLink();
+  if (!link) return true;
+  const found = readSendTo(link);
+  // A file of that name we can't read isn't known to be ours.
+  if (found === null) return true;
+  const action = sendToShortcutAction(found ?? null, exe, keysRewritten);
+  if (action === 'none') return true;
+  mkdirSync(path.dirname(link), { recursive: true });
+  return shell.writeShortcutLink(link, action, sendToShortcut(exe));
+}
+
+function removeOurSendTo(): void {
+  const link = sendToLink();
+  if (link && isOurSendToShortcut(readSendTo(link) ?? null)) rmSync(link, { force: true });
+}
+
 /** "Open with", "Choose another app" and the Send to shortcut, for this exe. */
 export async function registerOpenWithOnWindows(exe: string): Promise<boolean> {
   if (!mayRegister()) return false;
   const results = await Promise.all(windowsOpenWithRegistration(exe).map(writeValue));
-  const folder = sendToFolder();
-  let shortcut = true;
-  if (folder) {
-    const link = path.join(folder, `${SEND_TO_NAME}.lnk`);
-    let found: Electron.ShortcutDetails | null = null;
-    try {
-      found = shell.readShortcutLink(link);
-    } catch {
-      // None yet.
-    }
-    if (!sendToShortcutCurrent(found, exe)) {
-      mkdirSync(folder, { recursive: true });
-      shortcut = shell.writeShortcutLink(link, found ? 'replace' : 'create', sendToShortcut(exe));
-    }
-  }
-  return results.every(Boolean) && shortcut;
+  return results.every(Boolean) && repairSendTo(exe, true);
 }
 
 /** Only what's ours: our class in each type's list, our own keys, our shortcut. */
@@ -130,8 +149,7 @@ export async function unregisterOpenWithOnWindows(exe: string): Promise<void> {
   const { keys, values } = windowsOpenWithKeys(path.win32.basename(exe));
   await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
   await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
-  const folder = sendToFolder();
-  if (folder) rmSync(path.join(folder, `${SEND_TO_NAME}.lnk`), { force: true });
+  removeOurSendTo();
 }
 
 export async function unregisterOnWindows(): Promise<void> {
@@ -159,6 +177,8 @@ export interface DefaultAppHandle {
   open: () => Promise<OsDefaultAppStatus>;
   register: () => Promise<boolean>;
   unregister: () => Promise<void>;
+  /** Once what the start (or a policy change) writes is written. For tests. */
+  settled: () => Promise<void>;
 }
 
 export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
@@ -190,38 +210,42 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
     return status();
   };
 
+  let applying = Promise.resolve();
   // Follows the path of an update, and comes back after an uninstall and a reinstall to the
   // same path, so this asks the registry rather than remember. A development run writes only
   // to a test's own key, and a test pack nothing (mayRegister).
   if (win32 && mayRegister()) {
-    void reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']).then((query) => {
-      if (needsRegistration(query, process.execPath)) void register();
-    });
+    const exe = process.execPath;
     // Its own check, so an update that brings it writes it, and the policy can take it back.
-    const applyOpenWith = async () => {
+    // `keysRewritten`: the mail keys were missing or named another exe just now.
+    const applyOpenWith = async (keysRewritten: boolean) => {
       const query = await reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\${WINDOWS_ATTACH_PROGID}\\shell\\open\\command`, '/ve']);
       if (!openWithAllowed()) {
-        if (query.ok) await unregisterOpenWithOnWindows(process.execPath);
-        else {
-          const folder = sendToFolder();
-          if (folder) rmSync(path.join(folder, `${SEND_TO_NAME}.lnk`), { force: true });
-        }
+        if (query.ok) await unregisterOpenWithOnWindows(exe);
+        else removeOurSendTo();
         return;
       }
       // Written when the keys are missing or name another exe: a first start, an update to a new
-      // path. A Send to entry the user deleted while the keys stayed isn't put back.
-      if (needsOpenWithRegistration(query, process.execPath)) await registerOpenWithOnWindows(process.execPath);
+      // path, another copy's registration (an installer writes these keys before the app starts).
+      // Our Send to shortcut is pointed at this exe at every start; one the user deleted while the
+      // keys stayed isn't put back.
+      if (needsOpenWithRegistration(query, exe)) await registerOpenWithOnWindows(exe);
+      else repairSendTo(exe, keysRewritten);
     };
-    let applying = Promise.resolve();
-    const reapply = () => {
-      applying = applying.then(applyOpenWith, applyOpenWith).catch(() => {});
+    const first = async () => {
+      const query = await reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']);
+      const rewrite = needsRegistration(query, exe);
+      if (rewrite) await register();
+      await applyOpenWith(rewrite);
     };
-    reapply();
+    applying = first().catch(() => {});
     policies.on('changed', (now, before) => {
-      if (now.OpenWithEnabled.value !== before.OpenWithEnabled.value) reapply();
+      if (now.OpenWithEnabled.value === before.OpenWithEnabled.value) return;
+      const again = () => applyOpenWith(false);
+      applying = applying.then(again, again).catch(() => {});
     });
   }
   if (osRegistrationAllowed() && !win32) app.setAsDefaultProtocolClient('bulwark');
 
-  return { status, open, register, unregister: unregisterOnWindows };
+  return { status, open, register, unregister: unregisterOnWindows, settled: () => applying };
 }
