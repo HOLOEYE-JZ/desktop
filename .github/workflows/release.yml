@@ -14,9 +14,10 @@ name: Release
 # Signing: Windows signs every build through Azure Artifact Signing when the repository has
 # the AZURE_* secrets, and is unsigned otherwise (see the windows job). macOS signs with the
 # Developer ID and notarizes every build, betas too, when the repository has the MAC_* and
-# APPLE_* secrets, and is ad-hoc signed otherwise. Betas publish with nobody looking. The `release` environment a stable tag publishes through doesn't
-# exist yet, and GitHub creates it with no reviewers, so until someone sets it up a pushed tag
-# publishes with nobody looking too. Whoever can publish here can put code on every install.
+# APPLE_* secrets, and is ad-hoc signed otherwise. Betas publish with nobody looking. The
+# `release` environment a stable tag publishes through doesn't exist yet, and GitHub creates
+# it with no reviewers, so until someone sets it up a pushed tag publishes with nobody looking
+# too. Whoever can publish here can put code on every install.
 # See "First stable release" in the README. Actions are pinned by commit.
 
 on:

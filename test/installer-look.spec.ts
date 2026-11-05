@@ -75,7 +75,7 @@ test.describe('the NSIS window', () => {
     expect(text).toContain('!define MUI_CUSTOMFUNCTION_GUIINIT bulwarkThemeGuiInit');
     expect(text).toContain('!define MUI_CUSTOMFUNCTION_UNGUIINIT un.bulwarkThemeGuiInit');
     // The release builds the plugin before the installers, and git never holds it.
-    expect(read(path.join(ROOT, '.github', 'workflows', 'release.yml'))).toMatch(/run: node scripts\/build-nsis-splash\.mjs\n\n\s+- name: Build installers/);
+    expect(read(path.join(ROOT, '.github', 'workflows', 'release.yml'))).toMatch(/run: node scripts\/build-nsis-splash\.mjs\n\n(?:\s*#.*\n)*\s+- name: Build installers/);
     expect(read(path.join(ROOT, '.gitignore'))).toContain('build/x86-unicode/');
   });
 
