@@ -281,11 +281,42 @@ appImage:
   # Never add --no-sandbox. AppRun still adds it by itself where user namespaces are
   # blocked, and then the app refuses to run: see src/main/sandbox-check.ts.
   executableArgs: []
+# Depends: electron-builder's list, which a list here replaces, and what Electron's binary links
+# that a minimal system lacks (`readelf -d electron`): ALSA, and GBM with the DRM library under
+# it. Without ALSA the app doesn't start on a minimal Ubuntu. Ubuntu 24.04 renamed it to
+# libasound2t64; 22.04 and Debian 12 still have libasound2. test/linux-packages.spec.ts.
 deb:
   packageName: bulwark
   artifactName: bulwark_${version}_${arch}.${ext}
+  depends:
+    - libgtk-3-0
+    - libnotify4
+    - libnss3
+    - libxss1
+    - libxtst6
+    - xdg-utils
+    - libatspi2.0-0
+    - libuuid1
+    - libsecret-1-0
+    - libasound2t64 | libasound2
+    - libgbm1
+    - libdrm2
 rpm:
   packageName: bulwark
+  # The same for Fedora and openSUSE names. A list here replaces electron-builder's.
+  depends:
+    - gtk3
+    - libnotify
+    - nss
+    - libXScrnSaver
+    - (libXtst or libXtst6)
+    - xdg-utils
+    - at-spi2-core
+    - (libuuid or libuuid1)
+    - (libsecret or libsecret-1-0)
+    - (alsa-lib or libasound2)
+    - (mesa-libgbm or libgbm1)
+    - (libdrm or libdrm2)
   # Otherwise the package doesn't own its folders, and removing it leaves them empty.
   fpm: ['--directories', '/opt/Bulwark']
   artifactName: bulwark-${version}.${arch}.${ext}
