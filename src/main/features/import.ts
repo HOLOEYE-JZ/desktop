@@ -16,7 +16,7 @@
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, dialog, protocol } from 'electron';
+import { app, BrowserWindow, protocol } from 'electron';
 import {
   CHANNEL,
   type LocalImportFile,
@@ -33,6 +33,7 @@ import type { StoredImportJob } from '../state';
 import { strings } from '../strings';
 import { addWipeStep } from './local-wipe';
 import type { Feature } from './index';
+import { showMessageBox } from '../message-box';
 
 /** A job not touched for this long is forgotten: the file has likely changed or been forgotten. */
 const JOB_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
@@ -86,7 +87,7 @@ function pathList(paths: string[]): string {
 
 async function ask(window: BrowserWindow | null, options: Electron.MessageBoxOptions): Promise<number> {
   const parent = window && !window.isDestroyed() ? window : null;
-  const { response } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+  const { response } = await (parent ? showMessageBox(parent, options) : showMessageBox(options));
   return response;
 }
 

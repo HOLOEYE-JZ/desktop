@@ -130,8 +130,8 @@ test('the window follows the page\'s zoom, and the whole text fits without scrol
     });
     expect(fits).toEqual({ scrolls: false, inside: true });
     const [shown] = await dialogWindows();
-    // The card's width and its margin at the page's zoom (Chromium may round the zoom a little).
-    expect(Math.abs(shown.bounds.width / (496 * zoom) - 1)).toBeLessThan(0.03);
+    // The card's width and the room for its shadow (40 px a side) at the page's zoom (Chromium may round the zoom a little).
+    expect(Math.abs(shown.bounds.width / (528 * zoom) - 1)).toBeLessThan(0.03);
     await pressAnswering(dialog, 'Escape');
     expect(await answer(`zoom-${zoom}`)).toBeNull();
   }

@@ -120,6 +120,8 @@ export async function fakeOsIntegration(app: ElectronApplication, response = 0):
     const g = globalThis as unknown as { __opened: string[]; __prompts: unknown[] };
     g.__opened = [];
     g.__prompts = [];
+    // The app's own prompt windows come here too (src/main/message-box.ts).
+    (globalThis as unknown as { __bulwarkNativePrompts: boolean }).__bulwarkNativePrompts = true;
     shell.openExternal = async (url: string) => {
       g.__opened.push(url);
     };

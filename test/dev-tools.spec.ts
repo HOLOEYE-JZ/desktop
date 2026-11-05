@@ -52,8 +52,10 @@ test.describe('developer tools', () => {
   /** The native warning is recorded and answered: nobody could click it on a test's desktop. */
   async function answerWarning(app: ElectronApplication, response: number): Promise<void> {
     await app.evaluate(({ dialog }, answer) => {
-      const g = globalThis as unknown as { __warnings: string[] };
+      const g = globalThis as unknown as { __warnings: string[]; __bulwarkNativePrompts: boolean };
       g.__warnings = [];
+      // The app's own prompt window comes here too (src/main/message-box.ts).
+      g.__bulwarkNativePrompts = true;
       dialog.showMessageBox = (async (...args: unknown[]) => {
         const options = args.find((arg) => !!arg && typeof arg === 'object' && 'message' in (arg as object)) as { message: string; detail: string };
         g.__warnings.push(`${options.message}\n${options.detail}`);

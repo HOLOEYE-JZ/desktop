@@ -243,9 +243,11 @@ export interface DialogWindowRequest {
   /** "From the plugin …": who is asking, when it isn't the app. Drawn under the title. */
   source?: string;
   /** A warning sign beside the title, as the page's destructive confirm has. */
-  icon?: 'warning';
-  /** In the order they stand, start to end. */
-  buttons: { label: string; variant?: 'primary' | 'secondary' | 'destructive' }[];
+  icon?: 'warning' | 'error';
+  /** In the order they stand, start to end. `link`: a row of a choice (the shell's own questions only). */
+  buttons: { label: string; variant?: 'primary' | 'secondary' | 'destructive' | 'link' }[];
+  /** A checkbox on the footer's start; the answer says whether it was ticked (the shell's own questions only). */
+  checkbox?: { label: string; checked?: boolean };
   /** The button Enter takes and the focus starts on. */
   defaultIndex?: number;
   /** The ⋮ menu at the top end: a plugin's options. */
@@ -283,7 +285,7 @@ export type DialogWindowColour =
   | 'ring';
 
 /** A button by its index, a menu item by its id. Null: closed without an answer (Escape, Alt+F4, the page went). */
-export type DialogWindowAnswer = { button: number } | { menu: string } | null;
+export type DialogWindowAnswer = { button: number; checked?: boolean } | { menu: string } | null;
 
 export interface LanguagesUpdate {
   /** The interface language. The shell's menus follow it too. */

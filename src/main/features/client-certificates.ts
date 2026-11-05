@@ -8,7 +8,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { app, BrowserWindow, dialog, type Certificate, type Session, type WebContents } from 'electron';
+import { app, BrowserWindow, type Certificate, type Session, type WebContents } from 'electron';
 import { CHANNEL } from '../../shared/bridge';
 import { certificateRuleMatchesUrl, type PolicySnapshot } from '../../shared/policy-schema';
 import { setPinAgain } from '../app-session';
@@ -37,6 +37,7 @@ import { fill, strings } from '../strings';
 import { addWipeStep } from './local-wipe';
 import { policies } from './policies';
 import type { Feature, FeatureContext } from '.';
+import { showMessageBox } from '../message-box';
 
 const AUTH_SERVER_SWITCH = 'auth-server-whitelist';
 const AUTH_DELEGATE_SWITCH = 'auth-negotiate-delegate-whitelist';
@@ -113,7 +114,7 @@ async function askInDialog(question: PickQuestion<Certificate>, window: unknown,
       ...(question.rememberable ? { checkboxLabel: fill(text.certificateRemember, { host }), checkboxChecked: false } : {}),
     };
     const parent = dialogParent(window, ctx);
-    const { response, checkboxChecked } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+    const { response, checkboxChecked } = await (parent ? showMessageBox(parent, options) : showMessageBox(options));
     if (signal.aborted) return { certificate: null, remember: false };
     if (response < shown.length) return { certificate: shown[response], remember: checkboxChecked };
     if (response === none) return { certificate: null, remember: false };

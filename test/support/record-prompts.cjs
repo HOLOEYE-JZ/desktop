@@ -4,6 +4,8 @@ const { appendFileSync } = require('node:fs');
 const { dialog } = require('electron');
 
 const log = process.env.BULWARK_TEST_PROMPTS;
+// The app's own prompt windows come here too (src/main/message-box.ts).
+globalThis.__bulwarkNativePrompts = true;
 dialog.showMessageBox = async (...args) => {
   const { message } = args[args.length - 1];
   appendFileSync(log, `${message}\n`);

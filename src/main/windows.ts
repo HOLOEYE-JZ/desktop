@@ -17,11 +17,12 @@
 
 import { wipeUnderWay } from './features/local-wipe';
 import { EventEmitter } from 'node:events';
-import { BrowserWindow, dialog, screen, type BrowserWindowConstructorOptions, type Session, type WebContents, type WebPreferences } from 'electron';
+import { app, BrowserWindow, screen, type BrowserWindowConstructorOptions, type Session, type WebContents, type WebPreferences } from 'electron';
 import { CHANNEL, PRELOAD_ARG, type FlushAnswer, type Mode, type WindowInfo, type WindowType } from '../shared/bridge';
 import type { SessionWindow, StateFile } from './state';
 import { keystoreOffByPolicy } from './keystore-policy';
 import { native } from './native';
+import { showMessageBox } from './message-box';
 import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
 import { fitInto, isOnSomeDisplay, placeWindow, type Rect } from './window-placement';
@@ -132,6 +133,8 @@ export interface ManagedWindow {
    * 0xffff7003), which happens when its page finishes loading just as it's closed.
    */
   closing?: boolean;
+  /** The user said Leave to the page's unsaved-changes question: the next unload goes through. */
+  leaveConfirmed?: boolean;
   /** What this window's open drafts come back as next time. */
   restoreUrls?: string[];
   /** When its page died lately. */
@@ -435,10 +438,11 @@ export class WindowManager extends EventEmitter<{
         return;
       }
       event.preventDefault();
-      void this.flushWindow(managed).then((answers) => {
+      void this.flushWindow(managed).then(async (answers) => {
         if (window.isDestroyed()) return;
         const { failed, unsent } = sumAnswers(answers);
-        if (!this.confirmLeaving(window, failed, this.isLastOnScreen(managed) ? unsent : 0)) return;
+        if (!(await this.confirmLeaving(window, failed, this.isLastOnScreen(managed) ? unsent : 0))) return;
+        if (window.isDestroyed()) return;
         managed.flushed = true;
         window.close();
       });
@@ -462,15 +466,20 @@ export class WindowManager extends EventEmitter<{
     });
     if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
+    // The question is a window of the app's own, which can't answer Chromium while it
+    // waits: the unload stops here, and a Leave starts it again (a close, a quit or a reload).
     webContents.on('will-prevent-unload', (event) => {
-      if (wipeUnderWay()) {
+      if (wipeUnderWay() || managed.leaveConfirmed) {
+        managed.leaveConfirmed = false;
         event.preventDefault();
         return;
       }
+      const closing = !!managed.closing;
+      const quitting = this.quitting;
       const text = strings();
       if (window.isMinimized()) window.restore();
       if (!window.isVisible()) window.show();
-      const choice = dialog.showMessageBoxSync(window, {
+      void showMessageBox(window, {
         type: 'question',
         title: 'Bulwark',
         message: text.leaveTitle,
@@ -479,17 +488,22 @@ export class WindowManager extends EventEmitter<{
         defaultId: 1,
         cancelId: 1,
         noLink: true,
+      }).then(({ response }) => {
+        if (window.isDestroyed()) return;
+        if (response === 0) {
+          managed.leaveConfirmed = true;
+          if (quitting) app.quit();
+          else if (closing) window.close();
+          else webContents.reload();
+          return;
+        }
+        for (const other of this.windows.values()) {
+          other.flushed = false;
+          other.closing = false;
+        }
+        this.quitting = false;
+        this.emit('stayed');
       });
-      if (choice === 0) {
-        event.preventDefault();
-        return;
-      }
-      for (const other of this.windows.values()) {
-        other.flushed = false;
-        other.closing = false;
-      }
-      this.quitting = false;
-      this.emit('stayed');
     });
     window.once('closed', () => {
       this.windows.delete(window.id);
@@ -505,13 +519,13 @@ export class WindowManager extends EventEmitter<{
   }
 
   /** True if the window may go. A prompt only when something would be lost. */
-  private confirmLeaving(window: BrowserWindow, failed: number, unsent: number): boolean {
+  private async confirmLeaving(window: BrowserWindow, failed: number, unsent: number): Promise<boolean> {
     if (failed === 0 && unsent === 0) return true;
     // A hidden main window asking would leave Stay with nothing on screen.
     if (window.isMinimized()) window.restore();
     if (!window.isVisible()) window.show();
     const text = strings();
-    const choice = dialog.showMessageBoxSync(window, {
+    const { response: choice } = await showMessageBox(window, {
       type: 'warning',
       title: 'Bulwark',
       message: failed > 0 ? text.unsavedTitle : text.unsentTitle,

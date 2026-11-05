@@ -3,11 +3,16 @@
  * window, modal to it, holding a card drawn like the app's in-page dialog. It feels like
  * an app window rather than a box inside the page, and still looks like Bulwark.
  *
+ * Two kinds ask: a page through the bridge (dialogs.show), and the shell itself through
+ * message-box.ts, which stands in for Electron's dialog.showMessageBox. A shell question
+ * may have no window to hang on (the app starting, every window hidden): it is a window of
+ * its own then, centred on the screen and in the taskbar.
+ *
  * The window loads only the shell's own data: page (src/pages/dialog.html), with no node,
- * isolated and sandboxed, on a session of its own. It gets its text through
- * src/preload/dialog.ts and draws it with textContent. Its answer goes to the call that
- * asked and nowhere else. One dialog per window at a time; the next waits. A page that
- * navigates away, or a window that closes, cancels its dialogs.
+ * isolated and sandboxed, on a session of its own. It works without the webmail's server.
+ * It gets its text through src/preload/dialog.ts and draws it with textContent. Its answer
+ * goes to the call that asked and nowhere else. One dialog per asker at a time; the next
+ * waits. A page that navigates away, or a window that closes, cancels its dialogs.
  *
  * macOS: `modal` would make it a sheet sliding out of the title bar, so there the parent
  * is disabled by hand instead.
@@ -30,8 +35,11 @@ export const MAX_DIALOGS_PER_PAGE = 3;
 interface Entry {
   id: string;
   spec: DialogSpec;
-  sender: WebContents;
-  parent: BrowserWindow;
+  /** Whose queue it is in: a page, or the shell for a window (or for none). */
+  owner: string;
+  /** The page that asked; none for the shell's own questions. */
+  sender: WebContents | null;
+  parent: BrowserWindow | null;
   resolve: (answer: DialogWindowAnswer) => void;
   window?: BrowserWindow;
   settled: boolean;
@@ -53,12 +61,20 @@ function dialogSession(): Electron.Session {
   return session;
 }
 
+/** A window a dialog can hang on: there, and on screen. */
+function usableParent(parent: BrowserWindow | null | undefined): BrowserWindow | null {
+  return parent && !parent.isDestroyed() && parent.isVisible() && !parent.isMinimized() ? parent : null;
+}
+
+let shellCounter = 0;
+
 export class DialogWindows {
-  /** By the asking page's webContents id: the showing dialog first, then those waiting. */
-  private queues = new Map<number, Entry[]>();
+  /** By asker: the showing dialog first, then those waiting. */
+  private queues = new Map<string, Entry[]>();
   /** By the dialog window's webContents id. */
   private shown = new Map<number, Entry>();
   private watched = new WeakSet<WebContents>();
+  private watchedParents = new WeakSet<BrowserWindow>();
   private session: Electron.Session | null = null;
 
   constructor() {
@@ -80,69 +96,106 @@ export class DialogWindows {
     return entry.window?.webContents === event.sender ? entry : undefined;
   }
 
-  /** Asks in a window over `parent`. Resolves with the answer, or null when it went unanswered. */
+  /** A page asks in a window over `parent`. Resolves with the answer, or null when it went unanswered. */
   ask(sender: WebContents, parent: BrowserWindow | null, request: unknown): Promise<DialogWindowAnswer> {
     const spec = readDialogRequest(request);
     if (!spec) return Promise.reject(new Error('Not a question'));
     if (!parent || parent.isDestroyed() || sender.isDestroyed()) return Promise.resolve(null);
-    const queue = this.queues.get(sender.id) ?? [];
+    const owner = `page:${sender.id}`;
+    const queue = this.queues.get(owner) ?? [];
     if (queue.length >= MAX_DIALOGS_PER_PAGE) return Promise.resolve(null);
     // A second dialog with the same name would make cancel() ambiguous.
     if (queue.some((entry) => entry.id === spec.id)) return Promise.reject(new Error('Already asking'));
-    this.watch(sender, parent);
+    this.watch(sender, owner);
+    this.watchParent(parent, owner);
+    // Over the page the same dialog closes on a click on its backdrop.
+    return this.enqueue(owner, { ...spec, outsideCancels: true }, sender, parent);
+  }
+
+  /**
+   * The shell asks (message-box.ts): over `parent` when it is on screen, else in a window
+   * of its own. `signal` takes the question back.
+   */
+  askShell(parent: BrowserWindow | null, request: object, signal?: AbortSignal): Promise<DialogWindowAnswer> {
+    shellCounter += 1;
+    const spec = readDialogRequest({ ...request, id: `shell-${shellCounter}` }, { shell: true });
+    if (!spec) return Promise.reject(new Error('Not a question'));
+    if (signal?.aborted) return Promise.resolve(null);
+    const hangOn = usableParent(parent);
+    const owner = hangOn ? `shell:${hangOn.id}` : 'shell';
+    if (hangOn) this.watchParent(hangOn, owner);
+    const asked = this.enqueue(owner, spec, null, hangOn);
+    signal?.addEventListener('abort', () => {
+      const entry = this.queues.get(owner)?.find((candidate) => candidate.id === spec.id);
+      if (entry) this.settle(entry, null);
+    }, { once: true });
+    return asked;
+  }
+
+  private enqueue(owner: string, spec: DialogSpec & { id: string }, sender: WebContents | null, parent: BrowserWindow | null): Promise<DialogWindowAnswer> {
+    const queue = this.queues.get(owner) ?? [];
     return new Promise((resolve) => {
       const { id, ...rest } = spec;
-      queue.push({ id, spec: rest, sender, parent, resolve, settled: false });
-      this.queues.set(sender.id, queue);
+      queue.push({ id, spec: rest, owner, sender, parent, resolve, settled: false });
+      this.queues.set(owner, queue);
       if (queue.length === 1) this.show(queue[0]);
     });
   }
 
   /** The page took its question back (the in-page state it belonged to went). */
   cancel(sender: WebContents, id: unknown): void {
-    const entry = this.queues.get(sender.id)?.find((candidate) => candidate.id === id);
+    const entry = this.queues.get(`page:${sender.id}`)?.find((candidate) => candidate.id === id);
     if (entry) this.settle(entry, null);
   }
 
-  private cancelAll(senderId: number): void {
-    for (const entry of [...(this.queues.get(senderId) ?? [])]) this.settle(entry, null);
+  private cancelAll(owner: string): void {
+    for (const entry of [...(this.queues.get(owner) ?? [])]) this.settle(entry, null);
   }
 
-  private watch(sender: WebContents, parent: BrowserWindow): void {
+  private watch(sender: WebContents, owner: string): void {
     if (this.watched.has(sender)) return;
     this.watched.add(sender);
-    const id = sender.id;
     // A new document: whatever asked is gone. A route change inside the app isn't one.
     sender.on('did-start-navigation', (details) => {
-      if (details.isMainFrame && !details.isSameDocument) this.cancelAll(id);
+      if (details.isMainFrame && !details.isSameDocument) this.cancelAll(owner);
     });
-    sender.on('render-process-gone', () => this.cancelAll(id));
-    sender.once('destroyed', () => this.cancelAll(id));
-    parent.once('closed', () => this.cancelAll(id));
+    sender.on('render-process-gone', () => this.cancelAll(owner));
+    sender.once('destroyed', () => this.cancelAll(owner));
+  }
+
+  /** A window that closes takes every question hanging on it with it, whoever asked. */
+  private watchParent(parent: BrowserWindow, owner: string): void {
+    if (this.watchedParents.has(parent)) return;
+    this.watchedParents.add(parent);
+    parent.once('closed', () => {
+      this.cancelAll(owner);
+      for (const queue of [...this.queues.values()]) {
+        for (const entry of [...queue]) if (entry.parent === parent) this.settle(entry, null);
+      }
+    });
   }
 
   private show(entry: Entry): void {
     const { parent } = entry;
     if (entry.settled) return;
-    if (parent.isDestroyed()) {
+    if (parent?.isDestroyed()) {
       this.settle(entry, null);
       return;
     }
-    // A window still on its way up: the question comes with it, not on its own before it.
-    if (!parent.isVisible()) {
+    // A page's window still on its way up: the question comes with it, not on its own before it.
+    if (parent && entry.sender && !parent.isVisible()) {
       parent.once('show', () => this.show(entry));
       return;
     }
     this.session ??= dialogSession();
     // The page's zoom goes to the card as CSS zoom, so it is there before the card is
     // measured; Chromium's own zoom would come later. The window itself stays at 100%.
-    const zoom = dialogZoom(entry.sender.getZoomFactor());
+    const zoom = entry.sender && !entry.sender.isDestroyed() ? dialogZoom(entry.sender.getZoomFactor()) : 1;
     entry.spec = { ...entry.spec, zoom };
-    const workArea = screen.getDisplayMatching(parent.getBounds()).workArea;
+    const workArea = (parent ? screen.getDisplayMatching(parent.getBounds()) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint())).workArea;
     const mac = process.platform === 'darwin';
     const window = new BrowserWindow({
-      parent,
-      modal: !mac,
+      ...(parent ? { parent, modal: !mac } : {}),
       show: false,
       frame: false,
       transparent: true,
@@ -152,7 +205,8 @@ export class DialogWindows {
       minimizable: false,
       maximizable: false,
       fullscreenable: false,
-      skipTaskbar: true,
+      // Without a window behind it, it is one the user has to be able to find.
+      skipTaskbar: !!parent,
       title: entry.spec.title,
       width: Math.ceil((DIALOG_CARD_WIDTH + 2 * DIALOG_SHADOW_MARGIN) * zoom),
       height: Math.min(workArea.height, 900),
@@ -180,11 +234,11 @@ export class DialogWindows {
       this.shown.delete(contentsId);
       this.settle(entry, null);
     });
-    if (mac) parent.setEnabled(false);
+    if (mac && parent) parent.setEnabled(false);
     void window.loadURL(dialogPageUrl());
   }
 
-  /** The page measured its card: size the window to it, centre it on the parent, show it. */
+  /** The page measured its card: size the window to it, centre it on the parent (or the screen), show it. */
   private ready(event: IpcMainEvent, size: unknown): void {
     const entry = this.fromDialog(event);
     const window = entry?.window;
@@ -193,8 +247,9 @@ export class DialogWindows {
     const content = (size && typeof size === 'object' ? size : {}) as { width?: unknown; height?: unknown };
     const width = typeof content.width === 'number' && content.width > 0 ? Math.min(content.width, 6000) : DIALOG_CARD_WIDTH + 2 * DIALOG_SHADOW_MARGIN;
     const height = typeof content.height === 'number' && content.height > 0 ? Math.min(content.height, 6000) : 300;
-    const parentBounds = entry.parent.getBounds();
-    window.setBounds(dialogBounds({ width, height }, parentBounds, screen.getDisplayMatching(parentBounds).workArea));
+    const parent = entry.parent && !entry.parent.isDestroyed() ? entry.parent : null;
+    const display = parent ? screen.getDisplayMatching(parent.getBounds()) : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    window.setBounds(dialogBounds({ width, height }, parent ? parent.getBounds() : display.workArea, display.workArea));
     if (window.isVisible()) return;
     window.show();
     window.focus();
@@ -203,23 +258,31 @@ export class DialogWindows {
   private settle(entry: Entry, answer: DialogWindowAnswer): void {
     if (entry.settled) return;
     entry.settled = true;
-    const queue = this.queues.get(entry.sender.id) ?? [];
+    const queue = this.queues.get(entry.owner) ?? [];
     const index = queue.indexOf(entry);
     const wasShowing = index === 0;
     if (index >= 0) queue.splice(index, 1);
-    if (queue.length === 0) this.queues.delete(entry.sender.id);
+    if (queue.length === 0) this.queues.delete(entry.owner);
     const { window, parent } = entry;
     if (window) {
       for (const [id, shown] of this.shown) if (shown === entry) this.shown.delete(id);
-      if (process.platform === 'darwin' && !parent.isDestroyed()) parent.setEnabled(true);
+      if (process.platform === 'darwin' && parent && !parent.isDestroyed()) parent.setEnabled(true);
       if (!window.isDestroyed()) window.destroy();
-      // The focus goes back to the page, where it was before.
-      if (!parent.isDestroyed() && !entry.sender.isDestroyed()) {
+      // The focus goes back to the window behind, where it was before.
+      if (parent && !parent.isDestroyed()) {
         parent.focus();
-        entry.sender.focus();
+        if (entry.sender && !entry.sender.isDestroyed()) entry.sender.focus();
       }
     }
     entry.resolve(answer);
     if (wasShowing && queue.length > 0) this.show(queue[0]);
   }
+}
+
+let instance: DialogWindows | null = null;
+
+/** The one set of dialog windows: its IPC handlers exist once. */
+export function dialogWindows(): DialogWindows {
+  instance ??= new DialogWindows();
+  return instance;
 }

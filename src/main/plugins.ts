@@ -8,12 +8,13 @@
  * refuses here, and the webmail enforces the same in its install path.
  */
 
-import { dialog, type BrowserWindow } from 'electron';
+import { type BrowserWindow } from 'electron';
 import type { PluginInstallResult } from '../shared/bridge';
 import type { LocalAdmin } from './local-admin';
 import { keystoreTextFor } from './keystore-strings';
 import { pluginFacts, pluginPrompt, type PluginDetail } from './plugin-prompt';
 import { strings, uiLanguageNow } from './strings';
+import { showMessageBox } from './message-box';
 
 const SLUG = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 
@@ -42,7 +43,7 @@ export async function installPlugin(
 
     const { permission: pluginKeystore, newPermissions: pluginNewPermissions } = keystoreTextFor(uiLanguageNow());
     const box = pluginPrompt(facts, { ...strings(), pluginKeystore, pluginNewPermissions });
-    const { response } = parent ? await dialog.showMessageBox(parent, box) : await dialog.showMessageBox(box);
+    const { response } = parent ? await showMessageBox(parent, box) : await showMessageBox(box);
     if (response !== 0) return { ok: false, error: 'cancelled' };
 
     // The prompt above showed these: the server refuses an update that adds more than it was told.

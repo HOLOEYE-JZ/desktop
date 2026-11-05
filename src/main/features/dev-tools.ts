@@ -14,7 +14,7 @@
  * menu item below, and a devtools window that opens any other way is closed again.
  */
 
-import { BrowserWindow, dialog, type MenuItemConstructorOptions, type WebContents } from 'electron';
+import { BrowserWindow, type MenuItemConstructorOptions, type WebContents } from 'electron';
 import { CHANNEL, type DevToolsState } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { devToolsTextFor } from '../devtools-strings';
@@ -23,6 +23,7 @@ import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { policies } from './policies';
 import { devToolsForcedOffBy, devToolsUsable, isDevToolsKey } from './dev-tools-rules';
 import type { Feature, FeatureContext } from '.';
+import { showMessageBox } from '../message-box';
 
 // Set by build.mjs.
 declare const __BULWARK_TEST_BUILD__: boolean;
@@ -124,7 +125,7 @@ function setup(ctx: FeatureContext): void {
       message: text.title,
       detail: text.detail,
     };
-    const { response } = window ? await dialog.showMessageBox(window, options) : await dialog.showMessageBox(options);
+    const { response } = window ? await showMessageBox(window, options) : await showMessageBox(options);
     // The answer counts only if nothing changed while the question was up.
     if (response === 0 && !appLockGate.locked && !devToolsForcedOff()) {
       store(true);

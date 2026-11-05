@@ -30,6 +30,23 @@ function icon(name, size) {
   return svg;
 }
 
+/**
+ * How far the card's shadow reaches past it, the furthest side, from the shadow as drawn:
+ * offset, blur and spread of each layer. At least 32 px: the window leaves that much
+ * transparent room on every side, so no edge of the shadow is cut off.
+ */
+function shadowReach(element) {
+  let reach = 0;
+  const shadow = getComputedStyle(element).boxShadow || '';
+  for (const layer of shadow.split(/,(?![^(]*\))/)) {
+    if (/\binset\b/.test(layer)) continue;
+    const lengths = (layer.replace(/rgba?\([^)]*\)|#[0-9a-f]+|[a-z-]+\([^)]*\)/gi, '').match(/-?[\d.]+px/g) || []).map(parseFloat);
+    const [x = 0, y = 0, blur = 0, spread = 0] = lengths;
+    reach = Math.max(reach, blur + spread + Math.abs(x), blur + spread + Math.abs(y));
+  }
+  return Math.max(32, Math.ceil(reach));
+}
+
 let answered = false;
 function answer(value) {
   if (answered) return;
@@ -118,10 +135,10 @@ async function main() {
   const head = byId('head');
   byId('title').textContent = spec.title;
 
-  if (spec.icon === 'warning') {
+  if (spec.icon === 'warning' || spec.icon === 'error') {
     card.classList.add('with-icon');
     const badge = document.createElement('div');
-    badge.className = 'badge';
+    badge.className = spec.icon === 'error' ? 'badge error' : 'badge';
     badge.append(icon('warning', 20));
     head.prepend(badge);
   }
@@ -148,21 +165,60 @@ async function main() {
       message.append(document.createTextNode(run.text));
     }
   }
+  const links = spec.buttons.some((button) => button.variant === 'link');
   if (spec.message.length > 0) {
     card.setAttribute('aria-describedby', 'message');
-  } else {
+  } else if (!links) {
     byId('body').remove();
   }
 
+  // A choice of several (a certificate each): rows in the body, a name and a line below.
+  const list = links ? document.createElement('div') : null;
+  if (list) {
+    list.className = 'links';
+    list.setAttribute('role', 'group');
+    byId('body').append(list);
+  }
+
   const foot = byId('foot');
+  // A checkbox ("Remember for this server") on the footer's start.
+  let checkbox = null;
+  if (spec.checkbox) {
+    const label = document.createElement('label');
+    label.className = 'check';
+    checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = spec.checkbox.checked;
+    const text = document.createElement('span');
+    text.textContent = spec.checkbox.label;
+    label.append(checkbox, text);
+    foot.append(label);
+  }
+  const pick = (index) => answer(checkbox ? { button: index, checked: checkbox.checked } : { button: index });
   const buttons = spec.buttons.map((spec, index) => {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = `button ${spec.variant}`;
-    button.textContent = spec.label;
     button.dataset.index = String(index);
-    button.addEventListener('click', () => answer({ button: index }));
-    foot.append(button);
+    button.addEventListener('click', () => pick(index));
+    if (spec.variant === 'link') {
+      const [first, ...rest] = spec.label.split('\n');
+      button.className = 'link';
+      const title = document.createElement('span');
+      title.className = 'link-title';
+      title.textContent = first;
+      button.append(title);
+      if (rest.length > 0) {
+        const detail = document.createElement('span');
+        detail.className = 'link-detail';
+        detail.textContent = rest.join(' ');
+        button.append(detail);
+      }
+      list.append(button);
+    } else {
+      button.className = `button ${spec.variant}`;
+      button.textContent = spec.label;
+      foot.append(button);
+    }
     return button;
   });
   const fallback = buttons[spec.defaultIndex];
@@ -196,6 +252,23 @@ async function main() {
     }
   });
 
+  // Room for the whole shadow on every side: the card in the middle of a transparent margin.
+  const margin = shadowReach(card);
+  document.body.style.padding = `${margin}px`;
+
+  // A click beside the card: as over the page, where the same dialog closes on a click on
+  // the dimmed backdrop. The shell's own questions don't, as before.
+  if (spec.outsideCancels) {
+    let pressedOutside = false;
+    document.addEventListener('mousedown', (event) => {
+      pressedOutside = !card.contains(event.target);
+    });
+    document.addEventListener('click', (event) => {
+      if (pressedOutside && !card.contains(event.target)) answer(null);
+      pressedOutside = false;
+    });
+  }
+
   await document.fonts?.ready;
   fallback.focus();
   // The scale the card is drawn at, as measured: the zoom asked for, and whatever the
@@ -205,14 +278,15 @@ async function main() {
   // No taller than the window: a long text scrolls between the title and the buttons.
   // Lengths inside the zoomed body are multiplied by the scale, the window's height isn't.
   const clamp = () => {
-    card.style.maxHeight = `${Math.max(120, window.innerHeight / scale - 48)}px`;
+    card.style.maxHeight = `${Math.max(120, window.innerHeight / scale - 2 * margin)}px`;
     if (body) body.tabIndex = scrollable() ? 0 : -1;
   };
   // The card's own size with its margin, so main can size the window to it. A pixel
   // more: the window's size is rounded to the screen's pixels, and a pixel less makes
   // the text scroll.
-  const margin = 24 * scale;
-  window.bulwarkDialog.ready({ width: Math.ceil(box.width + 2 * margin), height: Math.ceil(box.height + 2 * margin) + 1 });
+  // The card as it stands, its margin as drawn on the start and top: the same on the end
+  // and bottom, so the card stays in the middle of its window.
+  window.bulwarkDialog.ready({ width: Math.ceil(box.width + 2 * box.left), height: Math.ceil(box.height + 2 * box.top) + 1 });
   window.addEventListener('resize', clamp);
   clamp();
 }

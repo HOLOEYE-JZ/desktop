@@ -16,6 +16,11 @@ export const DIALOG_LIMITS = {
   source: 200,
   label: 40,
   buttons: 4,
+  /** The shell's own questions: a certificate choice has a row per certificate. */
+  shellButtons: 10,
+  /** A row of a choice: a name and a line below. */
+  linkLabel: 300,
+  checkbox: 200,
   menuItems: 4,
   menuLabel: 120,
 };
@@ -26,9 +31,12 @@ export interface DialogSpec {
   title: string;
   message: { text: string; bold: boolean }[];
   source?: string;
-  icon?: 'warning';
-  buttons: { label: string; variant: 'primary' | 'secondary' | 'destructive' }[];
+  icon?: 'warning' | 'error';
+  buttons: { label: string; variant: 'primary' | 'secondary' | 'destructive' | 'link' }[];
   defaultIndex: number;
+  checkbox?: { label: string; checked: boolean };
+  /** A click beside the card answers nothing, as a click on the page's backdrop does. Set by main for a page's questions. */
+  outsideCancels?: boolean;
   menu?: { label: string; items: { id: string; label: string; destructive: boolean }[] };
   theme: DialogLook;
   lang: string;
@@ -121,7 +129,11 @@ export function readLook(value: unknown): DialogLook {
 }
 
 /** Null when it isn't a question that can be drawn: no title, no buttons. */
-export function readDialogRequest(value: unknown): (DialogSpec & { id: string }) | null {
+/**
+ * `shell`: one of the shell's own questions (message-box.ts), which may have more buttons,
+ * rows of a choice ('link') and a checkbox. A page's request gets none of that.
+ */
+export function readDialogRequest(value: unknown, { shell = false }: { shell?: boolean } = {}): (DialogSpec & { id: string }) | null {
   if (!value || typeof value !== 'object') return null;
   const request = value as Partial<Record<keyof DialogWindowRequest, unknown>>;
   if (typeof request.id !== 'string' || !request.id || request.id.length > DIALOG_LIMITS.id) return null;
@@ -129,8 +141,15 @@ export function readDialogRequest(value: unknown): (DialogSpec & { id: string })
   if (!title || !Array.isArray(request.buttons)) return null;
 
   const buttons: DialogSpec['buttons'] = [];
-  for (const raw of request.buttons.slice(0, DIALOG_LIMITS.buttons)) {
+  for (const raw of request.buttons.slice(0, shell ? DIALOG_LIMITS.shellButtons : DIALOG_LIMITS.buttons)) {
     const button = (raw && typeof raw === 'object' ? raw : {}) as { label?: unknown; variant?: unknown };
+    if (shell && button.variant === 'link') {
+      // A name and a line below it, each one line.
+      const lines = typeof button.label === 'string' ? button.label.split('\n').slice(0, 3).map((line) => oneLine(line, DIALOG_LIMITS.linkLabel)).filter(Boolean) : [];
+      if (lines.length === 0) return null;
+      buttons.push({ label: lines.join('\n'), variant: 'link' });
+      continue;
+    }
     const label = oneLine(button.label, DIALOG_LIMITS.label);
     if (!label) return null;
     const variant = button.variant === 'secondary' || button.variant === 'destructive' ? button.variant : 'primary';
@@ -163,6 +182,9 @@ export function readDialogRequest(value: unknown): (DialogSpec & { id: string })
   }
 
   const source = oneLine(request.source, DIALOG_LIMITS.source) || undefined;
+  const rawCheckbox = (shell && request.checkbox && typeof request.checkbox === 'object' ? request.checkbox : null) as { label?: unknown; checked?: unknown } | null;
+  const checkboxLabel = rawCheckbox ? oneLine(rawCheckbox.label, DIALOG_LIMITS.checkbox) : '';
+  const checkbox = checkboxLabel ? { label: checkboxLabel, checked: rawCheckbox?.checked === true } : undefined;
   const defaultIndex = typeof request.defaultIndex === 'number' && Number.isInteger(request.defaultIndex) && request.defaultIndex >= 0 && request.defaultIndex < buttons.length
     ? request.defaultIndex
     : buttons.length - 1;
@@ -172,9 +194,10 @@ export function readDialogRequest(value: unknown): (DialogSpec & { id: string })
     title,
     message,
     ...(source ? { source } : {}),
-    ...(request.icon === 'warning' ? { icon: 'warning' as const } : {}),
+    ...(request.icon === 'warning' ? { icon: 'warning' as const } : shell && request.icon === 'error' ? { icon: 'error' as const } : {}),
     buttons,
     defaultIndex,
+    ...(checkbox ? { checkbox } : {}),
     ...(menu ? { menu } : {}),
     theme: readLook(request.theme),
     lang: typeof request.lang === 'string' && LANG.test(request.lang) ? request.lang : 'en',
@@ -186,14 +209,16 @@ export function readDialogRequest(value: unknown): (DialogSpec & { id: string })
 export function readDialogAnswer(value: unknown, spec: DialogSpec): DialogWindowAnswer | undefined {
   if (value === null) return null;
   if (!value || typeof value !== 'object') return undefined;
-  const answer = value as { button?: unknown; menu?: unknown };
-  if (typeof answer.button === 'number' && Number.isInteger(answer.button) && answer.button >= 0 && answer.button < spec.buttons.length) return { button: answer.button };
+  const answer = value as { button?: unknown; menu?: unknown; checked?: unknown };
+  if (typeof answer.button === 'number' && Number.isInteger(answer.button) && answer.button >= 0 && answer.button < spec.buttons.length) {
+    return spec.checkbox ? { button: answer.button, checked: answer.checked === true } : { button: answer.button };
+  }
   if (typeof answer.menu === 'string' && spec.menu?.items.some((item) => item.id === answer.menu)) return { menu: answer.menu };
   return undefined;
 }
 
 /** The window around the card: room for its shadow on each side, in CSS px before the zoom. */
-export const DIALOG_SHADOW_MARGIN = 24;
+export const DIALOG_SHADOW_MARGIN = 48;
 export const DIALOG_CARD_WIDTH = 448;
 
 /** Zoom the card follows, kept to what a page can be zoomed to. */

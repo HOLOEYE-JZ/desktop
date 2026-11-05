@@ -13,7 +13,7 @@
  * senderAllowed refusing a frame, before anything here runs.
  */
 
-import { BrowserWindow, dialog, powerMonitor, type IpcMainInvokeEvent } from 'electron';
+import { BrowserWindow, powerMonitor, type IpcMainInvokeEvent } from 'electron';
 import { CHANNEL, type KeystoreResult } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { createKeystoreGate, KeystoreConsent, originInList, type ConsentAnswer, type ConsentQuestion, type InstanceAccess, type UseOptions } from '../keystore-consent';
@@ -25,6 +25,7 @@ import { keystoreErrorCode } from '../native-loader';
 import type { StateFile } from '../state';
 import { uiLanguageNow } from '../strings';
 import type { Feature } from './index';
+import { showMessageBox } from '../message-box';
 
 /** KeystoreAllowedOrigins from OS policy, read at each use. Set by features/policies.ts. */
 let allowedByPolicy: () => readonly unknown[] = () => [];
@@ -63,7 +64,7 @@ async function askInDialog(question: ConsentQuestion, window: unknown, standalon
   const deny = answers.indexOf('deny');
   const options = { type: 'question' as const, message, detail, buttons, defaultId: deny, cancelId: deny, noLink: true };
   const parent = window instanceof BrowserWindow && !window.isDestroyed() ? window : null;
-  const { response } = await (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+  const { response } = await (parent ? showMessageBox(parent, options) : showMessageBox(options));
   return answers[response] ?? 'deny';
 }
 
