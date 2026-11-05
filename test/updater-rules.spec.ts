@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { acceptDownload, compareVersions, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
+import { acceptDownload, compareVersions, differentialDownloads, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
 import { LABEL_KEY } from '../src/main/label-keys';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
@@ -151,6 +151,20 @@ test.describe('the beta feed', () => {
     expect(newestReleaseInFeed(entry('v1.1.0') + entry('v1.1.0-rc.1') + entry('v1.1.0-beta.2'))).toBe('1.1.0');
     expect(newestReleaseInFeed(entry('v9.0.0-alpha.1') + entry('v1.0.0') + entry('nightly'))).toBe('1.0.0');
     expect(newestReleaseInFeed('<feed></feed>')).toBeNull();
+  });
+});
+
+test.describe('differential downloads', () => {
+  test('on Windows only, where the release has blockmaps, and each range in a request of its own', () => {
+    expect(differentialDownloads('win32')).toBe(true);
+    for (const platform of ['darwin', 'linux'] as const) expect(differentialDownloads(platform), platform).toBe(false);
+    const updater = readFileSync(path.join(ROOT, 'src', 'main', 'features', 'updater.ts'), 'utf8');
+    expect(updater).toContain('autoUpdater.disableDifferentialDownload = !differentialDownloads(process.platform);');
+    // GitHub's download servers answer one range at a time; the github provider knows, the
+    // generic one the beta channel uses has to be told.
+    expect(updater).toMatch(/provider: 'generic', url: [^\n]*useMultipleRangeRequest: false \}/);
+    // A download given up on settles: its requests end with an error, not only an abort.
+    expect(updater).toContain("if (request.listenerCount('error') > 0) request.emit('error'");
   });
 });
 

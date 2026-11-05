@@ -13,8 +13,12 @@
 ; the banner is up, the BulwarkSplash plugin (native/nsis-splash, built into
 ; build/x86-unicode by scripts/build-nsis-splash.mjs) takes the window over and paints it
 ; itself. NSIS has no way to handle a window message from a script, and dragging, painting
-; without flicker and a live percent all need one. The page's own progress bar stays,
-; hidden: NSIS keeps moving it and the plugin reads it.
+; without flicker and a live percent all need one.
+;
+; One bar for the whole run, with a line under it saying what's happening ("Unpacking
+; files…"). NSIS's own bar restarted with each part, so it reached 100 % during the
+; unpacking, fell back and filled again. Now this script tells the window each step and its
+; share of the bar (bulwarkStep below), and the plugin keeps the bar moving forward only.
 ;
 ; The uninstaller used to ask "Are you sure…?" and then run hidden. Started by a person (no
 ; /S), it now asks nothing and shows this window while it removes the files. Updates run it
@@ -24,7 +28,8 @@
 ; second. Only SilentInstall can hide it, and that also hides the "integrity check failed"
 ; message, so a broken download would close without a word.
 ;
-; Nothing here changes what gets installed or written: only the window.
+; Nothing here changes what gets installed or written: only the window. What makes the run
+; quicker is in installer-speed.nsh and installer-extract.nsh.
 ;
 ; installer.nsh includes this. makensis runs with -WX, so a function or variable that one of
 ; the two passes (installer, uninstaller) doesn't use would fail the build: each is only
@@ -47,6 +52,114 @@ ManifestDPIAware true
 
 !addplugindir /x86-unicode "${BULWARK_THEME_DIR}\x86-unicode"
 !include "${BULWARK_THEME_DIR}\installer-strings.nsh"
+!include "${BULWARK_THEME_DIR}\installer-speed.nsh"
+
+; The steps: from and to in percent of the bar, and the usual time in tenths of a second, by
+; which the bar moves on inside a step that reports no progress of its own. Shares follow the
+; times measured on a "Bulwark Test" build (Windows 11, Defender on, medians of 5):
+;
+;   fresh install   the installer's copy of the 7z 0.4 s, unpacking 2.5 s, moving the files
+;                   in 0.04 s, its copy for the next update, the uninstaller, the uninstall
+;                   entry and the shortcut 0.2 s, Bulwark's registration under 0.1 s
+;   update          the same, after the old version's uninstaller: 1.4 s, or about 10 s for
+;                   one from before installer-speed.nsh, whose share then sits near its end
+;   uninstall       about 3 s from the window to the folder gone
+;
+; The first step comes once the window is up, after the integrity check.
+!define BULWARK_STEP_SPLASH_STEP 0x8043
+!define BULWARK_STEP_SPLASH_PROGRESS 0x8044
+!define BULWARK_STEP_FRESH_PAYLOAD "0 12 4"
+!define BULWARK_STEP_FRESH_UNPACK "12 86 25"
+!define BULWARK_STEP_FRESH_PLACE "86 88 1"
+!define BULWARK_STEP_FRESH_SHORTCUTS "88 93 2"
+!define BULWARK_STEP_UPDATE_OLD "0 30 14"
+!define BULWARK_STEP_UPDATE_UNPACK "30 86 25"
+!define BULWARK_STEP_UPDATE_PLACE "86 88 1"
+!define BULWARK_STEP_UPDATE_SHORTCUTS "88 93 2"
+!define BULWARK_STEP_REGISTER "93 97 2"
+!define BULWARK_STEP_START "97 100 2"
+!define BULWARK_STEP_DONE "100 100 0"
+!define BULWARK_STEP_UN_WINDOWS "0 15 3"
+!define BULWARK_STEP_UN_FILES "15 100 30"
+
+; One step: from, to, tenths, the line under the bar ("" keeps the one shown). The window
+; copies the line before SendMessage returns. Nothing without a window.
+!macro bulwarkStep FROM TO TENTHS TEXT
+  ${IfNot} ${Silent}
+    Push $R9
+    IntOp $R9 ${TENTHS} << 8
+    IntOp $R9 $R9 | ${TO}
+    IntOp $R9 $R9 << 8
+    IntOp $R9 $R9 | ${FROM}
+    SendMessage $HWNDPARENT ${BULWARK_STEP_SPLASH_STEP} $R9 "STR:${TEXT}"
+    Pop $R9
+  ${EndIf}
+!macroend
+
+!ifndef BUILD_UNINSTALLER
+  ; 1 when an old version is there, whose uninstaller runs first.
+  Var bulwarkUpdate
+
+  ; Nsis7z calls this as it unpacks: bytes done on top, then the total.
+  Function bulwarkExtractProgress
+    Exch $R8
+    Exch
+    Exch $R7
+    ${IfNot} ${Silent}
+      SendMessage $HWNDPARENT ${BULWARK_STEP_SPLASH_PROGRESS} $R8 $R7
+    ${EndIf}
+    Pop $R7
+    Pop $R8
+  FunctionEnd
+
+  !macro bulwarkThemeUnpackStep
+    ${If} $bulwarkUpdate == 1
+      !insertmacro bulwarkStep ${BULWARK_STEP_UPDATE_UNPACK} "$(bulwarkStepUnpack)"
+    ${Else}
+      !insertmacro bulwarkStep ${BULWARK_STEP_FRESH_UNPACK} "$(bulwarkStepUnpack)"
+    ${EndIf}
+  !macroend
+  !macro bulwarkThemePlaceStep
+    ${If} $bulwarkUpdate == 1
+      !insertmacro bulwarkStep ${BULWARK_STEP_UPDATE_PLACE} ""
+    ${Else}
+      !insertmacro bulwarkStep ${BULWARK_STEP_FRESH_PLACE} ""
+    ${EndIf}
+  !macroend
+  ; electron-builder's hook right after the unpacking. Then come its copy of the installer
+  ; for the next update, the uninstaller, the uninstall entry and the Start menu shortcut.
+  !macro bulwarkThemeShortcutsStep
+    ${If} $bulwarkUpdate == 1
+      !insertmacro bulwarkStep ${BULWARK_STEP_UPDATE_SHORTCUTS} "$(bulwarkStepShortcuts)"
+    ${Else}
+      !insertmacro bulwarkStep ${BULWARK_STEP_FRESH_SHORTCUTS} "$(bulwarkStepShortcuts)"
+    ${EndIf}
+  !macroend
+  !macro customFiles_x64
+    !insertmacro bulwarkThemeShortcutsStep
+  !macroend
+  !macro customFiles_arm64
+    !insertmacro bulwarkThemeShortcutsStep
+  !macroend
+  ; From customInstall (installer.nsh): around what it writes, then done. electron-builder
+  ; starts the app right after it, when it does.
+  !macro bulwarkThemeRegisterStep
+    !insertmacro bulwarkStep ${BULWARK_STEP_REGISTER} "$(bulwarkStepRegister)"
+  !macroend
+  !macro bulwarkThemeDoneStep
+    !ifdef RUN_AFTER_FINISH
+      ${IfNot} ${Silent}
+      ${OrIf} ${isForceRun}
+        !insertmacro bulwarkStep ${BULWARK_STEP_START} "$(bulwarkStepStart)"
+      ${EndIf}
+    !endif
+    !insertmacro bulwarkStep ${BULWARK_STEP_DONE} ""
+  !macroend
+!else
+  !macro bulwarkThemeUninstallFilesStep
+    !insertmacro bulwarkStep ${BULWARK_STEP_UN_FILES} "$(bulwarkStepRemoveFiles)"
+  !macroend
+!endif
 
 ; Until the window is drawn, it's see-through, so the plain one never flashes up: from
 ; .onGUIInit until the plugin has painted it. Uses $0 and $1.
@@ -108,9 +221,8 @@ FunctionEnd
   !define MUI_CUSTOMFUNCTION_GUIINIT bulwarkThemeGuiInit
 
   ; electron-builder's "is the app running" check comes right after the banner is up: this
-  ; draws the window there, then runs the same check as the template does without it.
-  ; electron-builder only includes getProcessInfo.nsh and declares $pid when no
-  ; customCheckAppRunning is defined, so it's done here.
+  ; draws the window there, then runs the check without PowerShell (installer-speed.nsh),
+  ; sends the first step, and swaps in the quicker unpacking (installer-extract.nsh).
   !macro customCheckAppRunning
     ${IfNot} ${Silent}
       !ifdef RUN_AFTER_FINISH
@@ -131,8 +243,19 @@ FunctionEnd
       !endif
       Call bulwarkThemeWindow
     ${EndIf}
-    !insertmacro IS_POWERSHELL_AVAILABLE
-    !insertmacro _CHECK_APP_RUNNING
+    !insertmacro bulwarkCheckAppRunning
+    ; electron-builder runs the old version's uninstaller next, where its uninstall entry says.
+    Push $R0
+    ReadRegStr $R0 SHELL_CONTEXT "${UNINSTALL_REGISTRY_KEY}" UninstallString
+    ${If} $R0 != ""
+      StrCpy $bulwarkUpdate 1
+      !insertmacro bulwarkStep ${BULWARK_STEP_UPDATE_OLD} "$(bulwarkStepRemoveOld)"
+    ${Else}
+      StrCpy $bulwarkUpdate 0
+      !insertmacro bulwarkStep ${BULWARK_STEP_FRESH_PAYLOAD} "$(bulwarkStepUnpack)"
+    ${EndIf}
+    Pop $R0
+    !include "${BULWARK_THEME_DIR}\installer-extract.nsh"
   !macroend
 !else
   !insertmacro bulwarkThemeFunction "un."
@@ -179,8 +302,7 @@ FunctionEnd
     ${EndIf}
     Pop $R1
     Pop $R0
-    !insertmacro IS_POWERSHELL_AVAILABLE
-    !insertmacro _CHECK_APP_RUNNING
+    !insertmacro bulwarkCheckAppRunning
   !macroend
 
   ; electron-builder's one-click uninstaller goes silent after its check. Started by a person,
@@ -217,11 +339,9 @@ FunctionEnd
       Call un.bulwarkThemeWindow
       Pop $R1
       Pop $R0
+      !insertmacro bulwarkStep ${BULWARK_STEP_UN_WINDOWS} "$(bulwarkStepUnregister)"
     ${EndIf}
   !macroend
 !endif
-
-!include "getProcessInfo.nsh"
-Var pid
 
 !endif

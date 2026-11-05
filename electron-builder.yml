@@ -109,9 +109,13 @@ nsis:
   # One installer per architecture, both named in latest.yml. electron-updater picks by
   # process.arch in the file name. The default would put both in one big download.
   buildUniversalInstaller: false
-  # Whole downloads only. electron-updater's differential path can't be cancelled, and this
-  # lets the installer compress better.
-  differentialPackage: false
+  # An update downloads only the blocks that changed: the 7z inside is packed file by file
+  # (not solid, 1 MB dictionary) and a blockmap goes next to the installer, which the release
+  # workflow publishes (src/main/update-rules.ts differentialDownloads). Measured on x64: the
+  # installer is 144 MB instead of 126 MB, and unpacks in 2.5 s instead of 8 s, since a solid
+  # 7z decodes as one stream. A version-only update came down as 1.1 MB. `compression: store`
+  # unpacks no faster overall (its 471 MB are copied out of the installer first).
+  differentialPackage: true
   artifactName: Bulwark-Setup-${version}-${arch}.${ext}
   shortcutName: Bulwark
   uninstallDisplayName: Bulwark

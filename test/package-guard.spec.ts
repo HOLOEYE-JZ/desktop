@@ -4,7 +4,18 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { asarFiles, findPackagedTaskIconProblems, findProblems, findResourceProblems, guardExtraFiles, scrubPaths } from '../scripts/package-guard.mjs';
+import {
+  asarFiles,
+  findLocaleProblems,
+  findLooseFileProblems,
+  findPackagedTaskIconProblems,
+  findProblems,
+  findResourceProblems,
+  guardExtraFiles,
+  MAX_SERVER_UNPACKED_FILES,
+  MAX_WINDOWS_PACKAGE_FILES,
+  scrubPaths,
+} from '../scripts/package-guard.mjs';
 import { sharpTargets, trimServer } from '../scripts/server-natives.mjs';
 
 /**
@@ -167,7 +178,12 @@ test.describe('the package guard in the real flow', () => {
       expect(readFileSync(path.join(resources, 'os-icons', 'bulwark.ico')).equals(readFileSync(path.join(ROOT, 'build', 'icon.ico')))).toBe(true);
 
       expect(asarFiles(path.join(resources, 'server.asar'))).toContain('server.js');
-      expect(existsSync(path.join(resources, 'server.asar.unpacked', 'public', 'a.txt'))).toBe(true);
+      // public/ is served out of the asar: nothing but native modules is a loose file.
+      expect(asarFiles(path.join(resources, 'server.asar'))).toContain('public/a.txt');
+      expect(existsSync(path.join(resources, 'server.asar.unpacked', 'public'))).toBe(false);
+      // Chromium's language packs: the app's languages only, out of the 55 Electron has.
+      const config = createRequire(path.join(ROOT, 'package.json'))('js-yaml').load(readFileSync(path.join(ROOT, 'electron-builder.yml'), 'utf8'));
+      expect(readdirSync(path.join(unpacked, 'locales')).sort()).toEqual(config.electronLanguages.map((language: string) => `${language}.pak`).sort());
       // ASAR integrity is on, the shell runs, and a native module loads from the unpacked side.
       const out = path.join(project.dir, 'ran.json');
       expect(await runApp(exe, out)).toBe(0);
@@ -408,6 +424,111 @@ test.describe('what the guard looks for', () => {
     } finally {
       rmSync(tree, { recursive: true, force: true });
     }
+  });
+});
+
+test.describe('loose files', () => {
+  const dir = () => mkdtempSync(path.join(tmpdir(), 'bw-loose-'));
+  const put = (root: string, relative: string, text = 'x') => {
+    mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+    writeFileSync(path.join(root, relative), text);
+  };
+
+  // A small server tree packed as before-pack packs the real one.
+  test('the server archive keeps only native modules out of the asar', async () => {
+    const project = dir();
+    try {
+      const source = path.join(project, 'webmail');
+      for (const file of ['server.js', 'package.json', '.next/required-server-files.json', '.next/server/app/page.js', '.next/static/chunks/main.js', '.next/static/media/font.woff2', 'public/sw.js', 'public/sqlite3mc/sqlite3.wasm', 'node_modules/next/dist/server.js']) {
+        put(source, file, file.endsWith('.json') ? '{}' : `// ${file}`);
+      }
+      for (const file of ['node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node', 'node_modules/@img/sharp-win32-x64/lib/libvips-42.dll', 'node_modules/@img/sharp-win32-x64/package.json', 'node_modules/other/addon.node']) put(source, file);
+      const { buildServerArchive } = await import('../scripts/server-archive.mjs');
+      const { dir: out } = await buildServerArchive({ projectDir: project, platform: 'win32', arch: 'x64', source });
+      const packed = asarFiles(path.join(out, 'server.asar'));
+      for (const file of ['server.js', '.next/server/app/page.js', '.next/static/chunks/main.js', '.next/static/media/font.woff2', 'public/sw.js', 'public/sqlite3mc/sqlite3.wasm']) expect(packed, file).toContain(file);
+      const loose: string[] = [];
+      const walk = (folder: string) => {
+        for (const entry of readdirSync(folder, { withFileTypes: true })) {
+          if (entry.isDirectory()) walk(path.join(folder, entry.name));
+          else loose.push(path.relative(path.join(out, 'server.asar.unpacked'), path.join(folder, entry.name)).split(path.sep).join('/'));
+        }
+      };
+      walk(path.join(out, 'server.asar.unpacked'));
+      expect(loose.sort()).toEqual(['node_modules/@img/sharp-win32-x64/lib/libvips-42.dll', 'node_modules/@img/sharp-win32-x64/lib/sharp-win32-x64.node', 'node_modules/@img/sharp-win32-x64/package.json', 'node_modules/other/addon.node']);
+
+      // Next serves public/ and .next/static with fs.stat and fs.createReadStream. Electron's
+      // asar support answers both from inside the archive, a byte range as well.
+      const script = path.join(project, 'stream.cjs');
+      writeFileSync(
+        script,
+        `const fs = require('node:fs'); const file = process.argv[2] + '/server.asar/public/sw.js';
+         const size = fs.statSync(file).size; const parts = [];
+         fs.createReadStream(file, { start: 3 }).on('data', (c) => parts.push(c)).on('end', () => { process.stdout.write(JSON.stringify({ size, text: Buffer.concat(parts).toString() })); });`,
+      );
+      const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
+      const electronExe = createRequire(path.join(ROOT, 'package.json'))('electron') as unknown as string;
+      const ran = spawnSync(electronExe, [script, out], { encoding: 'utf8', env });
+      expect(ran.status, ran.stderr).toBe(0);
+      expect(JSON.parse(ran.stdout)).toEqual({ size: '// public/sw.js'.length, text: 'public/sw.js' });
+    } finally {
+      rmSync(project, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+
+  test('anything but native modules in server.asar.unpacked, or too many files, does not ship', () => {
+    const out = dir();
+    try {
+      const resources = path.join(out, 'resources');
+      put(resources, 'server.asar.unpacked/node_modules/@img/sharp-win32-x64/lib/sharp.node');
+      put(resources, 'app.asar');
+      expect(findLooseFileProblems(out, resources, 'win32')).toEqual([]);
+      put(resources, 'server.asar.unpacked/public/sw.js');
+      put(resources, 'server.asar.unpacked/.next/static/chunks/a.js');
+      expect(findLooseFileProblems(out, resources, 'linux')).toEqual(['server.asar.unpacked/.next/static/chunks/a.js (belongs in server.asar)', 'server.asar.unpacked/public/sw.js (belongs in server.asar)']);
+      rmSync(path.join(resources, 'server.asar.unpacked', 'public'), { recursive: true });
+      rmSync(path.join(resources, 'server.asar.unpacked', '.next'), { recursive: true });
+      for (let i = 0; i < MAX_SERVER_UNPACKED_FILES; i += 1) put(resources, `server.asar.unpacked/node_modules/a/${i}.dll`);
+      expect(findLooseFileProblems(out, resources, 'linux')).toEqual([`server.asar.unpacked holds ${MAX_SERVER_UNPACKED_FILES + 1} files, at most ${MAX_SERVER_UNPACKED_FILES}`]);
+      rmSync(path.join(resources, 'server.asar.unpacked', 'node_modules', 'a'), { recursive: true });
+      // The whole Windows package, Electron's files with it.
+      for (let i = 0; i < MAX_WINDOWS_PACKAGE_FILES - 2; i += 1) put(out, `x/${i}.bin`);
+      expect(findLooseFileProblems(out, resources, 'win32')).toEqual([]);
+      put(out, 'one-more.bin');
+      expect(findLooseFileProblems(out, resources, 'win32')).toEqual([`the package holds ${MAX_WINDOWS_PACKAGE_FILES + 1} files, at most ${MAX_WINDOWS_PACKAGE_FILES}`]);
+      expect(findLooseFileProblems(out, resources, 'linux')).toEqual([]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  test("Chromium's language packs: exactly electronLanguages, and the setting has to be there", () => {
+    const out = dir();
+    try {
+      for (const name of ['de', 'en-US']) put(out, `locales/${name}.pak`);
+      expect(findLocaleProblems(out, 'win32', ['de', 'en-US'])).toEqual([]);
+      put(out, 'locales/fi.pak');
+      expect(findLocaleProblems(out, 'linux', ['de', 'en-US', 'fr'])).toEqual(['locales/fi.pak', 'locales/fr.pak (missing)']);
+      expect(findLocaleProblems(out, 'win32', undefined)).toEqual(['electronLanguages is not set, so every Chromium language would ship']);
+      expect(findLocaleProblems(out, 'darwin', undefined)).toEqual([]);
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  });
+
+  // The webmail's 30 languages as Chromium resolves a system language to a pack
+  // (l10n_util::CheckAndResolveLocale): es-MX takes es-419, pt-PT and pt-BR are their own, an
+  // English outside the US takes en-GB. A pack missing there falls back to en-US, and the app
+  // starts in English. Mongolian has no pack. Nothing else: each pack is a file in every install.
+  test('electronLanguages is the app languages and what Chromium needs to resolve them', () => {
+    const config = createRequire(path.join(ROOT, 'package.json'))('js-yaml').load(readFileSync(path.join(ROOT, 'electron-builder.yml'), 'utf8'));
+    const app = ['ar', 'ca', 'cs', 'da', 'de', 'en', 'es', 'et', 'fa', 'fr', 'he', 'hu', 'it', 'ja', 'ko', 'lv', 'mn', 'nb', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'th', 'tr', 'uk', 'vi', 'zh', 'zh-TW'];
+    const packs: Record<string, string[]> = { en: ['en-US', 'en-GB'], es: ['es', 'es-419'], pt: ['pt-BR', 'pt-PT'], zh: ['zh-CN'], mn: [] };
+    const wanted = app.flatMap((language) => packs[language] ?? [language]);
+    expect([...config.electronLanguages].sort()).toEqual([...wanted].sort());
+    const available = readdirSync(path.join(ROOT, 'node_modules', 'electron', 'dist', 'locales')).map((name) => name.replace(/\.pak$/, ''));
+    for (const language of wanted) expect(available, language).toContain(language);
+    expect(wanted.length).toBeLessThan(available.length);
   });
 });
 

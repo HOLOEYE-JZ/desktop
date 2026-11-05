@@ -27,3 +27,16 @@ test('only a push publishes: a manual run on a tag only builds', () => {
   expect(lines.length).toBeGreaterThan(0);
   for (const line of lines) expect(line).toContain('"$EVENT_NAME" = "push"');
 });
+
+// An update on Windows downloads only the blocks that changed: electron-updater needs the new
+// installer's blockmap and the old one's, both on the release.
+test('Windows publishes a blockmap next to each installer, and the build makes them', () => {
+  const upload = workflow.slice(workflow.indexOf('name: release-windows'));
+  const paths = upload.slice(0, upload.indexOf('if-no-files-found'));
+  expect(paths).toContain('release/*.exe.blockmap');
+  // The publish step uploads all of it, and the provenance covers the blockmaps too.
+  expect(step('Publish')).toContain('gh release upload "$tag" release/* --clobber');
+  expect(step('Attest build provenance')).toContain('release/*.blockmap');
+  const config = readFileSync(path.join(ROOT, 'electron-builder.yml'), 'utf8');
+  expect(config).toMatch(/^ {2}differentialPackage: true$/m);
+});
