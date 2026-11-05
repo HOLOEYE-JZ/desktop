@@ -641,6 +641,43 @@ test.describe('the app menu and windows', () => {
     }
   });
 
+  test('File > Add account… and Change connection… go to the page of the main window, which asks first: no restart from the menu', async () => {
+    test.skip(process.platform === 'darwin', 'the app menu has them on a Mac');
+    await app.evaluate(({ BrowserWindow }) => {
+      const { webContents } = BrowserWindow.getAllWindows()[0];
+      const g = globalThis as unknown as { __sent: unknown[][]; __send?: typeof webContents.send; __quits: number };
+      g.__sent = [];
+      g.__quits = 0;
+      g.__send = webContents.send.bind(webContents);
+      webContents.send = ((channel: string, ...args: unknown[]) => {
+        g.__sent.push([channel, ...args]);
+        g.__send!(channel, ...args);
+      }) as typeof webContents.send;
+    });
+    try {
+      expect((await menuItem(app, 'file.addAccount'))?.label).toBe('Add account…');
+      await setState({ 'file.addAccount': true, 'file.switchMode': true });
+      await expect.poll(async () => (await menuItem(app, 'file.addAccount'))?.enabled).toBe(true);
+      await clickMenuItem(app, 'file.addAccount');
+      await clickMenuItem(app, 'file.switchMode');
+      await expect.poll(() => app.evaluate(() => (globalThis as unknown as { __sent: unknown[][] }).__sent.map((args) => args[1]))).toEqual(expect.arrayContaining(['file.addAccount', 'file.switchMode']));
+      // Nothing quit: still the one app window. A page that asks (this branch's webmail)
+      // adds its question window, a data: page; an older one asks nothing here.
+      const urls = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()));
+      await page.waitForTimeout(1000);
+      expect((await urls()).filter((url) => !url.startsWith('data:'))).toHaveLength(1);
+      await app.evaluate(({ BrowserWindow }) => {
+        for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().startsWith('data:')) w.destroy();
+      });
+    } finally {
+      await app.evaluate(({ BrowserWindow }) => {
+        const g = globalThis as unknown as { __send?: (channel: string, ...args: unknown[]) => void };
+        if (g.__send) BrowserWindow.getAllWindows()[0].webContents.send = g.__send;
+      });
+      await setState({});
+    }
+  });
+
   test('items go on and off with what the page reports', async () => {
     expect((await menuItem(app, 'message.reply'))?.enabled).toBe(false);
     await setState({ 'message.reply': true, 'view.layout.horizontal': { enabled: true, checked: true } });

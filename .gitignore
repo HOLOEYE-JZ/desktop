@@ -10,6 +10,8 @@ webmail/
 # The native helper's build. Made by scripts/build-native.mjs, never committed.
 native/target/
 native/dist/
+# The installer window's NSIS plugin. Made by scripts/build-nsis-splash.mjs, never committed.
+build/x86-unicode/
 test-results/
 playwright-report/
 *.log

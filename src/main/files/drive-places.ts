@@ -42,6 +42,12 @@ function plainText(value: unknown, min: number, max: number): value is string {
   return typeof value === 'string' && value.length >= min && value.length <= max && !/[\u0000-\u001f\u007f]/.test(value);
 }
 
+/** The tray's line from the page's status: one line of plain text, or null. */
+export function trayLineOf(value: unknown): string | null {
+  const tray = (value as FilesDriveStatus | null)?.tray;
+  return plainText(tray, 1, MAX_STATUS_LABEL * 2) ? tray : null;
+}
+
 /** The page's status for Explorer, in the helper's shape; null when it isn't one. */
 export function nativeStatusOf(value: unknown): NativeDriveStatus | null {
   const status = value as FilesDriveStatus | null;

@@ -25,8 +25,10 @@ import { noteUserGesture } from './user-gesture';
 import type { WindowManager } from './windows';
 
 export interface MenuHooks {
-  /** Left out while a policy forces the connection. */
+  /** Left out while a policy forces the connection. Asks first (natively), then restarts. */
   switchMode?: () => void;
+  /** The same without the question: the page asked already. */
+  switchModeNow?: () => void;
   devTools: boolean;
   newWindow: () => void;
   zoom: (step: 1 | -1 | 0) => void;
@@ -46,13 +48,13 @@ function runsInMain(id: string): boolean {
 }
 
 /** New items of the other apps, importing and settings: what the main window shows. */
-const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import', 'file.importCalendar', 'file.importContacts']);
+const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.newTask', 'file.import', 'file.importCalendar', 'file.importContacts', 'file.addAccount', 'file.switchMode']);
 
 /** The hidden line that takes Ctrl+F off a Mac. */
 const FIND_KEY_ID = 'edit.forwardOrSearch';
 
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
-const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import']);
+const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import', 'file.uploadFiles']);
 
 /** The part of the app the window shows, as its page reports it. Mail when it says nothing. */
 export type AppSection = 'mail' | 'calendar' | 'contacts' | 'files' | 'settings';
@@ -118,9 +120,28 @@ export class MenuController {
   constructor(private readonly hooks: MenuHooks) {}
 
   /** What the start decided, once it has: nothing is offered before that. */
-  allowSwitchingMode(switchMode: (() => void) | undefined): void {
+  allowSwitchingMode(switchMode: (() => void) | undefined, switchModeNow?: () => void): void {
     this.hooks.switchMode = switchMode;
+    this.hooks.switchModeNow = switchMode ? switchModeNow : undefined;
     this.rebuild();
+  }
+
+  /** The page asked and the answer was Change. False where switching isn't allowed. */
+  changeConnection(): boolean {
+    const now = this.hooks.switchModeNow;
+    if (!now) return false;
+    now();
+    return true;
+  }
+
+  /**
+   * File > Change connection…: the page asks in the app's own question window and calls
+   * back (changeConnection). A page that doesn't say it can (an older webmail, an error
+   * page) gets the OS's question here instead. Never a restart without asking.
+   */
+  private switchModeClicked(): void {
+    if (this.stateOf('file.switchMode').enabled) this.dispatch('file.switchMode');
+    else this.hooks.switchMode?.();
   }
 
   /** Once a mode has started: the first-run page has a menu without any windows behind it. */
@@ -330,6 +351,7 @@ export class MenuController {
     const win = process.platform === 'win32';
     const { section, composing } = this.shape();
     const mail = section === 'mail';
+    const files = section === 'files';
     // A bare window counts: a preview's Ctrl+P prints the preview, not what's behind it.
     const focused = () => BrowserWindow.getFocusedWindow() ?? windows?.focusedManaged()?.window;
     const onFocused = (run: (window: BrowserWindow) => void) => () => {
@@ -347,21 +369,29 @@ export class MenuController {
         this.command('file.newEvent', text.menuNewEvent),
         this.command('file.newTask', text.menuNewTask),
         this.command('file.newContact', text.menuNewContact),
+        // Files' own: a folder where you are, and files into it.
+        ...(files ? [
+          this.command('file.newFolder', text.menuNewFolder),
+          this.command('file.uploadFiles', text.menuUploadFiles),
+        ] : []),
         ...(this.extensions.get('new') ?? []).flatMap((extension) => extension()),
         { id: 'file.newWindow', label: text.menuNewWindow, accelerator: 'CmdOrCtrl+Shift+N', enabled: !!windows, click: hooks.newWindow },
         { type: 'separator' },
+        // Files has nothing to print: a list of names would be all.
         {
           id: 'file.print',
           label: text.menuPrint,
           accelerator: 'CmdOrCtrl+P',
-          enabled: !!windows && this.stateOf('file.print').enabled,
+          visible: !files,
+          enabled: !files && !!windows && this.stateOf('file.print').enabled,
           click: onFocused(hooks.print),
         },
         {
           id: 'file.savePdf',
           label: text.menuSavePdf,
           accelerator: 'CmdOrCtrl+Shift+S',
-          enabled: !!windows && this.stateOf('file.savePdf').enabled,
+          visible: !files,
+          enabled: !files && !!windows && this.stateOf('file.savePdf').enabled,
           click: onFocused(hooks.saveAsPdf),
         },
         { type: 'separator' },
@@ -375,11 +405,13 @@ export class MenuController {
             this.command('file.importContacts', text.menuImportContacts),
           ],
         },
+        // Outlook's File > Add account: the sign-in form for another account.
+        this.command('file.addAccount', text.menuAddAccount),
         // Settings where Windows and Linux mail apps keep them, next to how the app connects.
         // A page of the main window, as the rail's gear opens it (the page's go.settings).
         ...(mac ? [] : [this.command('file.settings', text.menuSettings, { accelerator: 'Ctrl+,', click: () => this.dispatch('go.settings') })]),
         // Left out while a policy forces the connection.
-        ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: hooks.switchMode } as MenuItemConstructorOptions] : []),
+        ...(hooks.switchMode ? [{ id: 'file.switchMode', label: text.menuSwitchMode, click: () => this.switchModeClicked() } as MenuItemConstructorOptions] : []),
         ...this.extras('file'),
         { type: 'separator' },
         { id: 'file.close', label: text.menuClose, accelerator: 'CmdOrCtrl+W', role: 'close' },
@@ -409,7 +441,7 @@ export class MenuController {
         ...(mac ? [{ role: 'pasteAndMatchStyle' } as MenuItemConstructorOptions] : []),
         { role: 'selectAll', label: text.menuSelectAll },
         { type: 'separator' },
-        // What the screen searches. Settings has no search of its own and goes to mail's.
+        // What the screen searches: Settings searches its own pages.
         this.command('edit.search', searchLabels[section], mac ? {} : { accelerator: 'Ctrl+E' }),
         // Ctrl+F: Forward or search, whichever the window can do (ctrlFTarget). Hidden: Forward shows the key.
         ...(mac ? [] : [{

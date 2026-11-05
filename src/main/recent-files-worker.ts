@@ -14,14 +14,14 @@ import path from 'node:path';
 export type RecentWorkerRequest =
   /** The .lnk files in a folder, with the time each was last written. */
   | { id: number; op: 'dir'; dir: string }
-  /** Each path's kind, one answer per path as it comes. */
+  /** Each path's kind, and a file's size, one answer per path as it comes. */
   | { id: number; op: 'check'; paths: string[] }
   /** A file's bytes, if it's a file and no larger than `max`. */
   | { id: number; op: 'read'; path: string; max: number };
 
 export type RecentWorkerMessage =
   | { id: number; type: 'dir'; entries: { file: string; mtimeMs: number }[] | null }
-  | { id: number; type: 'checked'; index: number; kind: 'file' | 'other' | 'missing' }
+  | { id: number; type: 'checked'; index: number; kind: 'file' | 'other' | 'missing'; size?: number }
   | { id: number; type: 'read'; ok: true; data: Uint8Array }
   | { id: number; type: 'read'; ok: false; reason: 'missing' | 'too-large' | 'failed' };
 
@@ -56,7 +56,7 @@ async function listDir(id: number, dir: string): Promise<void> {
 function check(id: number, paths: string[]): void {
   paths.forEach((file, index) => {
     stat(file).then(
-      (info) => send({ id, type: 'checked', index, kind: info.isFile() ? 'file' : 'other' }),
+      (info) => send({ id, type: 'checked', index, ...(info.isFile() ? { kind: 'file', size: info.size } : { kind: 'other' }) }),
       () => send({ id, type: 'checked', index, kind: 'missing' }),
     );
   });

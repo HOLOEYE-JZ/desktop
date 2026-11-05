@@ -26,6 +26,8 @@ function run(command, args, env = {}) {
 }
 
 const versions = process.argv.slice(2);
+// The installer window's plugin: makensis fails without it.
+run('node', ['scripts/build-nsis-splash.mjs']);
 run('node', ['build.mjs', '--test'], { BULWARK_UPDATER_TEST_BUILD: '1' });
 if (!readFileSync(path.join(ROOT, 'dist', 'main.mjs'), 'utf8').includes('bulwark-test-update-feed')) throw new Error('not a test build');
 try {
