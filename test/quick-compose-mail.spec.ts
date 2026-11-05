@@ -1,5 +1,5 @@
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { ACCOUNT, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launchStandalone, prompts, removeOsTraces, removeProfile, requireAccount, SCREENSHOTS, STALWARTS, tempProfile } from './helpers';
+import { ACCOUNT, dialogHost, ENT_PASSWORD, expectMailShown, fakeOsIntegration, fillLogin, launchStandalone, prompts, removeOsTraces, removeProfile, requireAccount, SCREENSHOTS, STALWARTS, tempProfile } from './helpers';
 import { destroyMessages, draftsWithSubject, jmap, pageWith } from './native-helpers';
 
 /**
@@ -429,9 +429,11 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
     const toggle = page.getByTestId('app-lock-switch');
     await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: 60_000 });
     await toggle.click();
-    await page.getByTestId('app-lock-new-pin').fill(pin);
-    await page.getByTestId('app-lock-repeat-pin').fill(pin);
-    await page.getByTestId('app-lock-dialog-save').click();
+    // The PIN dialog is a window of its own (dialog-surfaces.ts), or over the page with an older webmail.
+    const pinDialog = await dialogHost(app, page, '[data-testid="app-lock-new-pin"]');
+    await pinDialog.getByTestId('app-lock-new-pin').fill(pin);
+    await pinDialog.getByTestId('app-lock-repeat-pin').fill(pin);
+    await pinDialog.getByTestId('app-lock-dialog-save').click();
     await expect(toggle).toHaveAttribute('aria-checked', 'true', { timeout: 30_000 });
 
     // A press behind the lock shows the lock screen and no composer.

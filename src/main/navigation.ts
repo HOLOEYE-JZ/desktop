@@ -11,6 +11,7 @@
 import { screen, shell, type BrowserWindow, type BrowserWindowConstructorOptions, type WebContents, type WebPreferences } from 'electron';
 import type { Mode } from '../shared/bridge';
 import { FORCED_SSO_LIMIT_MS, SsoChain, isJmapProxyPath, isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
+import { adoptDialogSurface, dialogSurfaceOptions, isDialogFrameName } from './dialog-surfaces';
 import { fitInto } from './window-placement';
 import { windowTypeOf, type WindowManager } from './windows';
 
@@ -72,6 +73,11 @@ function bareWindowOptions(preferences: WebPreferences): BrowserWindowConstructo
 function handleWindowOpen(contents: WebContents, options: GuardOptions) {
   contents.setWindowOpenHandler(({ url, frameName }) => {
     const windows = options.windows();
+    // One of the page's dialogs, drawn into a window of its own (dialog-surfaces.ts).
+    if (isDialogFrameName(frameName, url)) {
+      const dialog = dialogSurfaceOptions(contents, windows.webPreferences());
+      return dialog ? { action: 'allow', overrideBrowserWindowOptions: dialog } : { action: 'deny' };
+    }
     if (url === 'about:blank' || url === '') {
       return { action: 'allow', overrideBrowserWindowOptions: bareWindowOptions(windows.webPreferences()) };
     }
@@ -104,6 +110,12 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
   });
 
   contents.on('did-create-window', (child, details) => {
+    if (isDialogFrameName(details.frameName, details.url)) {
+      adoptDialogSurface(child, contents, details.frameName);
+      // A dialog may open one of its own, which hangs on it.
+      handleWindowOpen(child.webContents, options);
+      return;
+    }
     const parsed = parse(details.url);
     const windows = options.windows();
     // A blob's URL.origin is the app's too, but it's no window of the app's: it has none of its styles,
