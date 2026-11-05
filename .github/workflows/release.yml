@@ -303,6 +303,11 @@ jobs:
       # an update that isn't signed by the same identity as the running app). Without: an
       # ad-hoc signature, or Apple silicon won't start it at all, and Gatekeeper warns.
       # Hardened runtime with ad-hoc would refuse the bundle's own native modules.
+      # The certificate goes into a keychain of the job's own here, not through CSC_LINK:
+      # electron-builder prints its failed `security import` command line, password and all,
+      # into this public log. `security` itself names neither. The p12 must be in the legacy
+      # format (3DES, SHA-1 MAC, `openssl pkcs12 -export -legacy`) with the Developer ID G2
+      # intermediate in it: macOS refuses OpenSSL 3's default as "MAC verification failed".
       - name: Build installers
         env:
           MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
@@ -313,7 +318,31 @@ jobs:
         run: |
           signing=()
           if [ -n "$MAC_CERTIFICATE" ]; then
-            export CSC_LINK="$MAC_CERTIFICATE" CSC_KEY_PASSWORD="$MAC_CERTIFICATE_PASSWORD"
+            keychain="$RUNNER_TEMP/signing.keychain-db"
+            keychain_password="$(openssl rand -hex 24)"
+            echo "::add-mask::$keychain_password"
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            printf '%s' "$MAC_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+            if ! security import "$RUNNER_TEMP/developer-id.p12" -k "$keychain" -f pkcs12 \
+                -P "$(printf '%s' "$MAC_CERTIFICATE_PASSWORD" | tr -d '\r\n')" \
+                -T /usr/bin/codesign -T /usr/bin/productbuild > /dev/null; then
+              rm -f "$RUNNER_TEMP/developer-id.p12"
+              echo "::error title=Developer ID certificate::MAC_CERTIFICATE doesn't import with MAC_CERTIFICATE_PASSWORD. It has to be a legacy p12, see the comment above this step."
+              exit 1
+            fi
+            rm -f "$RUNNER_TEMP/developer-id.p12"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+            # electron-builder wants the name without its "Developer ID Application: " prefix.
+            name="$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"Developer ID Application: \(.*\)"$/\1/p' | head -n 1)"
+            if [ -z "$name" ]; then
+              echo "::error title=Developer ID certificate::MAC_CERTIFICATE holds no valid Developer ID Application identity."
+              exit 1
+            fi
+            echo "Signing as Developer ID Application: $name"
+            export CSC_KEYCHAIN="$keychain" CSC_NAME="$name"
           else
             signing=(-c.mac.identity=- -c.mac.hardenedRuntime=false)
             unset APPLE_API_KEY_ID APPLE_API_ISSUER
