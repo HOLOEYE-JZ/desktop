@@ -95,6 +95,39 @@ test.describe('Hello, without a prompt', () => {
   });
 });
 
+test.describe("Hello's key credentials, without a prompt and without touching the user's Hello container", () => {
+  test.skip(process.platform !== 'win32', 'Windows only');
+  const name = 'Bulwark test key never made';
+
+  test('a window handle that is no window answers invalid before anything reaches Windows Hello', async () => {
+    const native = load();
+    for (const handle of [Buffer.from([1, 0, 0, 0, 0, 0, 0, 0]), Buffer.alloc(8), Buffer.alloc(3)]) {
+      expect(await native.helloKeyCreate!(name, Buffer.from('x'), handle, 1000)).toEqual({ result: 'invalid' });
+      expect(await native.helloKeySign!(name, Buffer.from('x'), handle, 1000)).toEqual({ result: 'invalid' });
+    }
+  });
+
+  test('it takes only plain names, some data, and a timeout of at most 5 minutes', () => {
+    const native = load();
+    const window = Buffer.alloc(8);
+    for (const bad of ['', 'x'.repeat(65), 'a/b', 'a\\b', 'a\0b', 'Bulwark é']) {
+      expect(() => native.helloKeyCreate!(bad, Buffer.from('x'), window, 1000), JSON.stringify(bad)).toThrow(/bad key name/);
+      expect(() => native.helloKeySign!(bad, Buffer.from('x'), window, 1000)).toThrow(/bad key name/);
+      expect(() => native.helloKeyOpen!(bad)).toThrow(/bad key name/);
+      expect(() => native.helloKeyDelete!(bad)).toThrow(/bad key name/);
+    }
+    expect(() => native.helloKeyCreate!(name, Buffer.alloc(0), window, 1000)).toThrow(/data/);
+    expect(() => native.helloKeySign!(name, Buffer.alloc(1025), window, 1000)).toThrow(/data/);
+    expect(() => native.helloKeyCreate!(name, Buffer.from('x'), window, 0)).toThrow(/timeout/);
+    expect(() => native.helloKeySign!(name, Buffer.from('x'), window, 5 * 60_000 + 1)).toThrow(/timeout/);
+    expect(() => (native.helloKeySign as unknown as (a: string, b: Buffer, c: Buffer) => unknown)(name, Buffer.from('x'), window)).toThrow();
+  });
+
+  test('a cancel with nothing waiting does nothing', () => {
+    expect(() => load().helloKeyCancel!()).not.toThrow();
+  });
+});
+
 test.describe('policy', () => {
   test('off macOS nothing is forced, and a bad key is refused', () => {
     const native = load();

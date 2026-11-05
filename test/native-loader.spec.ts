@@ -76,6 +76,43 @@ test.describe('a helper that will not load', () => {
     expect(await helper.hello.verify('reason', Buffer.alloc(8))).toBe('failed');
     expect(helper.policy.isForced('a key')).toBe(false);
   });
+
+  test("Hello's key credentials: no helper, or one from before them, is unavailable; one that throws is failed", async () => {
+    const window = Buffer.alloc(8);
+    for (const helper of [wrapHelper(null, { warn: quiet }), wrapHelper(fakeModule(), { warn: quiet })]) {
+      expect(await helper.hello.key.create('Bulwark app lock x', new Uint8Array(4), window)).toEqual({ result: 'unavailable' });
+      expect(await helper.hello.key.sign('Bulwark app lock x', new Uint8Array(4), window)).toEqual({ result: 'unavailable' });
+      expect(await helper.hello.key.open('Bulwark app lock x')).toBe('unavailable');
+      expect(await helper.hello.key.delete('Bulwark app lock x')).toBe('missing');
+      expect(() => helper.hello.key.cancel()).not.toThrow();
+    }
+    const warnings: string[] = [];
+    const throwing = wrapHelper(fakeModule({
+      helloKeyCreate: () => { throw new Error('hello: bad key name'); },
+      helloKeySign: () => Promise.reject(new Error('boom')),
+      helloKeyOpen: () => Promise.reject(new Error('boom')),
+      helloKeyDelete: () => Promise.reject(new Error('boom')),
+      helloKeyCancel: () => { throw new Error('boom'); },
+    }), { warn: (message) => warnings.push(message) });
+    expect(await throwing.hello.key.create('bad/name', new Uint8Array(4), window)).toEqual({ result: 'failed' });
+    expect(await throwing.hello.key.sign('Bulwark app lock x', new Uint8Array(4), window)).toEqual({ result: 'failed' });
+    expect(await throwing.hello.key.open('Bulwark app lock x')).toBe('failed');
+    expect(await throwing.hello.key.delete('Bulwark app lock x')).toBe('failed');
+    expect(() => throwing.hello.key.cancel()).not.toThrow();
+    expect(warnings).toEqual(['Hello key: hello: bad key name', 'Hello key: boom']);
+  });
+
+  test("Hello's key credentials get the bytes as a Buffer, and their answer back as it is", async () => {
+    const seen: unknown[] = [];
+    const helper = wrapHelper(fakeModule({
+      helloKeySign: async (name, data, hwnd, timeoutMs) => {
+        seen.push(name, Buffer.isBuffer(data), [...data], hwnd.length, timeoutMs);
+        return { result: 'ok', signature: Buffer.from([9, 9]) };
+      },
+    }), { warn: quiet });
+    expect(await helper.hello.key.sign('Bulwark app lock x', new Uint8Array([1, 2]), Buffer.alloc(8), 5000)).toEqual({ result: 'ok', signature: Buffer.from([9, 9]) });
+    expect(seen).toEqual(['Bulwark app lock x', true, [1, 2], 8, 5000]);
+  });
 });
 
 test.describe('where the keystore is offered', () => {
