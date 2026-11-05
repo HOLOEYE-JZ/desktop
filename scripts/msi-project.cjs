@@ -25,7 +25,7 @@ function addInstallMarker(project) {
   }
   const component = [
     '    <DirectoryRef Id="APPLICATIONFOLDER">',
-    `      <Component Id="BwInstallMarker" Guid="{${MARKER_GUID}}">`,
+    `      <Component Id="BwInstallMarker" Guid="{${MARKER_GUID}}" KeyPath="yes">`,
     '        <CreateFolder/>',
     `        <IniFile Id="BwInstallMarkerIni" Action="addLine" Directory="APPLICATIONFOLDER" Name="${MSI_MARKER_FILE}" Section="Bulwark" Key="InstalledBy" Value="msi"/>`,
     `        <RemoveFile Id="BwInstallMarkerFile" Name="${MSI_MARKER_FILE}" On="uninstall"/>`,

@@ -42,6 +42,8 @@ test.describe('the MSI project', () => {
   test('marks the folder as installed, and takes the mark away again', () => {
     const out = buildProject(project);
     expect(out).toContain('<ComponentRef Id="BwInstallMarker"/>');
+    // WiX refuses a component without an explicit key path: the folder is it.
+    expect(out).toMatch(/<Component Id="BwInstallMarker" [^>]*KeyPath="yes">\s*<CreateFolder\/>/);
     expect(out).toMatch(new RegExp(`<IniFile [^>]*Directory="APPLICATIONFOLDER" Name="${MSI_MARKER_FILE.replace('.', '\\.')}"`));
     expect(out).toContain(`<RemoveFile Id="BwInstallMarkerFile" Name="${MSI_MARKER_FILE}" On="uninstall"/>`);
   });
