@@ -6,12 +6,13 @@ import { expectMailShown, fillLogin, launchStandalone, removeOsTraces, removePro
  * server: a toast for each account, named by its address, and the tray's unread list
  * following the account in front. Needs a webmail build with lib/desktop's OS code.
  *
- *   IT_DSO_PASSWORD=<test accounts' password> npx playwright test test/os-mail-accounts.spec.ts
+ *   BULWARK_TEST_FIRST=<account> BULWARK_TEST_SECOND=<another account> IT_DSO_PASSWORD=<their password> \
+ *     npx playwright test test/os-mail-accounts.spec.ts
  */
 
 const SERVER = process.env.BULWARK_TEST_STALWART ?? 'https://stalwart-1.internal.bulwarkmail.org';
-const FIRST = process.env.BULWARK_TEST_FIRST ?? 'dso-ux-desktop@example.org';
-const SECOND = process.env.BULWARK_TEST_SECOND ?? 'dso-ux-desktop-b@example.org';
+const FIRST = process.env.BULWARK_TEST_FIRST ?? '';
+const SECOND = process.env.BULWARK_TEST_SECOND ?? '';
 const PASSWORD = process.env.IT_DSO_PASSWORD ?? '';
 const RUN = Date.now().toString(36);
 
@@ -150,7 +151,7 @@ test.describe('Two accounts, main window in the tray', () => {
   let page: Page;
 
   test.beforeAll(async () => {
-    if (!PASSWORD) throw new Error("Set IT_DSO_PASSWORD to the test accounts' password");
+    if (!PASSWORD || !FIRST || !SECOND) throw new Error('Set BULWARK_TEST_FIRST, BULWARK_TEST_SECOND and IT_DSO_PASSWORD to two test accounts on one server');
     profile = tempProfile('osa');
     running = await launchStandalone(profile);
     page = running.page;

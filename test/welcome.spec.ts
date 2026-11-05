@@ -135,15 +135,15 @@ test('the address typed on the first screen is on the sign-in page, with the car
   try {
     const first = await shownPage(app);
     await first.locator('#email').waitFor();
-    await first.fill('#email', 'dso-ux-settings@example.org');
+    await first.fill('#email', 'alice@example.org');
     await first.click('#standalone');
     await first.locator('#privacy.open').waitFor();
     await first.click('#continue');
     await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => w.webContents.getURL()).find((url) => url.includes('/login')) ?? ''), { timeout: 90_000 })
-      .toContain('login_hint=dso-ux-settings%40example.org');
+      .toContain('login_hint=alice%40example.org');
     const page = app.windows().find((w) => w.url().includes('/login')) ?? (await shownPage(app));
     await waitForLogin(page);
-    await expect(page.locator('#username')).toHaveValue('dso-ux-settings@example.org');
+    await expect(page.locator('#username')).toHaveValue('alice@example.org');
     await expect(page.locator('#password')).toBeFocused();
   } finally {
     await app.close();
