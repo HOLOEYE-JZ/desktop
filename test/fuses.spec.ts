@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { asarFiles } from '../scripts/package-guard.mjs';
-import { removeProfile, tempProfile } from './helpers';
+import { realRegistrationSnapshot, removeProfile, tempProfile } from './helpers';
 
 /**
  * Reads the hardening back from the built binary: `npm run pack:test` first. No
@@ -51,6 +51,19 @@ function allFiles(dir: string, found: string[] = []): string[] {
 
 test.describe('the packaged app', () => {
   test.skip(!existsSync(EXE), 'run `npm run pack:test` first');
+
+  // The runs below start the package as the user would. A test pack must never point the user's
+  // mail links, Default apps or Open with at itself: the folder goes away after the tests.
+  let before = '';
+  test.beforeAll(() => {
+    before = realRegistrationSnapshot();
+  });
+
+  test.afterAll(async () => {
+    // A reg.exe a start left on its way could still write: give it the time, then look.
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    expect(realRegistrationSnapshot(), 'the user\'s Bulwark registration under HKCU').toBe(before);
+  });
 
   test('fuses read back from the built binary', () => {
     const fuses = readFuses(EXE);

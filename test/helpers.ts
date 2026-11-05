@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import { _electron as electron, expect, type ElectronApplication, type Page } from '@playwright/test';
+import { SEND_TO_NAME, windowsRegistrationKeys } from '../src/main/features/os-rules';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const MAIN = path.join(ROOT, 'dist', 'main.mjs');
@@ -188,6 +189,28 @@ export function requireAccount(): void {
 function reg(...args: string[]): { ok: boolean; out: string } {
   const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
   return { ok: result.status === 0, out: result.stdout ?? '' };
+}
+
+/**
+ * The user's real Bulwark registration under HKCU, as text, read only: what Default apps, the
+ * mail links, the file types, Open with, Send to, start at login and the toast activator point
+ * at. A package a test starts must leave it as it found it.
+ */
+export function realRegistrationSnapshot(): string {
+  if (process.platform !== 'win32') return '';
+  const { keys, values } = windowsRegistrationKeys('Bulwark.exe');
+  const lines: string[] = [];
+  for (const key of [...keys, 'Software\\Classes\\CLSID\\{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}']) {
+    const answer = reg('query', `HKCU\\${key}`, '/s');
+    lines.push(`${key}: ${answer.ok ? answer.out.trim() : 'none'}`);
+  }
+  for (const value of [...values, { key: 'Software\\Microsoft\\Windows\\CurrentVersion\\Run', name: 'Bulwark' }, { key: 'Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run', name: 'Bulwark' }]) {
+    const answer = reg('query', `HKCU\\${value.key}`, '/v', value.name);
+    lines.push(`${value.key} ${value.name}: ${answer.ok ? answer.out.trim() : 'none'}`);
+  }
+  const link = path.join(homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'SendTo', `${SEND_TO_NAME}.lnk`);
+  lines.push(`Send to: ${existsSync(link) ? statSync(link).mtimeMs : 'none'}`);
+  return lines.join('\n');
 }
 
 /** A development Electron, never an installed Bulwark.exe. */

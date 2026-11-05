@@ -159,6 +159,7 @@ Tests use a stand-in root under `HKCU\Software\BulwarkTest\Policies`, only in a 
 npm run dist:win          # for test/msi.spec.ts
 node scripts/build-update-fixtures.mjs   # for test/updater.spec.ts and test/readonly-install.spec.ts
 npm run pack:test         # test/fuses.spec.ts and friends: a package that takes --user-data-dir and Playwright
+                          # it never registers itself with Windows (test/pack-registration.spec.ts)
 npm run pack:strict       # test/policies-packaged.spec.ts: behaves as production, with its profile compiled in
 IT_ENT_PASSWORD=<the test account's password> npm test
 ```

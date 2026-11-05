@@ -1,11 +1,9 @@
-import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { flipFuses, FuseV1Options, FuseVersion } from '@electron/fuses';
 import { _electron as electron, expect, test, type ElectronApplication, type Page } from '@playwright/test';
-import { windowsRegistrationKeys } from '../src/main/features/os-rules';
-import { fakeOsIntegration, removeProfile, shownPage, tempProfile } from './helpers';
+import { fakeOsIntegration, realRegistrationSnapshot, removeProfile, shownPage, tempProfile } from './helpers';
 import { makeThunderbirdProfile } from './fixtures/make-thunderbird-profile';
 
 /**
@@ -17,23 +15,6 @@ import { makeThunderbirdProfile } from './fixtures/make-thunderbird-profile';
 const EXE = path.join(import.meta.dirname, '..', 'release', 'win-unpacked', 'Bulwark.exe');
 const PST = path.join(import.meta.dirname, 'fixtures', 'Outlook.pst');
 
-const regQuery = (...args: string[]) => spawnSync('reg.exe', ['query', ...args], { encoding: 'utf8', windowsHide: true }).stdout ?? '';
-
-/**
- * Whether this run's copy put itself in the registry. Other test runs on this machine use the
- * same keys, and a real install would too, so only what names this copy is this test's to touch.
- */
-function registeredBy(copy: string): boolean {
-  const named = (key: string) => regQuery(key, '/ve').toLowerCase().includes(copy.toLowerCase());
-  return named('HKCU\\Software\\Classes\\bulwark\\shell\\open\\command') || named('HKCU\\Software\\Classes\\Bulwark.Url.mailto\\shell\\open\\command');
-}
-
-function removeRegistration(): void {
-  const { keys, values } = windowsRegistrationKeys();
-  for (const key of keys) spawnSync('reg.exe', ['delete', `HKCU\\${key}`, '/f'], { windowsHide: true });
-  for (const value of values) spawnSync('reg.exe', ['delete', `HKCU\\${value.key}`, '/v', value.name, '/f'], { windowsHide: true });
-}
-
 type Granted = { url: string; kind: string; folder: string[]; size: number };
 type Scan = { ok: boolean; candidates: { handle: string; kind: string; folder: string[] }[]; books: { handle: string; contacts: number }[] };
 type Grant = { ok: boolean; files: Granted[]; contacts: string[]; refused: string[] };
@@ -44,6 +25,7 @@ test.describe('local import in a packaged app', () => {
 
   let base: string;
   let copy = '';
+  let registration = '';
   let profile: string;
   let app: ElectronApplication;
   let page: Page;
@@ -60,6 +42,8 @@ test.describe('local import in a packaged app', () => {
     delete env.ELECTRON_RUN_AS_NODE;
     // A package takes no --standalone: the mode comes from its state, as after a first run.
     writeFileSync(path.join(profile, 'shell-state.json'), JSON.stringify({ mode: 'standalone' }));
+    // A test pack writes nothing of itself into the OS (os-rules.ts registersWithOs).
+    registration = realRegistrationSnapshot();
     // Playwright needs the inspector fuse, off in a package. A copy has only that one flipped:
     // ASAR integrity and onlyLoadAppFromAsar stay on, so this is still a real package.
     copy = path.join(base, 'pkg');
@@ -82,8 +66,7 @@ test.describe('local import in a packaged app', () => {
     await app?.close().catch(() => undefined);
     // A reg.exe the start left on its way could still write: give it the time, then look.
     await new Promise((resolve) => setTimeout(resolve, 3000));
-    if (copy && registeredBy(copy)) removeRegistration();
-    if (copy) expect(registeredBy(copy), 'nothing of this copy left in the registry').toBe(false);
+    if (copy) expect(realRegistrationSnapshot(), 'the user\'s Bulwark registration under HKCU').toBe(registration);
     if (profile) removeProfile(profile);
     if (base) rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
   });

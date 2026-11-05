@@ -9,13 +9,13 @@ import path from 'node:path';
 import { app } from 'electron';
 import type { OsHub } from './os-hub';
 import { linuxAutostartEntry, LOGIN_FLAG } from './os-rules';
-import { isInstalledBuild } from '../installed';
+import { osRegistrationAllowed } from '../installed';
 
 // A development run can't overwrite an installed app's entry, and is easy to find.
 export const DEV_LOGIN_ITEM_NAME = 'Bulwark Dev';
 
 function loginItemName(): string {
-  return isInstalledBuild() ? 'Bulwark' : DEV_LOGIN_ITEM_NAME;
+  return osRegistrationAllowed() ? 'Bulwark' : DEV_LOGIN_ITEM_NAME;
 }
 
 function autostartFile(): string {
@@ -27,6 +27,9 @@ function launchArgs(): string[] {
 }
 
 export function applyLoginItem(openAtLogin: boolean): void {
+  // A package no installer put there (a test pack, an unpacked folder) never starts at login:
+  // the entry would outlive the folder. A development run keeps its own, named apart.
+  if (app.isPackaged && !osRegistrationAllowed()) return;
   if (process.platform === 'linux') {
     const file = autostartFile();
     if (!openAtLogin) {
@@ -54,7 +57,7 @@ export function readLoginItem(): { openAtLogin: boolean; executableWillLaunchAtL
 
 export function setupLogin(hub: OsHub): void {
   // An uninstall took the entry, or an update moved the path: an installed app puts it back.
-  if (isInstalledBuild() && hub.settings().startAtLogin) applyLoginItem(true);
+  if (osRegistrationAllowed() && hub.settings().startAtLogin) applyLoginItem(true);
   hub.on('settings', (settings, changed) => {
     if ('startAtLogin' in changed) applyLoginItem(settings.startAtLogin);
   });

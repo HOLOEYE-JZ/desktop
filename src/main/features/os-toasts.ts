@@ -19,10 +19,10 @@ import { strings } from '../strings';
 import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
 import { buildToastXml, inQuietHours, parseFocusAssist, parseToastArguments, REPLY_INPUT, type FocusAssist } from './os-rules';
-import { isInstalledBuild } from '../installed';
+import { osRegistrationAllowed } from '../installed';
 
 export const TOAST_CLSID = '{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}';
-// A development run points LocalServer32 at electron.exe: not over an installed app's.
+// A development run or a test pack points LocalServer32 at its own exe: not over an installed app's.
 export const DEV_TOAST_CLSID = '{C2D85A16-4E7B-4F39-8A10-6B3E9F72D154}';
 const REPEAT_MS = 10 * 60 * 1000;
 /** Windows has taken a toast long before this. No word by then counts as shown. */
@@ -39,7 +39,7 @@ const MAX_ACTIONS = 5;
 const TOASTS_PER_MINUTE = 12;
 
 export function setToastActivator(): void {
-  app.setToastActivatorCLSID(isInstalledBuild() ? TOAST_CLSID : DEV_TOAST_CLSID);
+  app.setToastActivatorCLSID(osRegistrationAllowed() ? TOAST_CLSID : DEV_TOAST_CLSID);
 }
 
 /** Do Not Disturb's profile (WNF) and the shell's notification state. PowerShell because Electron has no call for either. */

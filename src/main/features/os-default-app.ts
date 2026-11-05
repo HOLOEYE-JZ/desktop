@@ -37,7 +37,7 @@ import {
   windowsRegistrationKeys,
   type RegistryValue,
 } from './os-rules';
-import { isInstalledBuild } from '../installed';
+import { osRegistrationAllowed } from '../installed';
 
 // Set by build.mjs.
 declare const __BULWARK_TEST_BUILD__: boolean;
@@ -52,8 +52,22 @@ function testRegistryRoot(): string | undefined {
 
 const REGISTRY_ROOT = testRegistryRoot() ?? 'HKCU';
 
+/**
+ * Whether anything here may be written at all. An installed app, under HKCU. A development test
+ * run only to its stand-in key. A test pack or a folder no installer put there never, not even
+ * to a stand-in: a test that gives one sees it stay empty (test/pack-registration.spec.ts).
+ */
+export function mayRegister(): boolean {
+  return osRegistrationAllowed() || (REGISTRY_ROOT !== 'HKCU' && !app.isPackaged);
+}
+
+/** The key that stands for HKCU here: HKCU itself, or a test's own. */
+export function registryRoot(): string {
+  return REGISTRY_ROOT;
+}
+
 /** A test's own folder in place of the user's SendTo folder, so no test touches the real menu. */
-function sendToFolder(): string | null {
+export function sendToFolder(): string | null {
   if (__BULWARK_TEST_BUILD__) {
     const own = process.argv.find((arg) => arg.startsWith('--bulwark-test-sendto-dir='))?.slice('--bulwark-test-sendto-dir='.length);
     if (own) return own;
@@ -83,12 +97,14 @@ async function writeValue(value: RegistryValue): Promise<boolean> {
 }
 
 export async function registerOnWindows(exe: string): Promise<boolean> {
+  if (!mayRegister()) return false;
   const results = await Promise.all(windowsRegistration(exe).map(writeValue));
   return results.every(Boolean);
 }
 
 /** "Open with", "Choose another app" and the Send to shortcut, for this exe. */
 export async function registerOpenWithOnWindows(exe: string): Promise<boolean> {
+  if (!mayRegister()) return false;
   const results = await Promise.all(windowsOpenWithRegistration(exe).map(writeValue));
   const folder = sendToFolder();
   let shortcut = true;
@@ -110,6 +126,7 @@ export async function registerOpenWithOnWindows(exe: string): Promise<boolean> {
 
 /** Only what's ours: our class in each type's list, our own keys, our shortcut. */
 export async function unregisterOpenWithOnWindows(exe: string): Promise<void> {
+  if (!mayRegister()) return;
   const { keys, values } = windowsOpenWithKeys(path.win32.basename(exe));
   await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
   await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
@@ -118,6 +135,7 @@ export async function unregisterOpenWithOnWindows(exe: string): Promise<void> {
 }
 
 export async function unregisterOnWindows(): Promise<void> {
+  if (!mayRegister()) return;
   const { keys, values } = windowsRegistrationKeys(path.win32.basename(process.execPath));
   await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
   await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
@@ -164,7 +182,7 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
     if (win32) {
       await register();
       await shell.openExternal(DEFAULT_APP_SETTINGS_URL);
-    } else {
+    } else if (mayRegister()) {
       app.setAsDefaultProtocolClient('mailto');
       app.setAsDefaultProtocolClient('webcal');
       if (process.platform === 'linux') await linuxMakeDefault();
@@ -173,9 +191,9 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
   };
 
   // Follows the path of an update, and comes back after an uninstall and a reinstall to the
-  // same path, so this asks the registry rather than remember. A development run writes
-  // nothing unless asked, and a test's goes to its own key.
-  if (win32 && (isInstalledBuild() || REGISTRY_ROOT !== 'HKCU')) {
+  // same path, so this asks the registry rather than remember. A development run writes only
+  // to a test's own key, and a test pack nothing (mayRegister).
+  if (win32 && mayRegister()) {
     void reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']).then((query) => {
       if (needsRegistration(query, process.execPath)) void register();
     });
@@ -203,7 +221,7 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
       if (now.OpenWithEnabled.value !== before.OpenWithEnabled.value) reapply();
     });
   }
-  if (isInstalledBuild() && !win32) app.setAsDefaultProtocolClient('bulwark');
+  if (osRegistrationAllowed() && !win32) app.setAsDefaultProtocolClient('bulwark');
 
   return { status, open, register, unregister: unregisterOnWindows };
 }

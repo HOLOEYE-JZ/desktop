@@ -61,7 +61,7 @@ import { printWindow, saveWindowAsPdf } from './print';
 import { navigateHistory } from './features/window-input';
 import { appPathOfDeepLink, deepLinkWindowKey, LinkRateLimit, DEEP_LINK_SCHEME, type WindowLink } from './deep-link';
 import { closeDictionaryDownloads } from './spellcheck';
-import { isInstalledBuild } from './installed';
+import { isInstalledBuild, osRegistrationAllowed } from './installed';
 
 // Set by build.mjs. Not app.isPackaged: Electron decides that by the exe's name, and
 // anyone can rename it. See installed.ts.
@@ -114,9 +114,9 @@ app.setName('Bulwark');
 const ABOUT_COPYRIGHT = 'AGPL-3.0-only';
 app.setAboutPanelOptions({ applicationName: 'Bulwark', applicationVersion: app.getVersion(), copyright: ABOUT_COPYRIGHT, website: 'https://bulwarkmail.org' });
 if (process.platform === 'win32') {
-  // A test build, or a package with its profile baked in for the tests, keeps off the user's
-  // jump list, taskbar group and notifications.
-  app.setAppUserModelId(appUserModelId(__BULWARK_TEST_BUILD__ || Boolean(__BULWARK_TEST_PROFILE__)));
+  // A test build, a package with its profile baked in for the tests, and a folder no installer
+  // put there keep off the user's jump list, taskbar group and notifications.
+  app.setAppUserModelId(appUserModelId(!osRegistrationAllowed()));
   setToastActivator();
 }
 
@@ -842,7 +842,7 @@ if (gotLock) {
   // Registered here: macOS sends a launch's file or link before `ready`.
   holdEarlyLaunches();
   // Unpackaged, the shell isn't what the OS should start for these. Windows: os-default-app.ts.
-  if (electronRegistersScheme(process.platform, isInstalledBuild())) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+  if (electronRegistersScheme(process.platform, osRegistrationAllowed())) app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
 
   app.on('window-all-closed', () => {
     // Closing to the tray hides the main window, so this means there's nothing left.

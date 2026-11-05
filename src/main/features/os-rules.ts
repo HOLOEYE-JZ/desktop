@@ -566,6 +566,33 @@ export function appUserModelId(testBuild: boolean): string {
   return testBuild ? TEST_APP_USER_MODEL_ID : APP_USER_MODEL_ID;
 }
 
+/** What put a Windows copy of the app where it is. A folder no installer made has neither mark. */
+export type WindowsInstaller = 'nsis' | 'msi' | 'none';
+
+/** The file the MSI puts next to the exe (scripts/msi-project.cjs). An NSIS install has its uninstaller there. */
+export const MSI_MARKER_FILE = 'installed-by-msi.ini';
+
+/** `exeName` without `.exe`: electron-builder names the NSIS uninstaller after the executable. */
+export function windowsInstallerOf(exists: (name: string) => boolean, exeName: string): WindowsInstaller {
+  if (exists(`Uninstall ${exeName}.exe`)) return 'nsis';
+  if (exists(MSI_MARKER_FILE)) return 'msi';
+  return 'none';
+}
+
+/**
+ * Whether this copy may write itself into the user's OS: mail links, file types, Default apps,
+ * Open with, Send to, start at login, the installed app's toast activator and jump list. Only a
+ * production build an installer put there. A test build, a test pack (scripts/pack-test.mjs: a
+ * test build, or one with its profile baked in) and a folder nobody installed (`electron-builder
+ * --dir`'s win-unpacked, a copy of it) would point the user's registration at an exe that goes
+ * away again. A development test run may still write to a stand-in key of its own
+ * (os-default-app.ts).
+ */
+export function registersWithOs(facts: { platform: NodeJS.Platform; testBuild: boolean; bakedProfile: boolean; installer: WindowsInstaller }): boolean {
+  if (facts.testBuild || facts.bakedProfile) return false;
+  return facts.platform !== 'win32' || facts.installer !== 'none';
+}
+
 export const WINDOWS_CAPABILITIES = 'Software\\Bulwark\\Capabilities';
 
 export interface RegistryValue {
