@@ -62,6 +62,47 @@ async function draftCount(): Promise<number> {
   return (boxes as { list: { role: string | null; totalEmails: number }[] }).list.find((box) => box.role === 'drafts')?.totalEmails ?? 0;
 }
 
+/** Toasts handed to Windows, kept instead of shown. */
+const recordToasts = (app: ElectronApplication) => app.evaluate(({ Notification }) => {
+  const g = globalThis as unknown as { __toasts: string[]; __bulwarkOs: { toasts: { setFocusAssistForTest: (v: string) => void } } };
+  g.__toasts = [];
+  Notification.prototype.show = function show(this: Electron.Notification) {
+    g.__toasts.push(this.toastXml || `${this.title}|${this.body}`);
+    this.emit('show');
+  };
+  g.__bulwarkOs.toasts.setFocusAssistForTest('off');
+});
+
+async function discardToast(app: ElectronApplication): Promise<string> {
+  let found = '';
+  await expect.poll(async () => {
+    const toasts = await app.evaluate(() => (globalThis as unknown as { __toasts: string[] }).__toasts);
+    found = toasts.find((toast) => toast.includes('discardedDraft')) ?? '';
+    return found !== '';
+  }, { timeout: 30_000 }).toBe(true);
+  return found;
+}
+
+/** A button on the toast, as Windows hands it back: its signed action and context. */
+async function pressToastButton(app: ElectronApplication, toast: string, action: string): Promise<void> {
+  const unescape = (text: string) => text.replace(/&#(\d+);/g, (_all, code) => String.fromCharCode(Number(code))).replace(/&amp;/g, '&');
+  const launch = new RegExp(`arguments="([^"]*)"[^>]*content="Undo"|content="Undo"[^>]*arguments="([^"]*)"`).exec(toast);
+  const url = launch ? unescape(launch[1] ?? launch[2]) : '';
+  const context = url ? new URL(url).searchParams.get('c') : null;
+  if (!context) throw new Error(`No Undo button in ${toast}`);
+  await app.evaluate((_e, [a, c]) => (globalThis as unknown as { __bulwarkOs: { hub: { toastAction: (a: string, c: string) => void } } }).__bulwarkOs.hub.toastAction(a, c), [action, context] as const);
+}
+
+const mainVisible = (app: ElectronApplication) => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some((w) => !w.webContents.getURL().includes('/popout/') && w.isVisible()));
+
+async function draftHasAttachment(subject: string): Promise<boolean> {
+  const [[, answer]] = await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Email/query', { filter: { subject, hasKeyword: '$draft' }, limit: 5 }, 'q']]);
+  const ids = (answer as { ids: string[] }).ids;
+  if (!ids.length) return false;
+  const [[, got]] = await jmap(SERVER, ACCOUNT, ENT_PASSWORD, [['Email/get', { ids, properties: ['attachments'] }, 'g']]);
+  return (got as { list: { attachments: { name: string }[] }[] }).list.some((email) => email.attachments.some((part) => part.name === 'figures.txt'));
+}
+
 /** Back on the mail page with no composer, whatever the test before left. */
 async function clearMain(page: Page): Promise<void> {
   const open = page.locator(COMPOSER);
@@ -131,6 +172,56 @@ test.describe(`quick compose on ${STALWART.label}`, () => {
     await expect.poll(() => drafts(subject), { timeout: 30_000 }).toHaveLength(1);
     // Asked nothing: it was saved.
     expect((await prompts(app)).filter((p) => /unsaved|not saved/i.test(p.message))).toEqual([]);
+  });
+
+  // desktop-p3-1: the bin right of Send threw text away with no Undo anyone could reach.
+  test('the bin, before the first save: a notification with Undo, and Undo brings the text back in quick compose', async () => {
+    const subject = `${TAG} binned early`;
+    await recordToasts(app);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].hide());
+    const composer = await openQuick(app);
+    await typeInto(composer, subject, 'Typed a moment ago');
+    await composer.getByTestId('composer-discard').click();
+    await expect.poll(() => composerWindows(app), { timeout: 30_000 }).toBe(0);
+    const toast = await discardToast(app);
+    expect(toast).toContain('Draft discarded');
+    expect(toast).toContain(subject);
+    expect(toast).toMatch(/content="Undo"/);
+    // Nothing saved: no draft to restore from.
+    expect(await drafts(subject)).toHaveLength(0);
+
+    await pressToastButton(app, toast, 'undo');
+    const restored = await pageWith(app, '/popout/compose');
+    await expect(subjectField(restored)).toHaveValue(subject, { timeout: 60_000 });
+    await expect(restored.locator(COMPOSER)).toContainText('Typed a moment ago');
+    // Quick compose's size, and the main window stays in the tray.
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/popout/compose'))!.getBounds().width)).toBeLessThan(740);
+    expect(await mainVisible(app)).toBe(false);
+    // It saves itself again.
+    await expect.poll(() => drafts(subject), { timeout: 60_000 }).toHaveLength(1);
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => !w.webContents.getURL().includes('/popout/'))?.show());
+  });
+
+  test('the bin, after a save: the draft goes at once, and Undo brings it back with its attachment', async () => {
+    const subject = `${TAG} binned saved`;
+    await recordToasts(app);
+    const composer = await openQuick(app);
+    await typeInto(composer, subject, 'Saved before the bin');
+    await composer.locator('input[type="file"]').first().setInputFiles({ name: 'figures.txt', mimeType: 'text/plain', buffer: Buffer.from('Q3 figures') });
+    await expect(composer.getByTestId('composer-attachments')).toContainText('figures.txt', { timeout: 30_000 });
+    await expect.poll(() => drafts(subject), { timeout: 60_000 }).toHaveLength(1);
+    await expect.poll(() => draftHasAttachment(subject), { timeout: 60_000 }).toBe(true);
+    await composer.getByTestId('composer-discard').click();
+    await expect.poll(() => composerWindows(app), { timeout: 30_000 }).toBe(0);
+    await expect.poll(() => drafts(subject), { timeout: 30_000 }).toHaveLength(0);
+
+    const toast = await discardToast(app);
+    await pressToastButton(app, toast, 'undo');
+    const restored = await pageWith(app, '/popout/compose');
+    await expect(subjectField(restored)).toHaveValue(subject, { timeout: 60_000 });
+    await expect(restored.getByTestId('composer-attachments')).toContainText('figures.txt');
+    await expect.poll(() => drafts(subject), { timeout: 60_000 }).toHaveLength(1);
+    await expect.poll(() => draftHasAttachment(subject), { timeout: 60_000 }).toBe(true);
   });
 
   test('closing an empty one leaves nothing behind', async () => {
