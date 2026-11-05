@@ -26,6 +26,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { BrowserSignInBegin, BrowserSignInResult, PasswordSignInAnswer, PasswordSignInAttempt, PasswordSignInStart } from '../shared/bridge';
+import { formPage, outcomePage, pageCsp, pickLanguage, type FormPageInput, type SignInLanguage, type SignInOutcome } from './sign-in-page';
 
 export const CALLBACK_PATH = '/bulwark-desktop/callback';
 /** Parsed in deep-link.ts, the one parser for the scheme. */
@@ -39,31 +40,12 @@ const STABLE_PORT_MIN = 30000;
 const STABLE_PORT_RANGE = 10000;
 const MAX_REMEMBERED_PORTS = 64;
 
-export interface SignInText {
-  signInDone: string;
-  /** With `{address}`: the account a password sign-in just signed in. */
-  signInDoneAs: string;
-  /** The button that brings the app forward (bulwark://inbox). */
-  signInOpenApp: string;
-  signInFailed: string;
-  signInLinkUsed: string;
-  signInDeclined: string;
-  signInPageTitle: string;
-  signInPageIntro: string;
-  signInUsername: string;
-  signInPassword: string;
-  signInCode: string;
-  signInSubmit: string;
-  signInWrongPassword: string;
-  signInCodeNeeded: string;
-  signInNoAnswer: string;
-}
-
 export interface SignInDeps {
   open: (url: string) => Promise<void>;
   /** Brings the window that started the flow to the front. */
   bringForward: (owner: number) => void;
-  text: () => SignInText;
+  /** The app's language: the pages speak it when the browser names none they have. */
+  language?: () => string;
   /** Instance mode: the browser opens this origin and no other. */
   instanceOrigin?: string;
   /** The password page's port per mail server. Kept, so saved passwords keep matching. */
@@ -79,6 +61,8 @@ type FlowKind = 'oauth' | 'instance';
 interface PendingAttempt {
   response: ServerResponse;
   timer: NodeJS.Timeout;
+  /** The tab's language, for the page it gets back. */
+  language: SignInLanguage;
 }
 
 interface PasswordState {
@@ -126,14 +110,6 @@ function same(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
-
-function fill(text: string, values: Record<string, string>): string {
-  return text.replace(/\{(\w+)\}/g, (whole, name: string) => values[name] ?? whole);
-}
-
 /** A navigation gets an answer. A fetch, an image, a frame or another host doesn't. */
 export function navigationAllowed(req: Pick<IncomingMessage, 'headers'>, port: number): boolean {
   // DNS rebinding: a name an attacker owns, resolving here, arrives with that name.
@@ -146,11 +122,11 @@ export function navigationAllowed(req: Pick<IncomingMessage, 'headers'>, port: n
   return true;
 }
 
-function send(res: ServerResponse, status: number, body: string, nonce: string): void {
+function send(res: ServerResponse, status: number, body: string, withScript: boolean): void {
   res.writeHead(status, {
     'content-type': 'text/html; charset=utf-8',
     'cache-control': 'no-store',
-    'content-security-policy': `default-src 'none'; style-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'`,
+    'content-security-policy': pageCsp(withScript),
     // Not no-referrer: with that, a browser sends `Origin: null` on the form's own post,
     // and the check below couldn't tell it from a sandboxed frame's.
     'referrer-policy': 'same-origin',
@@ -172,50 +148,24 @@ function refuse(res: ServerResponse, status: number): void {
   res.writeHead(status, { 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', connection: 'close' }).end();
 }
 
-/** The sign-in card's look: the standard theme's colours, light or dark as the browser is. */
-const STYLE = ':root{color-scheme:light dark;--bg:#f1f5f9;--card:#fff;--fg:#0f172a;--muted:#59687c;--border:#e2e8f0;--primary:#2563eb;--field:#f8fafc;--error:#b91c1c}@media(prefers-color-scheme:dark){:root{--bg:#0b1120;--card:#111827;--fg:#f1f5f9;--muted:#94a3b8;--border:#1f2937;--primary:#3b82f6;--field:#0f172a;--error:#fca5a5}}body{font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;background:var(--bg);color:var(--fg)}main{box-sizing:border-box;width:min(26em,92vw);padding:2em 1.75em;background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:0 10px 30px rgba(15,23,42,.08);text-align:center}.logo{width:48px;height:48px;fill:var(--primary);display:block;margin:0 auto .75em}p{margin:.75em 0}h1{font-size:1.2em;margin:.25em 0 .5em}form{text-align:start}label{display:block;margin:.75em 0 .25em;font-size:.875em;font-weight:500}input{box-sizing:border-box;width:100%;padding:.6em .75em;font:inherit;color:inherit;background:var(--field);border:1px solid var(--border);border-radius:10px}input:focus{outline:2px solid var(--primary);outline-offset:1px}button,.button{display:block;box-sizing:border-box;margin-top:1.25em;width:100%;padding:.65em;font:inherit;font-weight:600;color:#fff;background:var(--primary);border:0;border-radius:10px;cursor:pointer;text-decoration:none;text-align:center}.error{color:var(--error)}';
-
-/** Bulwark's mark, inline: the page's policy lets nothing load. */
-const LOGO = '<svg class="logo" viewBox="0 0 1000 1000" role="img" aria-label="Bulwark"><path d="M 373.467 557.247 L 55.226 271.52 L 55.226 385.564 C 55.226 398.153 62.453 415.6 71.355 424.501 L 107.525 460.671 C 116.426 469.573 123.653 487.02 123.653 499.609 L 123.653 682.08 C 123.655 718.462 133.336 750.017 152.047 778.668 L 373.467 557.247 Z M 626.533 557.247 L 944.774 271.52 L 944.774 396.969 C 944.774 403.263 941.16 411.987 936.709 416.437 L 884.411 468.736 C 879.96 473.186 876.347 481.91 876.347 488.204 L 876.347 682.08 C 876.345 718.462 866.664 750.017 847.953 778.668 L 626.533 557.247 Z M 500 638.743 L 500 638.743 C 466.206 638.738 448.855 625.316 424.448 603.033 L 197.809 829.672 C 261.382 884.635 364.213 931.859 500 990 Q 500 990 500 990 C 635.787 931.859 738.618 884.635 802.191 829.672 L 575.552 603.033 C 551.145 625.316 533.794 638.738 500 638.743 Z M 483.028 563.647 L 63.713 187.183 C 59.029 182.978 55.226 174.454 55.226 168.159 L 55.226 122.542 C 55.226 116.247 60.206 109.988 66.339 108.573 L 215.181 74.225 C 221.314 72.809 226.293 76.77 226.293 83.065 L 226.293 176.92 L 352.034 147.895 C 358.167 146.479 363.147 140.219 363.147 133.925 L 363.147 51.483 C 363.147 45.189 368.126 38.93 374.259 37.514 L 488.888 11.061 C 495.021 9.646 504.979 9.646 511.112 11.061 L 625.741 37.514 C 631.874 38.93 636.853 45.189 636.853 51.483 L 636.853 133.925 C 636.853 140.219 641.833 146.479 647.966 147.895 L 773.707 176.92 L 773.707 83.065 C 773.707 76.77 778.686 72.809 784.819 74.225 L 933.661 108.573 C 939.794 109.988 944.774 116.247 944.774 122.542 L 944.774 168.159 C 944.774 174.454 940.971 182.978 936.287 187.183 L 516.972 563.647 C 507.605 572.056 492.395 572.056 483.028 563.647 Z"/></svg>';
-
-/** Where "Open Bulwark" goes: the app's own scheme, which brings it forward on the inbox. */
-export const OPEN_APP_LINK = 'bulwark://inbox';
-
-function page(title: string, body: string, nonce: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="light dark"><style nonce="${nonce}">${STYLE}</style></head><body><main>${LOGO}${body}</main></body></html>`;
+/** What happened, what to do, and the way back to the app. */
+function sendOutcome(res: ServerResponse, status: number, language: SignInLanguage, outcome: SignInOutcome, address?: string): void {
+  send(res, status, outcomePage(language, outcome, address), true);
 }
 
-/** A line of text, and on success the button back to the app (settings-p3-15). */
-function sendMessage(res: ServerResponse, status: number, message: string, openApp?: string): void {
-  const nonce = randomBytes(16).toString('base64');
-  const button = openApp ? `<a class="button" href="${OPEN_APP_LINK}">${escapeHtml(openApp)}</a>` : '';
-  send(res, status, page('Bulwark', `<p>${escapeHtml(message)}</p>${button}`, nonce), nonce);
-}
-
-function sendForm(res: ServerResponse, status: number, text: SignInText, password: PasswordState, error: string | null, needsCode: boolean): void {
-  const nonce = randomBytes(16).toString('base64');
-  const title = fill(text.signInPageTitle, { server: password.host });
-  const body = [
-    `<h1>${escapeHtml(title)}</h1>`,
-    `<p>${escapeHtml(fill(text.signInPageIntro, { server: password.host }))}</p>`,
-    error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : '',
-    '<form method="post" autocomplete="on">',
-    `<input type="hidden" name="nonce" value="${escapeHtml(password.nonce)}">`,
-    `<label for="username">${escapeHtml(text.signInUsername)}</label>`,
-    `<input id="username" name="username" type="text" autocomplete="username" required autofocus value="${escapeHtml(password.username)}">`,
-    `<label for="password">${escapeHtml(text.signInPassword)}</label>`,
-    '<input id="password" name="password" type="password" autocomplete="current-password" required>',
-    needsCode ? `<label for="totp">${escapeHtml(text.signInCode)}</label><input id="totp" name="totp" type="text" inputmode="numeric" maxlength="8" autocomplete="one-time-code" required>` : '',
-    `<button type="submit">${escapeHtml(text.signInSubmit)}</button>`,
-    '</form>',
-  ].join('');
-  send(res, status, page(title, body, nonce), nonce);
+function sendForm(res: ServerResponse, status: number, language: SignInLanguage, password: PasswordState, problem: FormPageInput['problem'], needsCode: boolean): void {
+  const page = formPage(language, { host: password.host, nonce: password.nonce, username: password.username, problem, needsCode });
+  send(res, status, page, false);
 }
 
 export class LoopbackSignIn {
   private readonly flows = new Map<string, Flow>();
 
   constructor(private readonly deps: SignInDeps) {}
+
+  private language(req: IncomingMessage): SignInLanguage {
+    return pickLanguage(req.headers['accept-language'], this.deps.language?.());
+  }
 
   /** A window has one flow at a time. A new click replaces what it had waiting. */
   async begin(owner: number, kind: FlowKind, serverOrigin: string | null): Promise<BrowserSignInBegin> {
@@ -271,11 +221,11 @@ export class LoopbackSignIn {
     if (!navigationAllowed(req, flow.port)) return refuse(res, 403);
     const url = new URL(req.url ?? '/', `http://127.0.0.1:${flow.port}`);
     if (req.method !== 'GET' || url.pathname !== CALLBACK_PATH) return refuse(res, 404);
-    const text = this.deps.text();
-    // Not our redirect, or a second one: nothing moves, nothing is said about why.
-    if (flow.answered || !same(url.searchParams.get('state') ?? '', flow.state)) {
-      return sendMessage(res, 400, text.signInFailed);
-    }
+    const language = this.language(req);
+    // Not our redirect: nothing moves, nothing is said about why.
+    if (!same(url.searchParams.get('state') ?? '', flow.state)) return sendOutcome(res, 400, language, 'failed');
+    // Ours, a second time: a reload before the listener went.
+    if (flow.answered) return sendOutcome(res, 410, language, 'used');
     flow.answered = true;
     const code = url.searchParams.get('code');
     const result: BrowserSignInResult = code
@@ -284,7 +234,7 @@ export class LoopbackSignIn {
     // Closed once the browser has its page, not before.
     whenClosed(res, () => this.delivered(flow, result));
     const declined = url.searchParams.get('error') === 'access_denied';
-    sendMessage(res, code ? 200 : declined ? 403 : 400, code ? text.signInDone : declined ? text.signInDeclined : text.signInFailed, code ? text.signInOpenApp : undefined);
+    sendOutcome(res, code ? 200 : declined ? 403 : 400, language, code ? 'done' : declined ? 'declined' : 'failed');
   }
 
   private delivered(flow: Flow, result: BrowserSignInResult): void {
@@ -429,9 +379,9 @@ export class LoopbackSignIn {
     if (req.method === 'GET') {
       if (!navigationAllowed(req, flow.port)) return refuse(res, 403);
       if (!token) return refuse(res, 404);
-      if (password.tokenUsed || !same(token, password.token)) return sendMessage(res, 410, this.deps.text().signInLinkUsed);
+      if (password.tokenUsed || !same(token, password.token)) return sendOutcome(res, 410, this.language(req), 'used');
       password.tokenUsed = true;
-      return sendForm(res, 200, this.deps.text(), password, null, false);
+      return sendForm(res, 200, this.language(req), password, null, false);
     }
     if (req.method === 'POST') return this.onPasswordPost(flow, password, token, req, res);
     refuse(res, 405);
@@ -466,7 +416,7 @@ export class LoopbackSignIn {
       password.username = username;
       const timer = setTimeout(() => this.answerPassword(flow.id, flow.owner, { ok: false, error: 'other' }), this.deps.attemptTimeoutMs ?? ATTEMPT_TIMEOUT_MS);
       timer.unref?.();
-      password.inFlight = { response: res, timer };
+      password.inFlight = { response: res, timer, language: this.language(req) };
       const totp = form.get('totp')?.trim();
       const attempt: PasswordSignInAttempt = { ok: true, username, password: secret, ...(totp ? { totp } : {}) };
       if (password.waiter) {
@@ -499,14 +449,13 @@ export class LoopbackSignIn {
     if (!flow || !password || !pending) return;
     clearTimeout(pending.timer);
     password.inFlight = null;
-    const text = this.deps.text();
     if (answer.ok) {
       flow.answered = true;
       whenClosed(pending.response, () => this.delivered(flow, { ok: true, code: '', state: flow.state }));
-      return sendMessage(pending.response, 200, fill(text.signInDoneAs, { address: password.username }), text.signInOpenApp);
+      return sendOutcome(pending.response, 200, pending.language, 'done', password.username);
     }
-    const message = answer.error === 'invalid_credentials' ? text.signInWrongPassword : answer.error === 'totp_required' ? text.signInCodeNeeded : text.signInNoAnswer;
-    sendForm(pending.response, answer.error === 'other' ? 502 : 401, text, password, message, answer.error === 'totp_required');
+    const problem = answer.error === 'invalid_credentials' ? 'wrongPassword' : answer.error === 'totp_required' ? 'codeNeeded' : 'noAnswer';
+    sendForm(pending.response, answer.error === 'other' ? 502 : 401, pending.language, password, problem, answer.error === 'totp_required');
   }
 
   /** How the flow ended. */
@@ -561,7 +510,7 @@ export class LoopbackSignIn {
       // A tab still waiting on a post gets its answer before the listener goes.
       clearTimeout(pending.timer);
       whenClosed(pending.response, () => this.closeServer(flow));
-      sendMessage(pending.response, 410, this.deps.text().signInFailed);
+      sendOutcome(pending.response, 410, pending.language, !result.ok && result.error === 'timeout' ? 'expired' : 'failed');
     } else {
       this.closeServer(flow);
     }
