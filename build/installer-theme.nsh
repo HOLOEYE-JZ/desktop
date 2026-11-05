@@ -56,30 +56,31 @@ ManifestDPIAware true
 
 ; The steps: from and to in percent of the bar, and the usual time in tenths of a second, by
 ; which the bar moves on inside a step that reports no progress of its own. Shares follow the
-; times measured on a "Bulwark Test" build (Windows 11, Defender on):
+; times measured on a "Bulwark Test" build (Windows 11, Defender on, medians of 5):
 ;
-;   fresh install   unpacking 7 s, moving the files in 0.1 s, the uninstaller, shortcuts and
-;                   registry 0.3 s, Bulwark's own registration 0.2 s
-;   update          the same, after the old version's uninstaller: 3 s, or 18 s for one from
-;                   before installer-speed.nsh, whose share then sits near its end a while
+;   fresh install   the installer's copy of the 7z 0.4 s, unpacking 2.5 s, moving the files
+;                   in 0.04 s, its copy for the next update, the uninstaller, the uninstall
+;                   entry and the shortcut 0.2 s, Bulwark's registration under 0.1 s
+;   update          the same, after the old version's uninstaller: 1.4 s, or about 10 s for
+;                   one from before installer-speed.nsh, whose share then sits near its end
+;   uninstall       about 3 s from the window to the folder gone
 ;
-; The installer's copy of the 7z it unpacks is part of "unpacking", and the first step comes
-; once the window is up, after the integrity check.
+; The first step comes once the window is up, after the integrity check.
 !define BULWARK_STEP_SPLASH_STEP 0x8043
 !define BULWARK_STEP_SPLASH_PROGRESS 0x8044
-!define BULWARK_STEP_FRESH_PAYLOAD "0 8 10"
-!define BULWARK_STEP_FRESH_UNPACK "8 86 70"
-!define BULWARK_STEP_FRESH_PLACE "86 88 2"
-!define BULWARK_STEP_FRESH_SHORTCUTS "88 93 3"
-!define BULWARK_STEP_UPDATE_OLD "0 30 30"
-!define BULWARK_STEP_UPDATE_UNPACK "30 86 70"
-!define BULWARK_STEP_UPDATE_PLACE "86 88 2"
-!define BULWARK_STEP_UPDATE_SHORTCUTS "88 93 3"
+!define BULWARK_STEP_FRESH_PAYLOAD "0 12 4"
+!define BULWARK_STEP_FRESH_UNPACK "12 86 25"
+!define BULWARK_STEP_FRESH_PLACE "86 88 1"
+!define BULWARK_STEP_FRESH_SHORTCUTS "88 93 2"
+!define BULWARK_STEP_UPDATE_OLD "0 30 14"
+!define BULWARK_STEP_UPDATE_UNPACK "30 86 25"
+!define BULWARK_STEP_UPDATE_PLACE "86 88 1"
+!define BULWARK_STEP_UPDATE_SHORTCUTS "88 93 2"
 !define BULWARK_STEP_REGISTER "93 97 2"
 !define BULWARK_STEP_START "97 100 2"
 !define BULWARK_STEP_DONE "100 100 0"
 !define BULWARK_STEP_UN_WINDOWS "0 15 3"
-!define BULWARK_STEP_UN_FILES "15 100 20"
+!define BULWARK_STEP_UN_FILES "15 100 30"
 
 ; One step: from, to, tenths, the line under the bar ("" keeps the one shown). The window
 ; copies the line before SendMessage returns. Nothing without a window.
