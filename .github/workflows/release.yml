@@ -12,9 +12,9 @@ name: Release
 # `gh attestation verify <file> --repo bulwarkmail/desktop`.
 #
 # Signing: Windows signs every build through Azure Artifact Signing when the repository has
-# the AZURE_* secrets, and is unsigned otherwise (see the windows job). macOS signs and
-# notarizes on a tag when the repository has its secrets, and is unsigned otherwise. Betas
-# publish with nobody looking. The `release` environment a stable tag publishes through doesn't
+# the AZURE_* secrets, and is unsigned otherwise (see the windows job). macOS signs with the
+# Developer ID and notarizes every build, betas too, when the repository has the MAC_* and
+# APPLE_* secrets, and is ad-hoc signed otherwise. Betas publish with nobody looking. The `release` environment a stable tag publishes through doesn't
 # exist yet, and GitHub creates it with no reviewers, so until someone sets it up a pushed tag
 # publishes with nobody looking too. Whoever can publish here can put code on every install.
 # See "First stable release" in the README. Actions are pinned by commit.
@@ -297,17 +297,18 @@ jobs:
       - name: Build the shell
         run: npm run build
 
-      # With the secrets: Developer ID signature, hardened runtime, notarization. Without:
-      # an ad-hoc signature, or Apple silicon won't start it at all, and Gatekeeper warns.
+      # With the secrets: Developer ID signature, hardened runtime, notarization, on betas too,
+      # so Gatekeeper opens a beta without a warning and Squirrel.Mac can update it (it refuses
+      # an update that isn't signed by the same identity as the running app). Without: an
+      # ad-hoc signature, or Apple silicon won't start it at all, and Gatekeeper warns.
       # Hardened runtime with ad-hoc would refuse the bundle's own native modules.
       - name: Build installers
         env:
-          # Only on a tag: a beta from main has no business with the signing keys.
-          MAC_CERTIFICATE: ${{ github.ref_type == 'tag' && secrets.MAC_CERTIFICATE || '' }}
-          MAC_CERTIFICATE_PASSWORD: ${{ github.ref_type == 'tag' && secrets.MAC_CERTIFICATE_PASSWORD || '' }}
-          APPLE_API_KEY_BASE64: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_BASE64 || '' }}
-          APPLE_API_KEY_ID: ${{ github.ref_type == 'tag' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ github.ref_type == 'tag' && secrets.APPLE_API_ISSUER || '' }}
+          MAC_CERTIFICATE: ${{ secrets.MAC_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           signing=()
           if [ -n "$MAC_CERTIFICATE" ]; then
@@ -322,6 +323,21 @@ jobs:
           fi
           unset APPLE_API_KEY_BASE64 MAC_CERTIFICATE MAC_CERTIFICATE_PASSWORD
           npx electron-builder --mac --universal --publish never "${signing[@]}"
+
+      # A signed build must carry a valid Developer ID signature and a stapled notarization
+      # ticket, so Gatekeeper accepts it offline. An ad-hoc build only needs a valid signature.
+      - name: Check the signature
+        env:
+          SIGNED: ${{ secrets.MAC_CERTIFICATE != '' }}
+        run: |
+          app="$(ls -d release/mac-universal/*.app | head -n 1)"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv --verbose=2 "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime)' || true
+          if [ "$SIGNED" = true ]; then
+            codesign -dv --verbose=2 "$app" 2>&1 | grep -q '^Authority=Developer ID Application: '
+            xcrun stapler validate "$app"
+            spctl --assess --type execute --verbose=2 "$app"
+          fi
 
       - name: Check the file modes in the packages
         run: node scripts/verify-package-modes.mjs release
@@ -526,12 +542,18 @@ jobs:
           WEBMAIL_REF: ${{ needs.prepare.outputs.webmail_ref }}
           WEBMAIL_COMMIT: ${{ needs.prepare.outputs.webmail_commit }}
           SHA: ${{ github.sha }}
+          SIGNED_WIN: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+          SIGNED_MAC: ${{ secrets.MAC_CERTIFICATE != '' }}
         run: |
           previous="$(gh release list --exclude-drafts --limit 1 --json tagName --jq '.[0].tagName // empty')"
           {
             case "$VERSION" in
               *-*)
-                echo 'This is a beta, and it is not signed. On Windows, SmartScreen says "Windows protected your PC" for a downloaded installer: choose More info, then Run anyway. On macOS it should need System Settings > Privacy & Security > Open Anyway the first time. We have not tested that on a Mac yet. Windows and the AppImage update themselves with no signature check: the only barrier to a bad release is the security of the GitHub accounts that can publish here.'
+                if [ "$SIGNED_WIN" = true ] && [ "$SIGNED_MAC" = true ]; then
+                  echo 'This is a beta. The Windows installers are signed by Rath & Blume GbR, and the macOS app is signed with its Developer ID and notarized by Apple. The Linux packages are not signed. If you installed an unsigned macOS beta before, download this one once by hand: an unsigned build cannot update itself to a signed one.'
+                else
+                  echo 'This is a beta, and not every build is signed. An unsigned Windows installer gets "Windows protected your PC" from SmartScreen: choose More info, then Run anyway. An unsigned macOS app needs System Settings > Privacy & Security > Open Anyway the first time.'
+                fi
                 echo
                 ;;
             esac

@@ -89,7 +89,7 @@ What a copy does depends on how it got there:
 - **The updater checks the publisher.** A signed build's `app-update.yml` names the publisher, and electron-updater then refuses an installer that isn't signed by it. The first signed version installs fine over an unsigned one. Never change the publisher name without listing the old one too, or every signed install stops updating. Betas are signed for the same reason: a signed stable copy that moves to beta would refuse an unsigned beta.
 - **Unsigned copies.** An unsigned Windows build skips that check and relies on the sha512 in `latest.yml`, which comes from the same release as the installer. So for those, **anyone who can publish a release on `bulwarkmail/desktop` can run code on every install that updates itself**. That's why a stable release waits for a reviewer.
 - **SmartScreen.** A browser marks a downloaded file with its origin. Windows shows "Windows protected your PC" for an unsigned installer, and a signed one can still get it until the publisher has built up reputation. The user picks "More info", then "Run anyway". Updates aren't affected: the file the updater downloads has no such mark (checked by the test), and it needs no elevation.
-- **macOS.** Signed with a Developer ID and notarized on a tag, when the `MAC_*` and `APPLE_*` secrets are there. Betas get an ad-hoc signature, and Gatekeeper warns: a downloaded, quarantined copy should need System Settings > Privacy & Security > Open Anyway the first time. That's from memory and hasn't been tested on a Mac.
+- **macOS.** CI signs every build, betas included, with the Developer ID and notarizes it, when the `MAC_*` and `APPLE_*` secrets are there. The job fails if the app lacks a Developer ID signature, a stapled ticket or Gatekeeper's approval. Without the secrets, and in a local build, the app gets an ad-hoc signature, Gatekeeper warns (System Settings > Privacy & Security > Open Anyway the first time), and it can't update itself. An ad-hoc copy can't update itself to a signed one either: install the first signed build by hand.
 - **Linux.** AppImage, deb and rpm have no such check. The AppImage updater has no signature check at all.
 
 ### Linux: use the deb or rpm
@@ -115,7 +115,7 @@ In this order:
 5. Set `version` in `package.json`, and push the tag `v<version>` on that commit.
 6. A reviewer approves the publish job in the run. The release then goes out with its checksums and attestations, from a draft, in one step.
 
-The macOS secrets for signing a stable release (`MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) are set. Without them the DMG would go out unsigned. Betas are never signed on macOS.
+The macOS secrets (`MAC_CERTIFICATE`, `MAC_CERTIFICATE_PASSWORD`, `APPLE_API_KEY_BASE64`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER`) are set, so every macOS build, betas included, is signed with the Developer ID and notarized. Without them the app goes out with an ad-hoc signature.
 
 ## For administrators
 
