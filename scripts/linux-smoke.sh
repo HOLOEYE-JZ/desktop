@@ -33,6 +33,19 @@ eval "$(dbus-launch --sh-syntax)"
 eval "$(printf 'smoke\n' | gnome-keyring-daemon --unlock --components=secrets 2>/dev/null)"
 export XDG_CURRENT_DESKTOP=GNOME
 
+# The app's own windows, by WM_CLASS and size. Not by title: the page sets it, and it
+# says which screen is open ("Bulwark", "Sign in - Bulwark", "Mail - Bulwark"). Chromium
+# keeps a few pixel-sized helper windows of the same class; a window has room for a page.
+app_windows() {
+  xwininfo -root -tree 2>/dev/null | awk '/\("[Bb]ulwark" / {
+    for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+x[0-9]+[+-]/) {
+      split($i, size, /[x+-]/)
+      if (size[1] >= 300 && size[2] >= 300) print $1
+      break
+    }
+  }'
+}
+
 no_sandbox=()
 if [ "${SMOKE_NO_SANDBOX:-}" = "1" ]; then no_sandbox=(--no-sandbox); fi
 
@@ -44,7 +57,7 @@ for _ in $(seq 1 90); do
   sleep 2
   kill -0 "$app_pid" 2>/dev/null || break
   [ -f "$profile/webmail/admin/admin.json" ] || continue
-  for id in $(xwininfo -root -tree 2>/dev/null | grep -E '"Bulwark' | awk '{print $1}'); do
+  for id in $(app_windows); do
     if xwininfo -id "$id" 2>/dev/null | grep -q IsViewable; then
       window="$id"
       ok=0
