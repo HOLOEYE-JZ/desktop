@@ -238,7 +238,7 @@ test.describe('windows, signed in', () => {
     await expect.poll(() => page.url(), { timeout: 30_000 }).toContain('/settings');
     const list = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { windows: { list: () => Promise<{ type: string }[]> } } }).bulwarkDesktop.windows.list());
     expect(list.map((w) => w.type)).toEqual(['main']);
-    await page.goto(new URL('/settings/general', page.url()).toString());
+    await page.goto(new URL('/settings/desktop', page.url()).toString());
     await page.getByText('Open messages in a new window on double-click').waitFor({ timeout: 60_000 });
     const flip = () => page.evaluate(() => {
       const label = [...document.querySelectorAll('*')].find((el) => el.children.length === 0 && el.textContent === 'Reopen windows at start');

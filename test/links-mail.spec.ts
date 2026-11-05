@@ -364,7 +364,7 @@ for (const { label, url: SERVER } of servers) {
       }, code) as Promise<T>;
       const lockShown = () => inMain<boolean>(`!!document.querySelector('[data-testid="app-lock-form"]')`).catch(() => false);
 
-      await page.goto(`${new URL(page.url()).origin}/settings/general`);
+      await page.goto(`${new URL(page.url()).origin}/settings/privacy`);
       const toggle = page.getByTestId('app-lock-switch');
       await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: 60_000 });
       await toggle.click();
