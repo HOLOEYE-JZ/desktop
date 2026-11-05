@@ -109,9 +109,11 @@ nsis:
   # One installer per architecture, both named in latest.yml. electron-updater picks by
   # process.arch in the file name. The default would put both in one big download.
   buildUniversalInstaller: false
-  # Whole downloads only. electron-updater's differential path can't be cancelled, and this
-  # lets the installer compress better.
-  differentialPackage: false
+  # An update downloads only the blocks that changed: the 7z inside is packed file by file
+  # (not solid, 1 MB dictionary) and a blockmap goes next to the installer, which the release
+  # workflow publishes. That costs the first download about a tenth more. See
+  # src/main/update-rules.ts differentialDownloads.
+  differentialPackage: true
   artifactName: Bulwark-Setup-${version}-${arch}.${ext}
   shortcutName: Bulwark
   uninstallDisplayName: Bulwark
