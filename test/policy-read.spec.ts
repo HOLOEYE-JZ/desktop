@@ -763,6 +763,15 @@ test.describe('values that make no sense', () => {
     expect(snapshot({ AppLockTimeoutMinutes: 15 }).AppLockTimeoutMinutes).toMatchObject({ value: 15, locked: true });
   });
 
+  test('a PIN minimum under 5 is refused and stays at 5, a longer one reaches the page, a recommended one doesn\'t count', () => {
+    for (const raw of [3, '4', 'long', 65]) {
+      expect(snapshot({ AppLockPinMinLength: raw }).AppLockPinMinLength, String(raw)).toMatchObject({ value: 5, locked: true });
+    }
+    expect(policyProblems(snapshot({ AppLockPinMinLength: 3 }))).toEqual([{ key: 'AppLockPinMinLength', reason: 'out_of_range', raw: '3' }]);
+    expect(pagePolicySnapshot(snapshot({ AppLockPinMinLength: 8 })).AppLockPinMinLength).toMatchObject({ value: 8, locked: true });
+    expect(snapshot({}, { AppLockPinMinLength: 8 }).AppLockPinMinLength).toMatchObject({ value: null, locked: false, source: 'default' });
+  });
+
   test('a list of auth servers can\'t name a whole top-level domain', () => {
     for (const raw of ['com', '.com', 'COM', '..com', 'com.', 'com:443', '*.com', '*', 'de', 'example.org,net']) {
       expect(snapshot({ AuthServerAllowlist: raw }).AuthServerAllowlist, raw).toMatchObject({ value: null, invalid: 'invalid_host_list' });
