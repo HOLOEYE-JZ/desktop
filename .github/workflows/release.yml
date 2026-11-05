@@ -246,7 +246,9 @@ jobs:
     name: macOS (universal)
     needs: prepare
     runs-on: macos-latest
-    timeout-minutes: 90
+    # Apple's notarization usually answers in minutes, but can take an hour or more, the
+    # first submissions of a team especially.
+    timeout-minutes: 180
     concurrency:
       group: build-macos-${{ github.ref }}
       cancel-in-progress: ${{ github.ref_type != 'tag' }}
