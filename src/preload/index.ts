@@ -193,6 +193,8 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     },
     menu: {
       setState: (state: MenuState) => ipcRenderer.send(CHANNEL.menuSetState, state),
+      // File > Change connection…, after the page asked: restarts on the first screen.
+      changeConnection: (): Promise<boolean> => ipcRenderer.invoke(CHANNEL.menuChangeConnection),
       onCommand: (listener: (id: string) => void) => subscribe(CHANNEL.menuCommand, listener),
       popup: (items: NativeMenuItem[], at: { x: number; y: number }): Promise<string | null> =>
         ipcRenderer.invoke(CHANNEL.menuPopup, items, at),
@@ -389,7 +391,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         state: (): Promise<FilesDriveState> => ipcRenderer.invoke(CHANNEL.filesDriveState),
         onStateChange: (listener: (state: FilesDriveState) => void) => subscribe(CHANNEL.filesDriveStateChanged, listener),
         enable: (account: string, label: string) => ipcRenderer.invoke(CHANNEL.filesDriveEnable, account, label, clicked()),
-        disable: (account: string, reason: 'user' | 'signed-out' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
+        disable: (account: string, reason: 'user' | 'signed-out' | 'suspended' | 'wipe' | 'refused') => ipcRenderer.invoke(CHANNEL.filesDriveDisable, account, reason),
+        onFlush: (listener: (request: { requestId: string; accounts: string[] }) => void) => subscribe(CHANNEL.filesDriveFlush, listener),
+        flushed: (requestId: string, phase?: 'working') => ipcRenderer.send(CHANNEL.filesDriveFlushed, requestId, phase),
+        openRescue: () => ipcRenderer.invoke(CHANNEL.filesDriveOpenRescue),
+        setPin: (rootId: string, path: string, pin: 'pinned' | 'unpinned') => ipcRenderer.invoke(CHANNEL.filesDriveSetPin, rootId, path, pin),
         place: (rootId: string, entries: FilesPlaceholder[]) => ipcRenderer.invoke(CHANNEL.filesDrivePlace, rootId, entries),
         update: (rootId: string, path: string, meta: { size: number; mtimeMs: number; identity: string; dehydrate: boolean }, expect: FilesExpect | null) =>
           ipcRenderer.invoke(CHANNEL.filesDriveUpdate, rootId, path, meta, expect),
@@ -404,7 +410,8 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
     : undefined;
   const filesControls: FilesControls = {
     roots: () => ipcRenderer.invoke(CHANNEL.filesRoots),
-    addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string }) => ipcRenderer.invoke(CHANNEL.filesAddFolder, request, clicked()),
+    addFolder: (request: { account: string; remoteId: string | null; remoteLabel: string; chosen?: string }) => ipcRenderer.invoke(CHANNEL.filesAddFolder, request, clicked()),
+    chooseFolder: () => ipcRenderer.invoke(CHANNEL.filesChooseFolder, clicked()),
     removeRoot: (rootId: string) => ipcRenderer.invoke(CHANNEL.filesRemoveRoot, rootId),
     setPaused: (rootId: string, paused: boolean) => ipcRenderer.invoke(CHANNEL.filesSetPaused, rootId, paused),
     scan: (rootId: string, under?: string) => ipcRenderer.invoke(CHANNEL.filesScan, rootId, under),

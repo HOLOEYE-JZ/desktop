@@ -177,6 +177,11 @@ jobs:
       - name: Build the shell
         run: npm run build
 
+      # The installer window's NSIS plugin (native/nsis-splash), 32-bit as NSIS is. Built here
+      # and never committed: electron-builder takes it from build/x86-unicode.
+      - name: Build the installer window
+        run: node scripts/build-nsis-splash.mjs
+
       - name: Build installers
         run: npx electron-builder --win --x64 --arm64 --publish never
 

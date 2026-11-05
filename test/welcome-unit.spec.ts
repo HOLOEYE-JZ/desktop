@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { isNoJmapDomain, parseWelcomeAddress, parseWelcomeEmail } from '../src/shared/welcome-address';
+import { firstPageUrl, isNoJmapDomain, parseWelcomeAddress, parseWelcomeEmail, welcomeLinkUrl } from '../src/shared/welcome-address';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const STRINGS = JSON.parse(readFileSync(path.join(ROOT, 'src/pages/welcome-strings.json'), 'utf8')) as Record<string, Record<string, string>>;
@@ -38,14 +38,40 @@ test.describe('the first-run address field', () => {
 
 test.describe('the first-run email field', () => {
   test('takes an email address, and catches Gmail, Outlook.com and iCloud', () => {
-    expect(parseWelcomeEmail('sam@example.org')).toEqual({ ok: true });
-    expect(parseWelcomeEmail('  sam.lee@mail.example.co.uk ')).toEqual({ ok: true });
+    expect(parseWelcomeEmail('sam@example.org')).toEqual({ ok: true, email: 'sam@example.org' });
+    expect(parseWelcomeEmail('  sam.lee@mail.example.co.uk ')).toEqual({ ok: true, email: 'sam.lee@mail.example.co.uk' });
     for (const typed of ['sam@gmail.com', 'sam@outlook.de', 'sam@icloud.com']) expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'no_jmap' });
   });
 
   test('anything else asks for an email address', () => {
-    for (const typed of ['', 'sam', 'mail.example.com', 'https://mail.example.com', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 42])
+    for (const typed of ['', 'sam', 'sam@example', 'sam@@example.org', 'sam lee@example.org', 'sam@example.org.', 'mail example.com', 42])
       expect(parseWelcomeEmail(typed), String(typed)).toEqual({ ok: false, error: 'email_invalid' });
+  });
+
+  test('a web address is told apart, so the page can offer the organisation step', () => {
+    for (const typed of ['mail.example.com', ' https://mail.example.com ', 'http://mail.example.com:8443/webmail', 'MAIL.Example.org/'])
+      expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'web_address' });
+    for (const typed of ['gmail.com', 'https://outlook.live.com/mail']) expect(parseWelcomeEmail(typed), typed).toEqual({ ok: false, error: 'no_jmap' });
+  });
+});
+
+test.describe('the first run\'s links', () => {
+  test('open only the pages main has by name', () => {
+    expect(welcomeLinkUrl('providers')).toBe('https://bulwarkmail.org/docs/getting-started/introduction');
+    for (const name of ['https://evil.example', 'toString', '__proto__', 'constructor', '', 42, null, undefined])
+      expect(welcomeLinkUrl(name), String(name)).toBeNull();
+  });
+});
+
+test.describe('the first window after the first run', () => {
+  test('opens the sign-in page with the address typed on the first screen', () => {
+    expect(firstPageUrl('https://127.0.0.1:4100', 'sam+news@example.org')).toBe('https://127.0.0.1:4100/login?login_hint=sam%2Bnews%40example.org');
+    expect(new URL(firstPageUrl('https://127.0.0.1:4100', 'sam+news@example.org')).searchParams.get('login_hint')).toBe('sam+news@example.org');
+  });
+
+  test('without one, opens the app as before', () => {
+    expect(firstPageUrl('https://127.0.0.1:4100', null)).toBe('https://127.0.0.1:4100/');
+    expect(firstPageUrl('https://127.0.0.1:4100', '')).toBe('https://127.0.0.1:4100/');
   });
 });
 
@@ -69,7 +95,11 @@ test.describe('the first-run strings', () => {
     for (const language of LANGUAGES)
       for (const key of ['title', 'intro', 'emailLabel', 'continueLabel', 'orgLink']) expect(STRINGS[language][key], `${language}.${key}`).not.toMatch(/JMAP|Stalwart|Fastmail/);
     expect(STRINGS.en.instanceTitle).toBe("Connect to your organisation's Bulwark");
-    expect(STRINGS.en.noJmap).toMatch(/Gmail, Outlook\.com and iCloud/);
+    // Gmail, Outlook.com and iCloud: what doesn't work, what does, and nothing about protocols.
+    expect(STRINGS.en.noJmap).toBe("Bulwark can't sign in to Gmail, Outlook.com or iCloud yet. It works with mail services such as Fastmail and with Stalwart mail servers.");
+    for (const language of LANGUAGES)
+      for (const [key, value] of Object.entries(STRINGS[language])) expect(value, `${language}.${key}`).not.toMatch(/JMAP/i);
+    expect(STRINGS.en.learnMore).toBe('Learn more');
     expect(STRINGS.en.privacyIntro).toContain('Settings > Privacy');
     for (const language of LANGUAGES) expect(STRINGS[language].telemetryText, language).not.toMatch(/Node/);
   });

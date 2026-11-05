@@ -14,6 +14,8 @@ import { requestFromUrl } from '../src/main/features/os-rules';
 
 const TEXT: SignInText = {
   signInDone: 'DONE',
+  signInDoneAs: 'DONE AS {address}',
+  signInOpenApp: 'OPEN APP',
   signInFailed: 'FAILED',
   signInLinkUsed: 'USED',
   signInDeclined: 'DECLINED',
@@ -103,6 +105,10 @@ test.describe('the listener', () => {
     expect(answer.status).toBe(200);
     expect(answer.body).toContain('DONE');
     expect(answer.body).not.toContain('the-code');
+    // settings-p3-15: Bulwark's mark, a way back to the app, light or dark as the browser.
+    expect(answer.body).toContain('<svg class="logo"');
+    expect(answer.body).toContain('<a class="button" href="bulwark://inbox">OPEN APP</a>');
+    expect(answer.body).toContain('prefers-color-scheme:dark');
     expect(await result).toEqual({ ok: true, code: 'the-code', state: begun.state, iss: undefined });
     expect(forward).toEqual([OWNER]);
     await expect.poll(() => portState(port)).toBe('closed');
@@ -456,7 +462,9 @@ test.describe('the password page, for a server with no OAuth', () => {
     signIn.answerPassword(flowId, OWNER, { ok: true });
     const done = await retry;
     expect(done.status).toBe(200);
-    expect(done.body).toContain('DONE');
+    // The account it signed in: the one typed on this page.
+    expect(done.body).toContain('DONE AS a@example.org');
+    expect(done.body).toContain('href="bulwark://inbox"');
     expect(done.body).not.toContain('type="password"');
     await expect.poll(() => forward).toEqual([OWNER]);
     await expect.poll(() => portState(port)).toBe('closed');

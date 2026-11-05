@@ -10,7 +10,7 @@
 //   build/icon.icns       macOS, the white mark on the brand field, on Apple's icon grid.
 //   build/icons/NxN.png   Linux hicolor sizes, the colour mark.
 //   build/icon.png        What electron-builder wants as the default, 1024.
-//   build/installer-logo.ico  The installer window's logo (installer-theme.nsh): 48 at 100 %
+//   build/installer-logo.ico  The installer window's logo (native/nsis-splash): 96 at 100 %, up to 256
 //                         and each step to 300 %, so it's loaded at its size and never scaled.
 //
 // Windows and Linux use the favicon, drawn for small sizes. Tray variants aren't here.
@@ -122,8 +122,9 @@ const out = path.join(ROOT, 'build');
 mkdirSync(path.join(out, 'icons'), { recursive: true });
 
 writeFileSync(path.join(out, 'icon.ico'), await ico(favicon, [16, 20, 24, 32, 40, 48, 64, 128, 256]));
-// LoadImage reads PNG entries, which keeps this small. 100, 125, 150, 175, 200, 225, 250, 300 %.
-writeFileSync(path.join(out, 'installer-logo.ico'), await ico(favicon, [48, 60, 72, 84, 96, 108, 120, 144], { png: true }));
+// LoadImage reads PNG entries, which keeps this small. 100 to 250 % in steps of 25, and 256, the
+// most an .ico holds, for anything larger.
+writeFileSync(path.join(out, 'installer-logo.ico'), await ico(favicon, [96, 120, 144, 168, 192, 216, 240, 256], { png: true }));
 for (const size of [16, 24, 32, 48, 64, 128, 256, 512, 1024]) {
   writeFileSync(path.join(out, 'icons', `${size}x${size}.png`), await render(favicon, size));
 }

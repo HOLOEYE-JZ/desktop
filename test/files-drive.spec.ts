@@ -130,9 +130,16 @@ test('FilesDriveEnabled forced off, live: the drive goes at once and the wish st
   await page.mouse.click(200, 400);
   expect(await page.evaluate(`window.__files.drive.enable(${JSON.stringify(ACCOUNT)}, ${JSON.stringify(LABEL)}).then((answer) => answer.ok)`)).toBe(true);
   expect(await ourRoots()).toHaveLength(1);
+  // The page is asked to upload what waits first, and says when it's done (files-p3-2).
+  await page.evaluate(`window.__files.drive.onFlush((request) => {
+    window.__flushes = (window.__flushes || []).concat([request.accounts]);
+    window.__files.drive.flushed(request.requestId, 'working');
+    setTimeout(() => window.__files.drive.flushed(request.requestId), 300);
+  })`);
   const set = spawnSync('reg.exe', ['add', `${POLICY_ROOT}\\Machine`, '/v', 'FilesDriveEnabled', '/t', 'REG_DWORD', '/d', '0', '/f'], { windowsHide: true });
   expect(set.status).toBe(0);
   await expect.poll(ourRoots, { timeout: 30_000 }).toEqual([]);
+  expect(await page.evaluate('window.__flushes')).toEqual([[ACCOUNT]]);
   expect(existsSync(path.join(BASE, 'drive', LABEL))).toBe(false);
   expect(await page.evaluate('window.__files.drive.state()')).toMatchObject({ forcedOff: true, wanted: [ACCOUNT] });
   expect(await page.evaluate(`window.__files.drive.enable(${JSON.stringify(ACCOUNT)}, ${JSON.stringify(LABEL)})`)).toEqual({ ok: false, error: 'policy' });

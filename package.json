@@ -20,7 +20,7 @@
     "pack:dir": "node build.mjs && node scripts/build-native.mjs --optional && electron-builder --dir",
     "pack:test": "node scripts/pack-test.mjs",
     "pack:strict": "node scripts/pack-test.mjs --strict",
-    "dist:win": "node build.mjs && node scripts/build-native.mjs --optional && electron-builder --win --publish never",
+    "dist:win": "node build.mjs && node scripts/build-native.mjs --optional && node scripts/build-nsis-splash.mjs && electron-builder --win --publish never",
     "dist:mac": "node build.mjs && node scripts/build-native.mjs --optional && electron-builder --mac --publish never",
     "dist:linux": "node build.mjs && node scripts/build-native.mjs --optional && electron-builder --linux --publish never"
   },

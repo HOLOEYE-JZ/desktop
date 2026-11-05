@@ -16,6 +16,7 @@ const WINDOWS_TOOLS: Record<string, string[]> = {
   'icacls.exe': ['icacls.exe'],
   'whoami.exe': ['whoami.exe'],
   'subst.exe': ['subst.exe'],
+  'attrib.exe': ['attrib.exe'],
 };
 
 export function systemExe(name: keyof typeof WINDOWS_TOOLS, root = process.env.SystemRoot || 'C:\\Windows'): string {

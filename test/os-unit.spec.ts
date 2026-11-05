@@ -10,6 +10,7 @@ import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
+  closesToBackground,
   currentOsSettings,
   electronRegistersScheme,
   isAccelerator,
@@ -321,6 +322,18 @@ test.describe('the keys a page may hold for every app', () => {
   test('a policy isn\'t held to this: an admin chose it', () => {
     expect(quickComposeShortcut({ value: 'CommandOrControl+V', locked: true }, 'CommandOrControl+Alt+J')).toBe('CommandOrControl+V');
     expect(quickComposeShortcut({ value: 'Alt+F4', locked: false }, undefined)).toBe('Alt+F4');
+  });
+});
+
+test.describe('closing the last window', () => {
+  test('stays in the tray while a Files drive is on, even with closing to the tray off', () => {
+    const base = { closeToTray: false, hasTray: true, platform: 'win32', driveOn: false };
+    expect(closesToBackground(base)).toBe(false);
+    expect(closesToBackground({ ...base, driveOn: true })).toBe(true);
+    expect(closesToBackground({ ...base, closeToTray: true })).toBe(true);
+    // Nowhere to come back from: it quits, drive or not.
+    expect(closesToBackground({ ...base, driveOn: true, hasTray: false })).toBe(false);
+    expect(closesToBackground({ ...base, driveOn: true, hasTray: false, platform: 'darwin' })).toBe(true);
   });
 });
 
