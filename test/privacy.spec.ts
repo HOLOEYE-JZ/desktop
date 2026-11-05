@@ -800,7 +800,7 @@ test.describe('standalone, on a webmail built with this', () => {
     test.setTimeout(300_000);
     const { app, page, profile } = await startStandalone({});
     await signIn(page, STALWARTS[0].url);
-    await page.goto(`${APP_ORIGIN}/settings/general`);
+    await page.goto(`${APP_ORIGIN}/settings/privacy`);
     const telemetry = page.getByTestId('desktop-telemetry-toggle');
     const crash = page.getByTestId('desktop-crash-toggle');
     await telemetry.scrollIntoViewIfNeeded({ timeout: 60_000 });

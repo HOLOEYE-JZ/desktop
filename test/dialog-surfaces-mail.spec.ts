@@ -54,7 +54,7 @@ test.afterAll(async () => {
 
 test('Choose a PIN is a window of its own: typing, the check and Save work there; Escape cancels and the focus comes back', async () => {
   test.setTimeout(240_000);
-  await page.goto(`${APP_ORIGIN}/settings/general`);
+  await page.goto(`${APP_ORIGIN}/settings/privacy`);
   const toggle = page.getByTestId('app-lock-switch');
   await expect(toggle).toHaveAttribute('aria-checked', 'false', { timeout: 60_000 });
   await toggle.click();
