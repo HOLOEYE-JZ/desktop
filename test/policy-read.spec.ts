@@ -483,7 +483,7 @@ test.describe('the test root', () => {
     expect(production).not.toContain('--bulwark-test-policy');
     expect(production).not.toContain('BulwarkTest');
     // A renamed exe mustn't be able to answer the app lock's question, or hand out what the tests read.
-    for (const hook of ['BULWARK_TEST_OS_VERIFY', '__bulwarkAppLock', '__bulwarkOs', 'bulwark-test-no-native']) {
+    for (const hook of ['BULWARK_TEST_OS_VERIFY', 'BULWARK_TEST_HELLO_KEY', '__bulwarkAppLock', '__bulwarkOs', 'bulwark-test-no-native']) {
       expect(withHooks, hook).toContain(hook);
       expect(production, hook).not.toContain(hook);
     }

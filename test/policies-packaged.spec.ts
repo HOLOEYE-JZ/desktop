@@ -328,7 +328,7 @@ test.describe('renamed to electron.exe, which turns app.isPackaged off', () => {
     const { extractFile } = createRequire(import.meta.url)('@electron/asar') as { extractFile(archive: string, file: string): Buffer };
     const bundle = extractFile(path.join(UNPACKED, 'resources', 'app.asar'), path.join('dist', 'main.mjs')).toString('utf8');
     expect(bundle).toContain('Ignoring these switches');
-    for (const hook of ['BULWARK_TEST_OS_VERIFY', '__bulwarkAppLock', '__bulwarkOs', 'BULWARK_TELEMETRY_ALLOW_PRIVATE', '--bulwark-test-', 'bulwark-test-no-native', 'bulwark-user-data', 'bulwark-server-dir', 'BulwarkTest']) {
+    for (const hook of ['BULWARK_TEST_OS_VERIFY', 'BULWARK_TEST_HELLO_KEY', '__bulwarkAppLock', '__bulwarkOs', 'BULWARK_TELEMETRY_ALLOW_PRIVATE', '--bulwark-test-', 'bulwark-test-no-native', 'bulwark-user-data', 'bulwark-server-dir', 'BulwarkTest']) {
       expect(bundle, hook).not.toContain(hook);
     }
   });
