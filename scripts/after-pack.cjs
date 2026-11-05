@@ -33,7 +33,10 @@ exports.default = async function afterPack(context) {
   if (ARCH[context.arch] !== 'universal') {
     const { archiveDir } = await import('./server-archive.mjs');
     const built = archiveDir(projectDir, context.electronPlatformName, ARCH[context.arch] ?? 'x64');
-    cpSync(path.join(built, 'server.asar.unpacked'), path.join(resources, 'server.asar.unpacked'), { recursive: true });
+    if (!existsSync(path.join(built, 'server.asar'))) throw new Error(`before-pack built no server archive in ${built}, so server.asar.unpacked has nothing to come from`);
+    // Only native modules are unpacked, and a server with none has no such folder.
+    const unpacked = path.join(built, 'server.asar.unpacked');
+    if (existsSync(unpacked)) cpSync(unpacked, path.join(resources, 'server.asar.unpacked'), { recursive: true });
   }
 
   // The updater needs to know whether this copy can install an update by itself, and
