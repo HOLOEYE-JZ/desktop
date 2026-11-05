@@ -143,7 +143,7 @@ export function setupTray(hub: OsHub, iconsDir: string, taskIconsDir: string): T
         // odd order ("Alt+Strg+Eingabetaste"). The File menu shows it.
         click: () => hub.dispatch({ type: 'new-message' }),
       },
-      ...(appLockGate.enrolled && !appLockGate.locked ? [{ label: text.trayLockNow, click: () => appLockGate.requestLock() }] : []),
+      ...(appLockGate.enrolled && !appLockGate.locked ? [{ label: text.trayLockNow, ...menuIcon('lock'), click: () => appLockGate.requestLock() }] : []),
       // With more than one account the page names the one the list is for.
       ...(unread.length ? [{ type: 'separator' } as const, { label: summary.account ? line(text.trayUnreadIn(summary.account)) : text.trayUnread, enabled: false }, ...unread] : []),
       ...(event.length ? [{ type: 'separator' } as const, ...event] : []),
