@@ -11,6 +11,11 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 <!-- exports -->
 - `helloAvailable()`: promise of a boolean. Whether Windows says a Hello prompt can be shown. False elsewhere.
 - `helloVerify(reason, hwnd, timeoutMs)`: shows the Hello prompt on a window. Promise of `verified`, `cancelled`, `busy`, `unavailable`, `timeout`, `invalid` or `failed`. A yes or no that gates the UI: it doesn't unlock or wrap a key. The timeout is required, at most 5 minutes.
+- `helloKeyCreate(name, data, hwnd, timeoutMs)`: makes a Windows Hello key credential under `name` (replacing one there) and signs `data` with it, behind Hello's prompt. Promise of `{ result, signature?, publicKey? }`, `result` one of `ok`, `cancelled`, `busy`, `unavailable`, `timeout`, `invalid`, `missing`, `failed`. The public key is a DER SubjectPublicKeyInfo.
+- `helloKeyOpen(name)`: promise of `ok`, `missing`, `unavailable` or `failed`: whether that key credential is there. Never prompts.
+- `helloKeySign(name, data, hwnd, timeoutMs)`: signs `data` with that key credential, behind Hello's prompt. Promise of `{ result, signature? }`, the same words.
+- `helloKeyDelete(name)`: promise of `ok`, `missing` or `failed`. Never prompts.
+- `helloKeyCancel()`: ends a create or sign that waits for the user. It answers `cancelled` and its prompt is closed.
 - `keystoreList()`: promise of the certificates fit for mail that have a private key. Never prompts, and doesn't touch a smart card.
 - `keystoreSign(id, digest, scheme, hwnd?)`: signs a digest. RSA PKCS#1 v1.5 and PSS, ECDSA as DER. The page never picks this digest: main takes a CMS message's signed attributes, checks them and hashes them itself (`src/main/keystore-signed-attrs.ts`).
 - `keystoreDecrypt(id, data, scheme, hwnd?)`: RSA key transport with OAEP or v1.5. v1.5 answers only with 16, 24 or 32 bytes, OAEP with up to 64.
@@ -57,6 +62,8 @@ It links `cldapi.dll` and `shell32.dll` from System32. `scripts/files-drive-clea
 ## Hello
 
 Cancelling the WinRT operation doesn't close the Windows Security dialog, which stays up asking for a PIN. So on a timeout the helper posts a close message to a new dialog of class `Credential Dialog Xaml Host` owned by our window, or, with no owner, only to the one new dialog seen in the first seconds after asking. Another window's is never touched. The flag below logs which case applied. The class name isn't documented: if Windows renames it, a timed-out prompt stays open until the user closes it. `BULWARK_TEST_HELLO_PROMPT=1` runs the one test that shows a real prompt, for a few seconds.
+
+**Key credentials** (`helloKey*`, for the app lock) go through `KeyCredentialManager`. The private key stays in the user's Hello container, in the TPM where there is one, and each use takes a Hello prompt. Main signs a fixed challenge and derives a key from the signature, so this only works because Windows signs with RSA PKCS#1 v1.5 and SHA-256, which gives the same signature for the same data every time. Main checks each new key's signature against its public key as PKCS#1 v1.5 before relying on it, and refuses the key otherwise. These calls take no owner window: Windows has no interop for them. So the window handle is checked to be a window, and the new dialog seen alone in the first seconds is brought to the front and closed on a timeout or `helloKeyCancel()`, as above. Names are letters, digits, spaces, `.`, `_` and `-`, at most 64 characters. With `BULWARK_TEST_HELLO_PROMPT=1`, `test/native.spec.ts` also makes a test key credential, signs with it twice, checks both signatures are the same and verify as PKCS#1 v1.5, and deletes it: four or five prompts.
 
 ## The keystore
 

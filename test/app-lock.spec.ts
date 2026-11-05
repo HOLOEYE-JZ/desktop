@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
@@ -134,6 +135,35 @@ async function run(verify: 'yes' | 'no', body: (app: ElectronApplication, page: 
     await body(launched.app, launched.page);
   } finally {
     delete process.env.BULWARK_TEST_OS_VERIFY;
+    await launched.app.close().catch(() => undefined);
+    removeProfile(profile);
+  }
+}
+
+type HelloAnswer = { ok: boolean; reason?: string; signature?: number[] };
+
+/** Hello's calls go to the page that claimed them. Seeds become 32-byte proofs and salts. */
+function hello(page: Page, method: 'helloEnroll' | 'helloSign' | 'helloRemove', ...seeds: number[]): Promise<HelloAnswer> {
+  return page.evaluate(async ({ method: name, seeds: list }) => {
+    type Member = Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const held = window as unknown as { __controls?: Member };
+    held.__controls ??= ((window as unknown as { bulwarkDesktop: { appLock: { claim(): Member } } }).bulwarkDesktop.appLock).claim();
+    const out = await held.__controls[name](...list.map((seed) => new Uint8Array(32).fill(seed))) as { signature?: Uint8Array } | undefined;
+    return (out && out.signature ? { ...out, signature: Array.from(out.signature) } : out) as never;
+  }, { method, seeds }) as Promise<HelloAnswer>;
+}
+
+/** With made-up Hello key credentials (the shell's app-lock-hello-fake.ts): no real prompt. */
+async function runHello(mode: 'yes' | 'pss' | 'cancel', body: (app: ElectronApplication, page: Page) => Promise<void>, ...args: string[]): Promise<void> {
+  const profile = tempProfile('app-lock-hello');
+  process.env.BULWARK_TEST_HELLO_KEY = mode;
+  const launched = await launchStandalone(profile, ...args);
+  try {
+    await launched.page.goto(new URL('/api/health', launched.page.url()).href);
+    await launched.page.evaluate(() => (window as unknown as { bulwarkDesktop: { os: { setLocked(locked: boolean): void } } }).bulwarkDesktop.os.setLocked(false));
+    await body(launched.app, launched.page);
+  } finally {
+    delete process.env.BULWARK_TEST_HELLO_KEY;
     await launched.app.close().catch(() => undefined);
     removeProfile(profile);
   }
@@ -275,13 +305,13 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('Hello: a yes lifts the lock and gives the key, on disk it is not in the clear', async () => {
+  test('Touch ID: a yes lifts the lock and gives the key, on disk it is not in the clear', async () => {
     await run('yes', async (app, page) => {
       const key = 7;
       await call(page, 'enroll', 1);
       expect(await call(page, 'osEnroll', 1, key)).toBe(true);
       const status = await call<{ os: string; osEnrolled: boolean }>(page, 'status');
-      expect(status).toMatchObject({ os: 'hello', osEnrolled: true });
+      expect(status).toMatchObject({ os: 'touchid', osEnrolled: true });
       const stored = await app.evaluate(({ app: electronApp }) => {
         const { readdirSync, readFileSync } = process.getBuiltinModule('node:fs');
         const { join } = process.getBuiltinModule('node:path');
@@ -299,7 +329,7 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('Hello: asking while unlocked gets nothing, so a frame can\'t collect the key', async () => {
+  test('Touch ID: asking while unlocked gets nothing, so a frame can\'t collect the key', async () => {
     await run('yes', async (_app, page) => {
       await call(page, 'enroll', 1);
       await call(page, 'osEnroll', 1, 7);
@@ -308,7 +338,7 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('Hello: a no leaves it locked, with no key', async () => {
+  test('Touch ID: a no leaves it locked, with no key', async () => {
     await run('yes', async (app, page) => {
       await call(page, 'enroll', 1);
       await call(page, 'osEnroll', 1, 7);
@@ -380,7 +410,7 @@ test.describe('through the real preload and IPC', () => {
     });
   });
 
-  test('status doesn\'t decrypt to say whether Hello is set up', async () => {
+  test('status doesn\'t decrypt to say whether Touch ID is set up', async () => {
     await run('yes', async (app, page) => {
       await call(page, 'enroll', 1);
       await call(page, 'osEnroll', 1, 7);
@@ -551,6 +581,148 @@ test.describe('through the real preload and IPC', () => {
       launched = await launchStandalone(profile);
       expect(await gateLocked(launched.app)).toBe(false);
       expect((await call<{ enrolled: boolean; osEnrolled: boolean }>(launched.page, 'status'))).toMatchObject({ enrolled: false, osEnrolled: false });
+    } finally {
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      await launched.app.close().catch(() => undefined);
+      removeProfile(profile);
+    }
+  });
+
+  test('Windows Hello: a key credential\'s signature, the same at setup, after the PIN and at the unlock, and only for the page', async () => {
+    await runHello('yes', async (app, page) => {
+      expect((await call<{ hello?: unknown; os: unknown }>(page, 'status'))).toMatchObject({ hello: { available: true, allowed: true, enrolled: false } });
+      expect(await hello(page, 'helloEnroll', 1, 5), 'no lock yet, no proof to give').toEqual({ ok: false, reason: 'failed' });
+      await call(page, 'enroll', 1);
+      expect(await hello(page, 'helloEnroll', 2, 5), 'the wrong proof').toEqual({ ok: false, reason: 'failed' });
+      const enrolled = await hello(page, 'helloEnroll', 1, 5);
+      expect(enrolled.ok).toBe(true);
+      expect(enrolled.signature).toHaveLength(256);
+      expect((await call<{ hello: unknown }>(page, 'status')).hello).toEqual({ available: true, allowed: true, enrolled: true });
+      expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { helloKeys(): string[] } }).__bulwarkAppLock.helloKeys())).toHaveLength(1);
+      // Unlocked, a signature takes the proof: what a frame that got this far couldn't give.
+      expect(await hello(page, 'helloSign', 5)).toEqual({ ok: false, reason: 'not-locked' });
+      expect(await hello(page, 'helloSign', 5, 2)).toEqual({ ok: false, reason: 'not-locked' });
+      expect(await hello(page, 'helloSign', 5, 1)).toEqual(enrolled);
+      await call(page, 'lock');
+      await expect.poll(() => gateLocked(app)).toBe(true);
+      expect(await hello(page, 'helloSign', 5)).toEqual(enrolled);
+      // A signature lifts nothing: the page proves the unlock with the key it opened.
+      expect(await gateLocked(app)).toBe(true);
+      const other = await hello(page, 'helloSign', 6);
+      expect(other.ok && other.signature).not.toEqual(enrolled.signature);
+      // A frame reaches none of it.
+      const seen = await page.evaluate(() => {
+        const bridge = (window as unknown as { bulwarkDesktop: { appLock: Record<string, unknown> & { claim(): unknown } } }).bulwarkDesktop.appLock;
+        return { onBridge: ['helloEnroll', 'helloSign', 'helloCancel', 'helloRemove'].filter((name) => name in bridge), again: bridge.claim() };
+      });
+      expect(seen).toEqual({ onBridge: [], again: null });
+    });
+  });
+
+  test('Windows Hello: a key that doesn\'t sign the same each time is refused, and a cancel leaves nothing', async () => {
+    await runHello('pss', async (app, page) => {
+      await call(page, 'enroll', 1);
+      expect(await hello(page, 'helloEnroll', 1, 5)).toEqual({ ok: false, reason: 'unsupported' });
+      await app.evaluate(() => { process.env.BULWARK_TEST_HELLO_KEY = 'cancel'; });
+      expect(await hello(page, 'helloEnroll', 1, 5)).toEqual({ ok: false, reason: 'cancelled' });
+      expect((await call<{ hello: unknown }>(page, 'status')).hello).toMatchObject({ enrolled: false });
+      expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { helloKeys(): string[] } }).__bulwarkAppLock.helloKeys())).toEqual([]);
+    });
+  });
+
+  test('Windows Hello: turning it off, the lock off, and forgetting all delete the key credential', async () => {
+    await runHello('yes', async (app, page) => {
+      const keys = () => app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { helloKeys(): string[] } }).__bulwarkAppLock.helloKeys());
+      await call(page, 'enroll', 1);
+      await hello(page, 'helloEnroll', 1, 5);
+      await hello(page, 'helloRemove');
+      expect(await keys()).toEqual([]);
+      expect((await call<{ hello: unknown }>(page, 'status')).hello).toMatchObject({ enrolled: false });
+      await hello(page, 'helloEnroll', 1, 5);
+      expect(await call(page, 'disable', 1)).toBe(true);
+      expect(await keys()).toEqual([]);
+      await call(page, 'enroll', 1);
+      await hello(page, 'helloEnroll', 1, 5);
+      expect(await call(page, 'forget', 1)).toBe(true);
+      expect(await keys()).toEqual([]);
+      expect((await call<{ hello: unknown }>(page, 'status')).hello).toMatchObject({ enrolled: false });
+    });
+  });
+
+  test('Windows Hello: a local wipe deletes the key credential with the lock', async () => {
+    const profile = tempProfile('app-lock-hello-wipe');
+    const log = path.join(mkdtempSync(path.join(tmpdir(), 'bw-hello-log-')), 'deleted.txt');
+    writeFileSync(log, '');
+    process.env.BULWARK_TEST_HELLO_KEY = 'yes';
+    process.env.BULWARK_TEST_HELLO_KEY_LOG = log;
+    const launched = await launchStandalone(profile);
+    try {
+      const { app, page } = launched;
+      await page.goto(new URL('/api/health', page.url()).href);
+      await call(page, 'enroll', 1);
+      expect((await hello(page, 'helloEnroll', 1, 5)).ok).toBe(true);
+      const [name] = await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { helloKeys(): string[] } }).__bulwarkAppLock.helloKeys());
+      expect(name).toMatch(/^Bulwark app lock [0-9a-f]{24}$/);
+      await app.evaluate(({ app: electronApp }) => { electronApp.relaunch = (() => {}) as typeof electronApp.relaunch; });
+      const gone = new Promise<void>((resolve) => app.process().once('exit', () => resolve()));
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { wipe(): Promise<unknown> } }).__bulwarkAppLock.wipe()).catch(() => undefined);
+      await gone;
+      expect(readFileSync(log, 'utf8').split(/\r?\n/).filter(Boolean)).toEqual([name]);
+      expect(existsSync(path.join(profile, 'app-lock'))).toBe(false);
+    } finally {
+      delete process.env.BULWARK_TEST_HELLO_KEY;
+      delete process.env.BULWARK_TEST_HELLO_KEY_LOG;
+      await launched.app.close().catch(() => undefined);
+      removeProfile(profile);
+      rmSync(path.dirname(log), { recursive: true, force: true });
+    }
+  });
+
+  test('Windows Hello: the AppLockHelloAllowed policy off refuses it and deletes an existing key credential', async () => {
+    test.skip(process.platform !== 'win32', 'the test root is a registry key');
+    const root = `HKCU\\Software\\BulwarkTest\\Policies\\applock${process.pid}`;
+    const reg = (...args: string[]) => {
+      const result = spawnSync('reg.exe', args, { encoding: 'utf8', windowsHide: true });
+      if (result.status !== 0) throw new Error(`reg ${args.join(' ')}: ${result.stderr}`);
+    };
+    await runHello('yes', async (app, page) => {
+      await call(page, 'enroll', 1);
+      expect((await hello(page, 'helloEnroll', 1, 5)).ok).toBe(true);
+      reg('add', `${root}\\Machine`, '/v', 'AppLockHelloAllowed', '/t', 'REG_DWORD', '/d', '0', '/f');
+      await expect.poll(async () => (await call<{ hello: unknown }>(page, 'status')).hello, { timeout: 15_000 }).toEqual({ available: true, allowed: false, enrolled: false });
+      expect(await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { helloKeys(): string[] } }).__bulwarkAppLock.helloKeys())).toEqual([]);
+      expect(await hello(page, 'helloEnroll', 1, 5)).toEqual({ ok: false, reason: 'policy' });
+    }, `--bulwark-test-policy-root=${root}`, '--bulwark-test-policy-poll=250').finally(() => {
+      spawnSync('reg.exe', ['delete', root, '/f'], { windowsHide: true });
+    });
+  });
+
+  test('Windows: the yes-or-no Hello is gone, and a key it left under DPAPI is deleted at start', async () => {
+    test.skip(process.platform !== 'win32', 'Windows only');
+    const profile = tempProfile('app-lock-old-hello');
+    const keyFiles = () => {
+      try {
+        return readdirSync(path.join(profile, 'app-lock')).filter((name) => name.startsWith('app-lock-key-'));
+      } catch {
+        return [];
+      }
+    };
+    // As the yes-or-no unlock left it: the lock key in safeStorage. The hook makes the check say yes.
+    process.env.BULWARK_TEST_OS_VERIFY = 'yes';
+    let launched = await launchStandalone(profile);
+    try {
+      await launched.page.goto(new URL('/api/health', launched.page.url()).href);
+      await call(launched.page, 'enroll', 1);
+      expect(await call(launched.page, 'osEnroll', 1, 7)).toBe(true);
+      expect(keyFiles()).toHaveLength(1);
+      await launched.app.close();
+      delete process.env.BULWARK_TEST_OS_VERIFY;
+      launched = await launchStandalone(profile);
+      await launched.page.goto(new URL('/api/health', launched.page.url()).href);
+      const status = await call<{ os: string | null; osEnrolled: boolean }>(launched.page, 'status');
+      expect(status.os).not.toBe('hello');
+      expect(status.osEnrolled).toBe(false);
+      expect(keyFiles()).toEqual([]);
     } finally {
       delete process.env.BULWARK_TEST_OS_VERIFY;
       await launched.app.close().catch(() => undefined);

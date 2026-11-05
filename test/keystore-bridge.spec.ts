@@ -220,6 +220,41 @@ test.describe('window.bulwarkDesktop.keystore', () => {
     expect(await asked).toBe('timeout');
     await expect.poll(dialogs, { timeout: 8000, intervals: [300] }).toBe('0');
   });
+
+  test('a real Hello key credential signs the same bytes the same way twice, as RSA PKCS#1 v1.5', async () => {
+    // The app lock's Hello rests on this. A person answers the prompts: make the key (Windows may
+    // ask again to sign with it), sign twice more, then one that is cancelled. Deleted at the end.
+    test.skip(!process.env.BULWARK_TEST_HELLO_PROMPT, 'set BULWARK_TEST_HELLO_PROMPT=1 to show a prompt');
+    test.setTimeout(10 * 60_000);
+    const handle = await launched.app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows().find((candidate) => candidate.isVisible());
+      return window ? [...window.getNativeWindowHandle()] : null;
+    });
+    const native = loadHelperModule(helperFile({ packaged: false, mainDir: path.join(ROOT, 'dist'), platform: process.platform, arch: process.arch }))!;
+    const name = `Bulwark test key ${randomBytes(6).toString('hex')}`;
+    const data = Buffer.from('bulwark-app-lock-hello-v1\0test\0challenge');
+    try {
+      const created = await native.helloKeyCreate!(name, data, Buffer.from(handle!), 120_000);
+      expect(created.result).toBe('ok');
+      expect(await native.helloKeyOpen!(name)).toBe('ok');
+      const first = await native.helloKeySign!(name, data, Buffer.from(handle!), 120_000);
+      const second = await native.helloKeySign!(name, data, Buffer.from(handle!), 120_000);
+      expect(first.result).toBe('ok');
+      expect(second.result).toBe('ok');
+      expect(Buffer.from(first.signature!).equals(Buffer.from(second.signature!))).toBe(true);
+      expect(Buffer.from(created.signature!).equals(Buffer.from(first.signature!))).toBe(true);
+      const publicKey = { key: Buffer.from(created.publicKey!), format: 'der' as const, type: 'spki' as const, padding: constants.RSA_PKCS1_PADDING };
+      expect(verify('sha256', data, publicKey, first.signature!)).toBe(true);
+      // A cancel ends a waiting sign and closes its prompt.
+      const asked = native.helloKeySign!(name, data, Buffer.from(handle!), 120_000);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      native.helloKeyCancel!();
+      expect((await asked).result).toBe('cancelled');
+    } finally {
+      expect(await native.helloKeyDelete!(name)).toBe('ok');
+      expect(await native.helloKeyOpen!(name)).toBe('missing');
+    }
+  });
 });
 
 test.describe('without the helper', () => {

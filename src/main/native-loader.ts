@@ -35,6 +35,16 @@ export interface NativeCertificate {
 
 export type HelloResult = 'verified' | 'cancelled' | 'busy' | 'unavailable' | 'timeout' | 'invalid' | 'failed';
 
+/** What a Hello key credential's create or sign answers. `ok` is the only yes. */
+export type HelloKeyResult = 'ok' | 'cancelled' | 'busy' | 'unavailable' | 'timeout' | 'invalid' | 'missing' | 'failed';
+
+export interface HelloKeyAnswer {
+  result: HelloKeyResult;
+  signature?: Uint8Array;
+  /** From a create: the key's public half, DER SubjectPublicKeyInfo. */
+  publicKey?: Uint8Array;
+}
+
 export interface SignScheme {
   scheme: string;
   hash: string;
@@ -169,6 +179,12 @@ export function filesErrorCode(error: unknown): string {
 export interface NativeModule extends Partial<NativeFilesModule> {
   helloAvailable(): Promise<boolean>;
   helloVerify(reason: string, hwnd: Buffer, timeoutMs: number): Promise<HelloResult>;
+  // Optional: a helper built before these existed still loads, and Hello's key credential is unavailable.
+  helloKeyCreate?(name: string, data: Buffer, hwnd: Buffer, timeoutMs: number): Promise<HelloKeyAnswer>;
+  helloKeyOpen?(name: string): Promise<'ok' | 'missing' | 'unavailable' | 'failed'>;
+  helloKeySign?(name: string, data: Buffer, hwnd: Buffer, timeoutMs: number): Promise<HelloKeyAnswer>;
+  helloKeyDelete?(name: string): Promise<'ok' | 'missing' | 'failed'>;
+  helloKeyCancel?(): void;
   keystoreList(): Promise<NativeCertificate[]>;
   keystoreSign(id: string, digest: Buffer, scheme: SignScheme, hwnd?: Buffer | null): Promise<Buffer>;
   keystoreDecrypt(id: string, data: Buffer, scheme: { scheme: string; hash?: string; label?: Buffer }, hwnd?: Buffer | null): Promise<Buffer>;
@@ -321,6 +337,14 @@ export interface NativeHelper {
     available(): Promise<boolean>;
     /** A yes or no that gates the UI. It doesn't unlock a key. Always has a timeout. */
     verify(reason: string, windowHandle: Buffer, timeoutMs?: number): Promise<HelloResult>;
+    /** Key credentials in the user's Hello container. Never throw: anything wrong is `failed`. */
+    key: {
+      create(name: string, data: Uint8Array, windowHandle: Buffer, timeoutMs?: number): Promise<HelloKeyAnswer>;
+      open(name: string): Promise<'ok' | 'missing' | 'unavailable' | 'failed'>;
+      sign(name: string, data: Uint8Array, windowHandle: Buffer, timeoutMs?: number): Promise<HelloKeyAnswer>;
+      delete(name: string): Promise<'ok' | 'missing' | 'failed'>;
+      cancel(): void;
+    };
   };
   keystore: {
     /** Whether this build and system have an OS keystore to offer. */
@@ -376,6 +400,49 @@ export function wrapHelper(
           warn(`Hello: ${(error as Error).message}`);
           return 'failed';
         }
+      },
+      key: {
+        create: async (name, data, windowHandle, timeoutMs = HELLO_TIMEOUT_MS) => {
+          if (typeof native?.helloKeyCreate !== 'function') return { result: 'unavailable' };
+          try {
+            return await native.helloKeyCreate(name, Buffer.from(data), windowHandle, timeoutMs);
+          } catch (error) {
+            warn(`Hello key: ${(error as Error).message}`);
+            return { result: 'failed' };
+          }
+        },
+        open: async (name) => {
+          if (typeof native?.helloKeyOpen !== 'function') return 'unavailable';
+          try {
+            return await native.helloKeyOpen(name);
+          } catch {
+            return 'failed';
+          }
+        },
+        sign: async (name, data, windowHandle, timeoutMs = HELLO_TIMEOUT_MS) => {
+          if (typeof native?.helloKeySign !== 'function') return { result: 'unavailable' };
+          try {
+            return await native.helloKeySign(name, Buffer.from(data), windowHandle, timeoutMs);
+          } catch (error) {
+            warn(`Hello key: ${(error as Error).message}`);
+            return { result: 'failed' };
+          }
+        },
+        delete: async (name) => {
+          if (typeof native?.helloKeyDelete !== 'function') return 'missing';
+          try {
+            return await native.helloKeyDelete(name);
+          } catch {
+            return 'failed';
+          }
+        },
+        cancel: () => {
+          try {
+            native?.helloKeyCancel?.();
+          } catch {
+            // Nothing was waiting.
+          }
+        },
       },
     },
     keystore: {

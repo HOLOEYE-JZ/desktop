@@ -53,6 +53,24 @@ pub fn hello_verify(_reason: &str, _hwnd: &[u8], _timeout: Duration) -> &'static
     "unavailable"
 }
 
+pub fn hello_key_create(_name: &str, _data: &[u8], _hwnd: &[u8], _timeout: Duration) -> crate::HelloKeyOutcome {
+    crate::HelloKeyOutcome::word("unavailable")
+}
+
+pub fn hello_key_sign(_name: &str, _data: &[u8], _hwnd: &[u8], _timeout: Duration) -> crate::HelloKeyOutcome {
+    crate::HelloKeyOutcome::word("unavailable")
+}
+
+pub fn hello_key_open(_name: &str) -> &'static str {
+    "unavailable"
+}
+
+pub fn hello_key_delete(_name: &str) -> &'static str {
+    "missing"
+}
+
+pub fn hello_key_cancel() {}
+
 /// Identities in one search: the keychains, or the tokens (smart cards). No matches
 /// come back as an error, so a failed search is an empty one.
 fn identities(tokens: bool) -> Vec<SecIdentity> {

@@ -2,6 +2,7 @@
 //! prompts and doesn't touch a smart card. Key operations run without the silent
 //! flag, so the OS and the card's own PIN dialogs show as they always do.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
@@ -9,14 +10,19 @@ use windows::core::{factory, Error as WinError, HSTRING, PCWSTR};
 use windows::Security::Credentials::UI::{
     UserConsentVerificationResult, UserConsentVerifier, UserConsentVerifierAvailability,
 };
+use windows::Security::Credentials::{KeyCredential, KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus};
+use windows::Security::Cryptography::Core::CryptographicPublicKeyBlobType;
+use windows::Security::Cryptography::CryptographicBuffer;
+use windows::Storage::Streams::IBuffer;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Security::Cryptography::*;
 use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindow, IsWindow, PostMessageW, GW_OWNER, WM_CLOSE};
+use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindow, IsWindow, PostMessageW, SetForegroundWindow, GW_OWNER, WM_CLOSE};
 use windows_future::{AsyncStatus, IAsyncOperation};
 
 use crate::der::Curve;
 use crate::keystore::{DecryptPlan, Found, Hash, KeyAllows, KeystoreError, PeerKey, SignPlan};
+use crate::HelloKeyOutcome;
 
 // ─── Hello ───────────────────────────────────────────────────
 
@@ -159,6 +165,183 @@ pub fn hello_verify(reason: &str, hwnd: &[u8], timeout: Duration) -> &'static st
             | UserConsentVerificationResult::DisabledByPolicy,
         )) => "unavailable",
         Ok(Some(_)) | Err(_) => "failed",
+    }
+}
+
+// ─── Hello key credentials ───────────────────────────────────
+
+/// Bumped by a cancel. A create or sign notes it as it starts and stops when it changes,
+/// so a cancel from before never ends a later prompt.
+static CANCEL_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// For open and delete, which don't prompt and shouldn't take long.
+const QUIET_TIMEOUT: Duration = Duration::from_secs(10);
+
+pub fn hello_key_cancel() {
+    CANCEL_GENERATION.fetch_add(1, Ordering::SeqCst);
+}
+
+/// What Windows said, as the helper's words. Only `Success` is a yes.
+fn key_status_word(status: KeyCredentialStatus) -> &'static str {
+    match status {
+        KeyCredentialStatus::Success => "ok",
+        KeyCredentialStatus::NotFound => "missing",
+        // "Use password instead" is the user's no to Hello, as a cancel is.
+        KeyCredentialStatus::UserCanceled | KeyCredentialStatus::UserPrefersPassword => "cancelled",
+        // The TPM is locked out after wrong PINs, for a while.
+        KeyCredentialStatus::SecurityDeviceLocked => "busy",
+        _ => "failed",
+    }
+}
+
+fn key_credentials_supported() -> bool {
+    let answer = KeyCredentialManager::IsSupportedAsync().and_then(|op| wait(&op, AVAILABILITY_TIMEOUT));
+    matches!(answer, Ok(Some(true)))
+}
+
+enum Waited<T> {
+    Done(T),
+    TimedOut,
+    Cancelled,
+}
+
+/// Waits for an operation that shows a prompt. Notes the dialog that opens for it and
+/// brings that one to the front, since a key credential's prompt takes no owner window and
+/// may open behind ours. On a timeout or a cancel it cancels the operation and closes that
+/// dialog, as `hello_verify` does.
+fn wait_for_prompt<T>(op: &IAsyncOperation<T>, deadline: Instant, window: HWND, generation: u64) -> Result<Waited<T>, WinError>
+where
+    T: windows_core::RuntimeType + 'static,
+{
+    let before = dialog_windows();
+    let asked = Instant::now();
+    let mut seen_alone: Option<isize> = None;
+    loop {
+        match op.Status()? {
+            AsyncStatus::Started => {}
+            AsyncStatus::Completed => return op.GetResults().map(Waited::Done),
+            AsyncStatus::Canceled => return Ok(Waited::Cancelled),
+            _ => return Err(op.ErrorCode()?.into()),
+        }
+        let cancelled = CANCEL_GENERATION.load(Ordering::SeqCst) != generation;
+        if cancelled || Instant::now() >= deadline {
+            let _ = op.Cancel();
+            close_our_dialog(&before, window, seen_alone);
+            return Ok(if cancelled { Waited::Cancelled } else { Waited::TimedOut });
+        }
+        if seen_alone.is_none() && asked.elapsed() < OWNERLESS_WINDOW {
+            let new: Vec<isize> = dialog_windows().into_iter().filter(|handle| !before.contains(handle)).collect();
+            if let [only] = new.as_slice() {
+                seen_alone = Some(*only);
+                let owner = owner_of(*only);
+                if owner == 0 || owner == window.0 as isize {
+                    let _ = unsafe { SetForegroundWindow(HWND(*only as *mut core::ffi::c_void)) };
+                }
+            }
+        }
+        sleep(POLL);
+    }
+}
+
+fn buffer_bytes(buffer: &IBuffer) -> Result<Vec<u8>, WinError> {
+    let mut out = windows_core::Array::<u8>::new();
+    CryptographicBuffer::CopyToByteArray(buffer, &mut out)?;
+    Ok(out.to_vec())
+}
+
+fn sign_with(credential: &KeyCredential, data: &[u8], deadline: Instant, window: HWND, generation: u64) -> Result<HelloKeyOutcome, WinError> {
+    let op = credential.RequestSignAsync(&CryptographicBuffer::CreateFromByteArray(data)?)?;
+    let signed = match wait_for_prompt(&op, deadline, window, generation)? {
+        Waited::Done(signed) => signed,
+        Waited::TimedOut => return Ok(HelloKeyOutcome::word("timeout")),
+        Waited::Cancelled => return Ok(HelloKeyOutcome::word("cancelled")),
+    };
+    let status = signed.Status()?;
+    if status != KeyCredentialStatus::Success {
+        return Ok(HelloKeyOutcome::word(key_status_word(status)));
+    }
+    Ok(HelloKeyOutcome { result: "ok", signature: Some(buffer_bytes(&signed.Result()?)?), public_key: None })
+}
+
+/// The window is checked first, so a bad handle never reaches Windows' Hello calls.
+fn prompting(hwnd: &[u8], run: impl FnOnce(HWND, u64) -> Result<HelloKeyOutcome, WinError>) -> HelloKeyOutcome {
+    let Some(window) = window_from(hwnd) else { return HelloKeyOutcome::word("invalid") };
+    let generation = CANCEL_GENERATION.load(Ordering::SeqCst);
+    if !key_credentials_supported() || !hello_available() {
+        return HelloKeyOutcome::word("unavailable");
+    }
+    run(window, generation).unwrap_or_else(|_| HelloKeyOutcome::word("failed"))
+}
+
+pub fn hello_key_create(name: &str, data: &[u8], hwnd: &[u8], timeout: Duration) -> HelloKeyOutcome {
+    let deadline = Instant::now() + timeout;
+    prompting(hwnd, |window, generation| {
+        let op = KeyCredentialManager::RequestCreateAsync(&HSTRING::from(name), KeyCredentialCreationOption::ReplaceExisting)?;
+        let created = match wait_for_prompt(&op, deadline, window, generation)? {
+            Waited::Done(created) => created,
+            Waited::TimedOut => return Ok(HelloKeyOutcome::word("timeout")),
+            Waited::Cancelled => return Ok(HelloKeyOutcome::word("cancelled")),
+        };
+        let status = created.Status()?;
+        if status != KeyCredentialStatus::Success {
+            return Ok(HelloKeyOutcome::word(key_status_word(status)));
+        }
+        let credential = created.Credential()?;
+        let public_key = buffer_bytes(&credential.RetrievePublicKeyWithBlobType(CryptographicPublicKeyBlobType::X509SubjectPublicKeyInfo)?)?;
+        let signed = sign_with(&credential, data, deadline, window, generation)?;
+        Ok(HelloKeyOutcome { public_key: Some(public_key), ..signed })
+    })
+}
+
+pub fn hello_key_sign(name: &str, data: &[u8], hwnd: &[u8], timeout: Duration) -> HelloKeyOutcome {
+    let deadline = Instant::now() + timeout;
+    prompting(hwnd, |window, generation| {
+        let Some(opened) = KeyCredentialManager::OpenAsync(&HSTRING::from(name)).and_then(|op| wait(&op, QUIET_TIMEOUT))? else {
+            return Ok(HelloKeyOutcome::word("timeout"));
+        };
+        let status = opened.Status()?;
+        if status != KeyCredentialStatus::Success {
+            return Ok(HelloKeyOutcome::word(key_status_word(status)));
+        }
+        sign_with(&opened.Credential()?, data, deadline, window, generation)
+    })
+}
+
+pub fn hello_key_open(name: &str) -> &'static str {
+    if !key_credentials_supported() {
+        return "unavailable";
+    }
+    match KeyCredentialManager::OpenAsync(&HSTRING::from(name)).and_then(|op| wait(&op, QUIET_TIMEOUT)) {
+        Ok(Some(opened)) => match opened.Status().map(key_status_word) {
+            Ok(word @ ("ok" | "missing")) => word,
+            _ => "failed",
+        },
+        _ => "failed",
+    }
+}
+
+/// What a delete of a name that isn't there may answer, by Windows version.
+const DELETE_MISSING: [u32; 4] = [NTE_NO_KEY, NTE_NOT_FOUND, ERROR_FILE_NOT_FOUND, 0x8007_0490];
+
+pub fn hello_key_delete(name: &str) -> &'static str {
+    let run = || -> Result<bool, WinError> {
+        let op = KeyCredentialManager::DeleteAsync(&HSTRING::from(name))?;
+        let deadline = Instant::now() + QUIET_TIMEOUT;
+        loop {
+            match op.Status()? {
+                AsyncStatus::Started if Instant::now() < deadline => sleep(POLL),
+                AsyncStatus::Started => {
+                    let _ = op.Cancel();
+                    return Ok(false);
+                }
+                AsyncStatus::Completed => return op.GetResults().map(|_| true),
+                _ => return Err(op.ErrorCode()?.into()),
+            }
+        }
+    };
+    match run() {
+        Ok(true) => "ok",
+        Err(error) if DELETE_MISSING.contains(&(error.code().0 as u32)) => "missing",
+        _ => "failed",
     }
 }
 
@@ -611,6 +794,18 @@ mod tests {
         assert_eq!(dialog_to_close(&[(2, 0)], OURS, Some(1)), None, "another app's, opened later");
         assert_eq!(dialog_to_close(&[(2, 0), (1, 0)], OURS, Some(1)), Some(1));
         assert_eq!(dialog_to_close(&[], OURS, Some(1)), None, "already gone");
+    }
+
+    #[test]
+    fn only_success_is_a_yes_from_a_key_credential() {
+        assert_eq!(key_status_word(KeyCredentialStatus::Success), "ok");
+        assert_eq!(key_status_word(KeyCredentialStatus::UserCanceled), "cancelled");
+        assert_eq!(key_status_word(KeyCredentialStatus::UserPrefersPassword), "cancelled");
+        assert_eq!(key_status_word(KeyCredentialStatus::NotFound), "missing");
+        assert_eq!(key_status_word(KeyCredentialStatus::SecurityDeviceLocked), "busy");
+        assert_eq!(key_status_word(KeyCredentialStatus::CredentialAlreadyExists), "failed");
+        assert_eq!(key_status_word(KeyCredentialStatus::UnknownError), "failed");
+        assert_eq!(key_status_word(KeyCredentialStatus(42)), "failed");
     }
 
     #[test]

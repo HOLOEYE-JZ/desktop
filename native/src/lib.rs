@@ -97,6 +97,148 @@ pub fn hello_verify(reason: String, hwnd: Buffer, timeout_ms: u32) -> Result<Asy
     Ok(AsyncTask::new(HelloVerifyTask { reason, hwnd: hwnd.to_vec(), timeout: Duration::from_millis(timeout_ms as u64) }))
 }
 
+// ─── Hello key credentials ───────────────────────────────────
+//
+// A key pair in the user's Windows Hello container (KeyCredentialManager). Using the
+// private key takes a Hello prompt each time, and it never leaves Windows. Main signs a
+// fixed challenge with it and derives the app lock's key from the signature, so a yes
+// alone opens nothing.
+
+const MAX_HELLO_KEY_NAME: usize = 64;
+const MAX_HELLO_KEY_DATA: usize = 1024;
+
+/// What a create or sign gave. `result` is one word: `ok`, `cancelled`, `busy`,
+/// `unavailable`, `timeout`, `invalid`, `missing` or `failed`.
+pub struct HelloKeyOutcome {
+    pub result: &'static str,
+    pub signature: Option<Vec<u8>>,
+    pub public_key: Option<Vec<u8>>,
+}
+
+impl HelloKeyOutcome {
+    pub fn word(result: &'static str) -> Self {
+        HelloKeyOutcome { result, signature: None, public_key: None }
+    }
+}
+
+#[napi(object)]
+pub struct HelloKeyAnswer {
+    pub result: String,
+    pub signature: Option<Buffer>,
+    /// From a create only: the key's public half, a DER SubjectPublicKeyInfo.
+    pub public_key: Option<Buffer>,
+}
+
+type HelloKeyJob = Box<dyn FnOnce() -> HelloKeyOutcome + Send>;
+
+pub struct HelloKeyTask {
+    run: Option<HelloKeyJob>,
+}
+
+impl Task for HelloKeyTask {
+    type Output = HelloKeyOutcome;
+    type JsValue = HelloKeyAnswer;
+
+    fn compute(&mut self) -> Result<HelloKeyOutcome> {
+        Ok(self.run.take().map_or(HelloKeyOutcome::word("failed"), |run| run()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: HelloKeyOutcome) -> Result<HelloKeyAnswer> {
+        Ok(HelloKeyAnswer {
+            result: output.result.to_string(),
+            signature: output.signature.map(Buffer::from),
+            public_key: output.public_key.map(Buffer::from),
+        })
+    }
+}
+
+type HelloKeyWordJob = Box<dyn FnOnce() -> &'static str + Send>;
+
+pub struct HelloKeyWordTask {
+    run: Option<HelloKeyWordJob>,
+}
+
+impl Task for HelloKeyWordTask {
+    type Output = &'static str;
+    type JsValue = String;
+
+    fn compute(&mut self) -> Result<&'static str> {
+        Ok(self.run.take().map_or("failed", |run| run()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: &'static str) -> Result<String> {
+        Ok(output.to_string())
+    }
+}
+
+/// Letters, digits, spaces, `-`, `_` and `.`: the name shows nowhere, and it can't reach
+/// another app's credential by a trick of spelling.
+fn checked_key_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.len() > MAX_HELLO_KEY_NAME || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b" ._-".contains(&byte)) {
+        return Err(Error::from_reason("hello: bad key name"));
+    }
+    Ok(())
+}
+
+fn checked_key_data(data: &[u8]) -> Result<()> {
+    if data.is_empty() || data.len() > MAX_HELLO_KEY_DATA {
+        return Err(Error::from_reason("hello: data must be 1 to 1024 bytes"));
+    }
+    Ok(())
+}
+
+fn checked_timeout(timeout_ms: u32) -> Result<Duration> {
+    if timeout_ms == 0 || timeout_ms > MAX_HELLO_TIMEOUT_MS {
+        return Err(Error::from_reason("hello: timeout out of range"));
+    }
+    Ok(Duration::from_millis(timeout_ms as u64))
+}
+
+/// Makes a new key credential under this name, replacing one there, and signs `data` with
+/// it: one Hello prompt, or two where Windows asks again to sign. The signature is RSA
+/// PKCS#1 v1.5 with SHA-256 over `data`. Main checks that against the public key it gets
+/// here before relying on it.
+#[napi]
+pub fn hello_key_create(name: String, data: Buffer, hwnd: Buffer, timeout_ms: u32) -> Result<AsyncTask<HelloKeyTask>> {
+    checked_key_name(&name)?;
+    checked_key_data(&data)?;
+    let timeout = checked_timeout(timeout_ms)?;
+    let (data, hwnd) = (data.to_vec(), hwnd.to_vec());
+    Ok(AsyncTask::new(HelloKeyTask { run: Some(Box::new(move || os::hello_key_create(&name, &data, &hwnd, timeout))) }))
+}
+
+/// Whether a key credential of this name is there: `ok`, `missing`, `unavailable` or
+/// `failed`. Never prompts.
+#[napi]
+pub fn hello_key_open(name: String) -> Result<AsyncTask<HelloKeyWordTask>> {
+    checked_key_name(&name)?;
+    Ok(AsyncTask::new(HelloKeyWordTask { run: Some(Box::new(move || os::hello_key_open(&name))) }))
+}
+
+/// Signs `data` with the named key credential, behind a Hello prompt on a window.
+#[napi]
+pub fn hello_key_sign(name: String, data: Buffer, hwnd: Buffer, timeout_ms: u32) -> Result<AsyncTask<HelloKeyTask>> {
+    checked_key_name(&name)?;
+    checked_key_data(&data)?;
+    let timeout = checked_timeout(timeout_ms)?;
+    let (data, hwnd) = (data.to_vec(), hwnd.to_vec());
+    Ok(AsyncTask::new(HelloKeyTask { run: Some(Box::new(move || os::hello_key_sign(&name, &data, &hwnd, timeout))) }))
+}
+
+/// Deletes the named key credential: `ok`, `missing` or `failed`. Never prompts.
+#[napi]
+pub fn hello_key_delete(name: String) -> Result<AsyncTask<HelloKeyWordTask>> {
+    checked_key_name(&name)?;
+    Ok(AsyncTask::new(HelloKeyWordTask { run: Some(Box::new(move || os::hello_key_delete(&name))) }))
+}
+
+/// Ends a create or sign that is waiting for the user: it answers `cancelled`, and its
+/// prompt is closed as on a timeout. Nothing waiting: nothing happens.
+#[napi]
+pub fn hello_key_cancel() {
+    os::hello_key_cancel();
+}
+
 // ─── Keystore ────────────────────────────────────────────────
 
 #[napi(object)]

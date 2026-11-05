@@ -24,6 +24,7 @@ import {
   type LocalWipeRequest,
   type PinStepAnswer,
   type OsUnlockAnswer,
+  type HelloAnswer,
   CHANNEL,
   PRELOAD_ARG,
   type BrowserSignInControls,
@@ -222,6 +223,11 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
         return {
           lock: () => ipcRenderer.send(CHANNEL.appLockLock),
           osUnlock: (): Promise<OsUnlockAnswer> => ipcRenderer.invoke(CHANNEL.appLockOsUnlock),
+          // Windows Hello's signature is a way to the lock key, so only the page asks for it.
+          helloEnroll: (proof: Uint8Array, salt: Uint8Array): Promise<HelloAnswer> => ipcRenderer.invoke(CHANNEL.appLockHelloEnroll, proof, salt),
+          helloSign: (salt: Uint8Array, proof?: Uint8Array): Promise<HelloAnswer> => ipcRenderer.invoke(CHANNEL.appLockHelloSign, salt, proof),
+          helloCancel: () => ipcRenderer.send(CHANNEL.appLockHelloCancel),
+          helloRemove: (): Promise<void> => ipcRenderer.invoke(CHANNEL.appLockHelloRemove),
           wrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockWrap, data),
           unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
           pinStep: (data: Uint8Array): Promise<PinStepAnswer> => ipcRenderer.invoke(CHANNEL.appLockPinStep, data),

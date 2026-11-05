@@ -2,12 +2,16 @@
  * App lock's shell side: the gate (app-lock-gate.ts), the screen lock, "Lock now" in the
  * menu, window titles, and Windows Hello and Touch ID.
  *
- * Windows Hello answers yes or no, and that can't wrap a key. So the lock key sits in
- * safeStorage, and main reads it only after the yes. That stops someone at the keyboard
- * of an unlocked Windows session who doesn't know the PIN. It doesn't stop a program
- * running as this user, which can ask DPAPI itself without any prompt. The settings page
- * says so. The PIN stays either way, since Hello being available doesn't mean the user
- * knows its PIN. Linux has neither prompt, so it's PIN only there.
+ * Windows Hello is a second way to the lock key (app-lock-hello.ts): a key credential in the
+ * user's Hello container signs a fixed challenge, and the page derives the key that wraps its
+ * lock key from the signature. Nothing here holds the lock key for Hello. The page proves the
+ * unlock to the gate with the key it opened, as after a PIN. The PIN stays either way.
+ *
+ * Touch ID answers yes or no, and that can't wrap a key. So on macOS the lock key sits in
+ * safeStorage, and main reads it only after the yes. That stops someone at the keyboard who
+ * doesn't know the PIN, not a program running as this user, and the settings page says so.
+ * Windows used the same until Hello's key credential replaced it; a key left from then is
+ * deleted at start. Linux has neither prompt, so it's PIN only there.
  *
  * `wrap` and `unwrap` put safeStorage around the page's PIN record and the store's keys, so
  * a copy of the disk can't be guessed at without this user's OS login. They go to the page
@@ -24,7 +28,11 @@ import path from 'node:path';
 import { app, BrowserWindow, dialog, powerMonitor, safeStorage, systemPreferences } from 'electron';
 import { CHANNEL, type AppLockStatus, type OsUnlockAnswer, type OsUnlockKind, type PinStepAnswer } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
+import { AppLockHello, HELLO_SALT_BYTES, helloKeyName, removeAllHelloKeys, type HelloAnswer, type HelloKeys } from '../app-lock-hello';
+import { fakeHelloKeys } from '../app-lock-hello-fake';
 import { native } from '../native';
+import { effectivePolicyValue } from '../../shared/policy-schema';
+import { policies } from './policies';
 import { randomSecret, SecretStore } from '../secrets';
 import { strings } from '../strings';
 import { replacingRenderer } from '../windows';
@@ -32,7 +40,6 @@ import { addWipeStep, finishWipeForPage, runLocalWipe, wipeForPage } from './loc
 import type { Feature, FeatureContext } from '.';
 
 const OS_KEY_NAME = 'app-lock-key';
-const OS_PROMPT_MS = 60_000;
 /** A PIN record or a database key. Nothing here wraps anything big. */
 const MAX_WRAP_BYTES = 4096;
 
@@ -42,22 +49,46 @@ async function wrapAvailable(): Promise<boolean> {
   return process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text';
 }
 
-// Whatever the mode: a wipe can run before or without the feature's setup. The folder holds the
-// gate's record and the DPAPI-wrapped lock key of every origin, and the wipe takes all origins.
-addWipeStep(async () => {
-  rmSync(path.join(app.getPath('userData'), 'app-lock'), { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
-  appLockGate.forget();
-});
-
 // Set by build.mjs. Not app.isPackaged, which only looks at the exe's name.
 declare const __BULWARK_TEST_BUILD__: boolean;
 
+let testHelloKeys: HelloKeys | null = null;
+
+/** Windows Hello's key credentials. Tests get made-up ones, so no real prompt comes up on anyone's desktop. */
+function helloKeys(): HelloKeys {
+  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_HELLO_KEY) {
+    testHelloKeys ??= fakeHelloKeys(() => process.env.BULWARK_TEST_HELLO_KEY);
+    return testHelloKeys;
+  }
+  return native().hello.key;
+}
+
+async function helloAvailableNow(): Promise<boolean> {
+  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_HELLO_KEY) return true;
+  return process.platform === 'win32' && native().hello.available();
+}
+
+/** The AppLockHelloAllowed policy. Off: no switch in settings, and an existing key credential goes. */
+function helloAllowed(): boolean {
+  return effectivePolicyValue(policies.snapshot.AppLockHelloAllowed, undefined) !== false;
+}
+
+// Whatever the mode: a wipe can run before or without the feature's setup. The folder holds the
+// gate's record and the DPAPI-wrapped lock key of every origin, and the wipe takes all origins,
+// and every origin's Hello key credential with them.
+addWipeStep(async () => {
+  const folder = path.join(app.getPath('userData'), 'app-lock');
+  await removeAllHelloKeys(folder, helloKeys());
+  rmSync(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  appLockGate.forget();
+});
+
 type Verifier = (window: BrowserWindow | null, reason: string) => Promise<'yes' | 'no' | 'unavailable'>;
 
-function osKindNow(): Promise<OsUnlockKind | null> | OsUnlockKind | null {
+/** The yes-or-no unlock: Touch ID only. On Windows, Hello's key credential took its place. */
+function osKindNow(): OsUnlockKind | null {
   // Tests name what the check does, so no real prompt comes up on anyone's desktop.
-  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY) return 'hello';
-  if (process.platform === 'win32') return native().hello.available().then((available) => (available ? 'hello' : null));
+  if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY) return 'touchid';
   if (process.platform === 'darwin') return systemPreferences.canPromptTouchID() ? 'touchid' : null;
   return null;
 }
@@ -65,11 +96,6 @@ function osKindNow(): Promise<OsUnlockKind | null> | OsUnlockKind | null {
 const verifyWithOs: Verifier = async (window, reason) => {
   if (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY) {
     return process.env.BULWARK_TEST_OS_VERIFY === 'yes' ? 'yes' : 'no';
-  }
-  if (process.platform === 'win32') {
-    if (!window || window.isDestroyed()) return 'unavailable';
-    const result = await native().hello.verify(reason, window.getNativeWindowHandle(), OS_PROMPT_MS);
-    return result === 'verified' ? 'yes' : result === 'unavailable' ? 'unavailable' : 'no';
   }
   if (process.platform === 'darwin') {
     try {
@@ -90,6 +116,19 @@ function setup(ctx: FeatureContext): void {
   const osKeyName = `${OS_KEY_NAME}-${site}`;
   const PEPPER_NAME = `app-lock-pepper-${site}`;
   appLockGate.initForProfile(app.getPath('userData'), ctx.origin);
+  const hello = new AppLockHello({ keys: helloKeys(), name: helloKeyName(app.getPath('userData'), ctx.origin), site, folder, allowed: helloAllowed });
+  // The yes-or-no Hello from before kept the lock key under DPAPI alone. Hello's key credential
+  // replaces it, and the switch shows off until the user turns Hello on again.
+  if (process.platform === 'win32' && !(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_OS_VERIFY)) {
+    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+  }
+  void hello.enforcePolicy();
+  policies.on('changed', () => void hello.enforcePolicy());
+  /** Everything of the lock's that main keeps besides the gate: the OS's key and Hello's key credential. */
+  const removeWaysIn = async () => {
+    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    await hello.remove();
+  };
 
   let prompting = false;
   const oneAtATime = async <T>(busy: T, run: () => Promise<T>): Promise<T> => {
@@ -154,6 +193,9 @@ function setup(ctx: FeatureContext): void {
     // Whether it's there, not whether it opens: nothing here decrypts before someone said yes.
     osEnrolled: secrets.has(osKeyName),
     wrap: await wrapAvailable(),
+    ...(process.platform === 'win32' || (__BULWARK_TEST_BUILD__ && process.env.BULWARK_TEST_HELLO_KEY)
+      ? { hello: { available: await helloAvailableNow(), allowed: helloAllowed(), enrolled: hello.enrolled } }
+      : {}),
   }));
   ctx.on(CHANNEL.appLockLock, () => appLockGate.lock());
 
@@ -188,13 +230,13 @@ function setup(ctx: FeatureContext): void {
     const text = strings();
     if (!(await askOnce(text.appLockOrphanTitle, text.appLockOrphanDetail, text.appLockOrphanConfirm, text.appLockOrphanCancel, window))) return false;
     appLockGate.forget();
-    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    await removeWaysIn();
     return true;
   }));
   ctx.handle(CHANNEL.appLockProve, (_event, _window, proof) => appLockGate.prove(proof));
   ctx.handle(CHANNEL.appLockDisable, async (_event, _window, proof) => {
     if (!appLockGate.disable(proof)) return false;
-    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    await removeWaysIn();
     return true;
   });
 
@@ -217,7 +259,7 @@ function setup(ctx: FeatureContext): void {
       if (response !== 0) return false;
     }
     appLockGate.forget();
-    rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
+    await removeWaysIn();
     return true;
   });
 
@@ -234,6 +276,27 @@ function setup(ctx: FeatureContext): void {
     // Only ever narrows.
     rmSync(path.join(folder, `${osKeyName}.bin`), { force: true });
   });
+
+  const isSalt = (salt: unknown): salt is Uint8Array => salt instanceof Uint8Array && salt.length === HELLO_SALT_BYTES;
+  const handleOf = (window: BrowserWindow | null) => (window && !window.isDestroyed() ? window.getNativeWindowHandle() : Buffer.alloc(8));
+
+  // Turning Hello on, from settings: only with the proof of the lock as it stands, and unlocked.
+  ctx.handle(CHANNEL.appLockHelloEnroll, (_event, window, proof, salt) => oneAtATime<HelloAnswer>({ ok: false, reason: 'busy' }, async () => {
+    if (appLockGate.locked || !appLockGate.matches(proof) || !isSalt(salt)) return { ok: false, reason: 'failed' };
+    if (!(await helloAvailableNow())) return { ok: false, reason: 'unavailable' };
+    return hello.enroll(salt, handleOf(window));
+  }));
+
+  // The unlock, and the new wrap after a changed PIN. Unlocked it takes the proof, or a frame that
+  // got this far could collect a way to the key while nobody is looking.
+  ctx.handle(CHANNEL.appLockHelloSign, (_event, window, salt, proof) => oneAtATime<HelloAnswer>({ ok: false, reason: 'busy' }, async () => {
+    if (!isSalt(salt)) return { ok: false, reason: 'failed' };
+    if (!appLockGate.locked && !appLockGate.matches(proof)) return { ok: false, reason: 'not-locked' };
+    return hello.sign(salt, handleOf(window));
+  }));
+  ctx.on(CHANNEL.appLockHelloCancel, () => hello.cancel());
+  // Only ever narrows.
+  ctx.handle(CHANNEL.appLockHelloRemove, () => hello.remove());
 
   // What a lock leaves in the renderer can't be overwritten, only ended with the process: a page
   // reloads into the same one. Only while locked, or a frame could use it to take a window down.
@@ -311,6 +374,7 @@ function setup(ctx: FeatureContext): void {
   if (__BULWARK_TEST_BUILD__) {
     (globalThis as unknown as { __bulwarkAppLock: unknown }).__bulwarkAppLock = {
       gate: appLockGate,
+      helloKeys: () => (testHelloKeys as (HelloKeys & { names?: () => string[] }) | null)?.names?.() ?? [],
       lockScreen: () => powerMonitor.emit('lock-screen'),
       wipe: () => runLocalWipe('remote', app.getPath('userData'), ctx.state),
     };

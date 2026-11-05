@@ -120,11 +120,26 @@ export type OsUnlockKind = 'hello' | 'touchid';
 export interface AppLockStatus {
   locked: boolean;
   enrolled: boolean;
+  /**
+   * The yes-or-no unlock in front of a key in the OS's storage: Touch ID on macOS. Windows Hello
+   * isn't this any more but `hello` below, so it's never 'hello' from this shell.
+   */
   os: OsUnlockKind | null;
   osEnrolled: boolean;
   /** The OS has a real key store, so `wrap` and `unwrap` work. False: secrets on this machine are only obfuscated. */
   wrap: boolean;
+  /**
+   * Windows Hello's key credential, a second way to the lock key (`helloEnroll`, `helloSign`).
+   * `available`: Windows can show the prompt here. `allowed`: the AppLockHelloAllowed policy.
+   * `enrolled`: this profile has a key credential. Absent off Windows and on an older shell.
+   */
+  hello?: { available: boolean; allowed: boolean; enrolled: boolean };
 }
+
+/** A signature from the lock's Hello key credential, or why there's none. */
+export type HelloAnswer =
+  | { ok: true; signature: Uint8Array }
+  | { ok: false; reason: 'cancelled' | 'busy' | 'unavailable' | 'missing' | 'unsupported' | 'policy' | 'not-locked' | 'failed' };
 
 /** What a page's wipe asks of main. `account` null: everything on this device. */
 export interface LocalWipeRequest {
@@ -1002,6 +1017,10 @@ export const CHANNEL = {
   appLockOsEnroll: 'bulwark:appLock.osEnroll',
   appLockOsRemove: 'bulwark:appLock.osRemove',
   appLockOsUnlock: 'bulwark:appLock.osUnlock',
+  appLockHelloEnroll: 'bulwark:appLock.helloEnroll',
+  appLockHelloSign: 'bulwark:appLock.helloSign',
+  appLockHelloCancel: 'bulwark:appLock.helloCancel',
+  appLockHelloRemove: 'bulwark:appLock.helloRemove',
   appLockWrap: 'bulwark:appLock.wrap',
   appLockPinStep: 'bulwark:appLock.pinStep',
   appLockReplaceRenderer: 'bulwark:appLock.replaceRenderer',
