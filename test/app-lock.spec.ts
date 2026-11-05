@@ -236,6 +236,8 @@ test.describe('through the real preload and IPC', () => {
         expect(locked[id], id).toBe(false);
       }
       if (process.platform !== 'darwin') expect(locked['file.settings']).toBe(false);
+      // desktop-p3-16: File > Import stayed a submenu of greyed lines.
+      expect(await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('file.importMenu')?.enabled)).toBe(false);
       if (process.platform === 'win32') {
         expect(locked['file.quit']).toBe(true);
         expect(locked['window.minimize']).toBe(true);
@@ -250,6 +252,7 @@ test.describe('through the real preload and IPC', () => {
       expect(await call(page, 'prove', 1)).toBe(true);
       await expect.poll(async () => (await state())['file.print']).toBe(true);
       expect((await state())['file.lockNow']).toBe(true);
+      expect(await app.evaluate(({ Menu }) => Menu.getApplicationMenu()?.getMenuItemById('file.importMenu')?.enabled)).toBe(true);
     });
   });
 

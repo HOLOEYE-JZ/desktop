@@ -66,7 +66,13 @@ export function sectionOf(state: MenuState | undefined): AppSection {
 
 /** What decides which menus and lines there are, so a change means a new menu. */
 export function menuShapeOf(state: MenuState | undefined): string {
-  return `${sectionOf(state)}|${state?.['compose.send'] !== undefined}|${state?.['shortcuts.singleKeys'] === false}`;
+  return `${sectionOf(state)}|${state?.['compose.send'] !== undefined}|${state?.['shortcuts.singleKeys'] === false}|${starredNow(state)}`;
+}
+
+/** The message (or every one selected) is starred: Message > Star says "Remove star" (desktop-p3-14). */
+function starredNow(state: MenuState | undefined): boolean {
+  const entry = state?.['message.star'];
+  return typeof entry === 'object' && entry.checked === true;
 }
 
 /** A line that stands for another command: a hidden second key, or the macOS app menu's Settings. */
@@ -92,8 +98,12 @@ function withoutMnemonic(label: string): string {
 
 function greyWhileLocked(items: MenuItemConstructorOptions[]): void {
   for (const item of items) {
-    if (Array.isArray(item.submenu)) greyWhileLocked(item.submenu);
-    else if (item.type !== 'separator' && !enabledWhileLocked(item)) item.enabled = false;
+    if (Array.isArray(item.submenu)) {
+      greyWhileLocked(item.submenu);
+      // A submenu with nothing left to pick is greyed itself (File > Import), not opened onto
+      // greyed lines (desktop-p3-16). Only the top-level menus come in here, so they stay openable.
+      item.enabled = item.submenu.some((line) => line.type !== 'separator' && line.visible !== false && line.enabled !== false);
+    } else if (item.type !== 'separator' && !enabledWhileLocked(item)) item.enabled = false;
   }
 }
 
@@ -163,9 +173,14 @@ export class MenuController {
   private applyState(): void {
     const menu = Menu.getApplicationMenu();
     if (!menu) return;
-    const walk = (items: MenuItem[]) => {
+    const walk = (items: MenuItem[], nested: boolean) => {
       for (const item of items) {
-        if (item.submenu) walk(item.submenu.items);
+        if (item.submenu) {
+          walk(item.submenu.items, true);
+          // Locked: a submenu with nothing left to pick is greyed itself (File > Import),
+          // not opened onto greyed lines (desktop-p3-16). Top-level menus stay openable.
+          if (this.locked && nested) item.enabled = item.submenu.items.some((line) => line.type !== 'separator' && line.visible && line.enabled);
+        }
         if (this.locked && !item.submenu && item.type !== 'separator' && !enabledWhileLocked(item)) {
           item.enabled = false;
           continue;
@@ -189,7 +204,7 @@ export class MenuController {
         if (item.type === 'radio' && state.checked) item.checked = true;
       }
     };
-    walk(menu.items);
+    walk(menu.items, false);
   }
 
   /**
@@ -376,7 +391,7 @@ export class MenuController {
 
     const searchLabels: Record<AppSection, string> = {
       mail: text.menuSearch,
-      settings: text.menuSearch,
+      settings: text.menuSearchSettings,
       calendar: text.menuSearchEvents,
       contacts: text.menuSearchContacts,
       files: text.menuSearchFiles,
@@ -478,7 +493,7 @@ export class MenuController {
         { type: 'separator' },
         this.command('message.markRead', text.menuMarkRead, win ? { accelerator: 'Ctrl+Q' } : this.pageKey('Shift+I')),
         this.command('message.markUnread', text.menuMarkUnread, mac ? {} : { accelerator: 'Ctrl+U' }),
-        this.command('message.star', text.menuStar, this.pageKey('S')),
+        this.command('message.star', this.stateOf('message.star').checked ? text.menuUnstar : text.menuStar, this.pageKey('S')),
         { type: 'separator' },
         this.command('message.move', text.menuMove),
         this.command('message.archive', text.menuArchive, this.pageKey('E')),
