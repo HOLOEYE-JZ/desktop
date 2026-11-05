@@ -10,7 +10,7 @@ import type { WebContents } from 'electron';
 import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary, type QuickComposeStatus } from '../../shared/bridge';
 import { LinkRateLimit } from '../deep-link';
 import type { FeatureContext } from './index';
-import { cleanSettingsPatch, currentOsSettings, defaultSettings } from './os-rules';
+import { cleanSettingsPatch, currentOsSettings, defaultSettings, onlyMessageFiles } from './os-rules';
 
 const EMPTY_SUMMARY: OsSummary = { unread: [], recent: [], nextEvent: null };
 
@@ -26,6 +26,8 @@ export class OsHub extends EventEmitter<{
   private readonly defaults = defaultSettings(process.platform, process.env);
   private readonly pending: OsCommand[] = [];
   private receiver: WebContents | null = null;
+  /** The receiving page opens an .eml in a message window of its own (an older page shows it in the main window). */
+  private receiverOpensMessageFiles = false;
   /**
    * Fails closed. `unknown` until the main window's page has said, and again after it
    * navigates: no content on any surface, and no toast's button acts. `main` is a lock
@@ -187,11 +189,17 @@ export class OsHub extends EventEmitter<{
   }
 
   /** The main window's page says it listens. Only that page: pop-outs don't act on these. */
-  subscribe(contents: WebContents): void {
+  subscribe(contents: WebContents, options?: unknown): void {
     const main = this.ctx.windows.mainWindow();
     if (!main || main.webContents !== contents) return;
     this.receiver = contents;
+    this.receiverOpensMessageFiles = !!options && typeof options === 'object' && (options as { messageFileWindows?: unknown }).messageFileWindows === true;
     this.flush();
+  }
+
+  /** The main window's page, listening now, opens an .eml in a window of its own. */
+  get messageFileWindows(): boolean {
+    return !!this.receiver && !this.receiver.isDestroyed() && this.receiverOpensMessageFiles;
   }
 
   private flush(): void {
@@ -213,9 +221,12 @@ export class OsHub extends EventEmitter<{
     // A mail link, and files for a new message (Send to, Open with), open a compose window of
     // their own (the page's mail-app.tsx) and the main window stays where it is, as with Outlook.
     // The page brings it up when it has to ask something or the composer opens there after all.
-    // Locked, the lock screen shows.
+    // So does a saved message (.eml) for a page that opens it in a message window of its own;
+    // signed out or offline, that page brings the main window up itself. Locked, the lock
+    // screen shows.
     const forNewMessage = command.type === 'mailto' || (command.type === 'files' && command.reason === 'attach' && !command.ask);
-    const ownWindow = forNewMessage && !this.locked && !!windows.mainWindow();
+    const messageFiles = command.type === 'files' && command.reason === 'open' && onlyMessageFiles(command) && this.messageFileWindows;
+    const ownWindow = (forNewMessage || messageFiles) && !this.locked && !!windows.mainWindow();
     if (options.show && !ownWindow) {
       this.ctx.showMain();
     } else if (!windows.mainWindow()) {

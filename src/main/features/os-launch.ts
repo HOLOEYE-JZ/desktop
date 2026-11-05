@@ -144,7 +144,7 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
 
   liveSecondLaunch = (argv, cwd) => {
     const request = parseArgv(argv, { cwd, skip });
-    if (!staysHidden(request) && !launchOpensOwnWindow(request)) hub.ctx.showMain();
+    if (!staysHidden(request) && !launchOpensOwnWindow(request, hub.messageFileWindows)) hub.ctx.showMain();
     void run(request);
   };
   for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);

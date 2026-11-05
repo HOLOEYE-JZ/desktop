@@ -564,6 +564,57 @@ test.describe('the lock in main', () => {
   });
 });
 
+test.describe('a saved message opened from Explorer', () => {
+  const eml = { type: 'files' as const, reason: 'open' as const, files: [{ name: 'letter.eml', data: new Uint8Array([1]) }], failed: [] };
+  const setup = (options?: unknown) => {
+    const sent: unknown[] = [];
+    const contents = { id: 1, isDestroyed: () => false, send: (_channel: string, command: unknown) => sent.push(command) };
+    const windows = new EventEmitter() as EventEmitter & { mainWindow: () => unknown; broadcast: () => void; startMainHidden: () => void };
+    windows.mainWindow = () => ({ webContents: contents });
+    windows.broadcast = () => {};
+    windows.startMainHidden = () => {};
+    let shown = 0;
+    const os = new OsHub({ windows, state: { data: {}, touch() {}, save() {} }, showMain() { shown += 1; } } as unknown as FeatureContext);
+    os.subscribe(contents as never, options);
+    os.setLockedByPage(false, contents as never);
+    return { os, sent, shown: () => shown };
+  };
+
+  // desktop-p3-5: the main window came out of the tray to show it.
+  test('leaves the main window where it is for a page that opens it in a message window', () => {
+    const { os, sent, shown } = setup({ messageFileWindows: true });
+    expect(os.messageFileWindows).toBe(true);
+    os.dispatch(eml);
+    expect(sent).toHaveLength(1);
+    expect(shown()).toBe(0);
+  });
+
+  test('an older page shows it in the main window, so that comes up', () => {
+    const { os, shown } = setup();
+    expect(os.messageFileWindows).toBe(false);
+    os.dispatch(eml);
+    expect(shown()).toBe(1);
+  });
+
+  test('locked, an .ics beside it, or a file that could not be read: the main window comes up', () => {
+    const locked = setup({ messageFileWindows: true });
+    locked.os.setLockedByPage(true, {} as never);
+    locked.os.dispatch(eml);
+    expect(locked.shown()).toBe(1);
+    const mixed = setup({ messageFileWindows: true });
+    mixed.os.dispatch({ ...eml, files: [...eml.files, { name: 'party.ics', data: new Uint8Array([1]) }] });
+    expect(mixed.shown()).toBe(1);
+    const failed = setup({ messageFileWindows: true });
+    failed.os.dispatch({ ...eml, failed: ['gone.eml'] });
+    expect(failed.shown()).toBe(1);
+  });
+
+  test('only a strict true counts', () => {
+    expect(setup({ messageFileWindows: 'yes' }).os.messageFileWindows).toBe(false);
+    expect(setup('messageFileWindows').os.messageFileWindows).toBe(false);
+  });
+});
+
 test.describe('programs and retries', () => {
   test('no source file runs a Windows tool by its bare name', () => {
     const dir = path.resolve(import.meta.dirname, '..', 'src', 'main');

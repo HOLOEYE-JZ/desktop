@@ -276,15 +276,26 @@ export function launchFileCommand(reason: 'open' | 'attach', sendTo: boolean): {
   return { reason };
 }
 
+function isMessageFile(name: string): boolean {
+  return path.extname(name).toLowerCase() === '.eml';
+}
+
+/** Files to open that are all saved messages (.eml), every one read: a message window each. */
+export function onlyMessageFiles(command: { files: readonly { name: string }[]; failed: readonly string[] }): boolean {
+  return command.files.length > 0 && command.failed.length === 0 && command.files.every((file) => isMessageFile(file.name));
+}
+
 /**
  * A second launch that brings up a window of its own and leaves the main window be: a link, a
- * new message, a mail link, or files for a new message (Send to, Open with on a document).
+ * new message, a mail link, files for a new message (Send to, Open with on a document), or,
+ * for a page that opens them in a message window (`messageFileWindows`), saved messages.
  */
-export function launchOpensOwnWindow(request: Pick<LaunchRequest, 'links' | 'commands' | 'files' | 'sendTo'>): boolean {
+export function launchOpensOwnWindow(request: Pick<LaunchRequest, 'links' | 'commands' | 'files' | 'sendTo'>, messageFileWindows = false): boolean {
   if (request.links.length > 0) return true;
   if (request.commands.length === 0 && request.files.length === 0) return false;
   return request.commands.every((command) => command.type === 'new-message' || command.type === 'mailto')
-    && request.files.every((file) => launchFileCommand(fileReason(file), request.sendTo).reason === 'attach');
+    && request.files.every((file) => launchFileCommand(fileReason(file), request.sendTo).reason === 'attach'
+      || (messageFileWindows && isMessageFile(file)));
 }
 
 /** At most this many files go on one message from the OS, and this much together. The rest are named as not opened. */
