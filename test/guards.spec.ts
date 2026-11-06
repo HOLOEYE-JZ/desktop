@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type ChildProcess } from 'node:child_process';
 import { createServer as createHttpServer, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import type { AddressInfo } from 'node:net';
@@ -7,7 +7,7 @@ import { createHash, X509Certificate } from 'node:crypto';
 import path from 'node:path';
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test';
 import { generateCertificate } from '../src/main/cert';
-import { APP_ORIGIN, fakeOsIntegration, launchStandalone, opened, plainRequest, prompts, removeProfile, serverPort, tempProfile, waitForLogin } from './helpers';
+import { APP_ORIGIN, askInWindows, fakeOsIntegration, launchStandalone, opened, plainRequest, prompts, removeProfile, serverPort, tempProfile, waitForLogin } from './helpers';
 
 let profile = '';
 let app: ElectronApplication;
@@ -21,11 +21,83 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await app.close();
+  const child = app.process();
+  // A question still open would hold the quit up, and nobody can click on the hidden desktop:
+  // they're answered with their first button (Leave), and an open one goes. Each step has a
+  // limit, and what is still running after them is ended.
+  await within(fakeOsIntegration(app), 10_000);
+  await within(closePrompts(app, true), 10_000);
+  await within(app.close(), 30_000);
+  endProcess(child);
   removeProfile(profile);
 });
 
+/** Waits for `work` at most `ms`, and never fails. */
+function within(work: Promise<unknown>, ms: number): Promise<unknown> {
+  return Promise.race([work.catch(() => {}), new Promise((resolve) => setTimeout(resolve, ms))]);
+}
+
+/** Ends an app still running. On Windows Playwright's process is a cmd.exe with Electron under it. */
+function endProcess(child: ChildProcess): void {
+  if (child.exitCode !== null || !child.pid) return;
+  if (process.platform === 'win32') spawnSync('taskkill.exe', ['/F', '/T', '/PID', String(child.pid)], { windowsHide: true });
+  else child.kill('SIGKILL');
+}
+
 const allWindows = () => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+
+/** The shell's dialog windows load their page as this (src/main/dialog-window.ts). */
+const DIALOG_PAGE = 'data:text/html;charset=utf-8;base64,';
+
+/** The shell's dialog windows there are, as main sees them. One on its way out is gone. */
+function leavePrompts(target: ElectronApplication): Promise<number> {
+  return target.evaluate(({ BrowserWindow }, prefix) => BrowserWindow.getAllWindows().filter((w) => {
+    try {
+      return !w.isDestroyed() && !w.webContents.isDestroyed() && w.webContents.getURL().startsWith(prefix);
+    } catch {
+      return false;
+    }
+  }).length, DIALOG_PAGE);
+}
+
+/** Closes the shell's dialog windows as the OS would (no answer), or destroys them. */
+function closePrompts(target: ElectronApplication, destroy = false): Promise<void> {
+  return target.evaluate(({ BrowserWindow }, { prefix, hard }) => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      try {
+        if (w.isDestroyed() || w.webContents.isDestroyed() || !w.webContents.getURL().startsWith(prefix)) continue;
+        if (hard) w.destroy();
+        else w.close();
+      } catch {
+        // Already going.
+      }
+    }
+  }, { prefix: DIALOG_PAGE, hard: destroy });
+}
+
+/** Questions already answered: Playwright may not have seen their windows go yet. */
+const seenPrompts = new WeakSet<Page>();
+
+/** The unsaved-changes question's window, drawn and ready for a click. */
+async function leavePrompt(target: ElectronApplication): Promise<Page> {
+  let found: Page | undefined;
+  await expect
+    .poll(async () => {
+      for (const candidate of target.windows()) {
+        if (seenPrompts.has(candidate) || candidate.isClosed() || !candidate.url().startsWith(DIALOG_PAGE)) continue;
+        const title = await candidate.locator('#title').textContent().catch(() => '');
+        if (title?.includes('unsaved')) {
+          found = candidate;
+          return true;
+        }
+      }
+      return false;
+    }, { timeout: 20_000 })
+    .toBe(true);
+  expect(await leavePrompts(target), 'one question').toBe(1);
+  seenPrompts.add(found!);
+  return found!;
+}
 
 test.describe('the embedded server', () => {
   test('a plain https request without the secret gets 403', async () => {
@@ -468,26 +540,148 @@ test.describe('the theme', () => {
 });
 
 test.describe('leaving a page with unsaved changes', () => {
-  async function dirtyPage() {
-    await page.goto(`${APP_ORIGIN}/en/login?dirty=1`);
-    await waitForLogin(page);
-    // Chromium only asks after the user touched the page.
-    await page.click('body', { position: { x: 5, y: 5 } });
-    await page.evaluate(() => window.addEventListener('beforeunload', (event) => event.preventDefault()));
+  // The real question: a Bulwark window (src/main/message-box.ts), clicked as the user would.
+  test.beforeAll(() => askInWindows(app, true));
+  test.afterAll(() => askInWindows(app, false));
+
+  /** Chromium only asks after the user touched the page. */
+  async function makeDirty(target = page) {
+    await target.click('body', { position: { x: 5, y: 5 } });
+    await target.evaluate(() => window.addEventListener('beforeunload', (event) => event.preventDefault()));
   }
 
-  test('reloading asks natively: Stay keeps the page, Leave goes', async () => {
+  async function dirtyPage(query = 'dirty=1') {
+    await page.goto(`${APP_ORIGIN}/en/login?${query}`);
+    await waitForLogin(page);
+    await makeDirty();
+  }
+
+  /** The page's own navigation, which waits for the question: not awaited. */
+  function go(target: Page, script: () => void) {
+    void target.evaluate(script).catch(() => {});
+  }
+
+  async function answer(prompt: Page, button: 'Leave' | 'Stay', target = app) {
+    await prompt.locator('button.button', { hasText: button }).click();
+    await expect.poll(() => leavePrompts(target)).toBe(0);
+  }
+
+  test('a page going elsewhere asks in a Bulwark window: Stay keeps the page, Leave goes where it was going', async () => {
     await dirtyPage();
-    await fakeOsIntegration(app, 1); // Stay
-    void page.evaluate(() => location.assign('/en/login?left=1')).catch(() => {});
-    await expect.poll(async () => (await prompts(app)).length).toBe(1);
-    expect((await prompts(app))[0].message).toMatch(/unsaved/i);
+    go(page, () => location.assign('/en/login?left=1'));
+    await answer(await leavePrompt(app), 'Stay');
     expect(page.url()).toContain('dirty=1');
 
-    await fakeOsIntegration(app, 0); // Leave
-    void page.evaluate(() => location.assign('/en/login?left=1')).catch(() => {});
+    go(page, () => location.assign('/en/login?left=1'));
+    await answer(await leavePrompt(app), 'Leave');
     await expect(page).toHaveURL(/left=1/);
     await waitForLogin(page);
+    expect(await prompts(app), 'nothing went to the OS dialog').toEqual([]);
+  });
+
+  test('Esc and closing the question are Stay', async () => {
+    await dirtyPage();
+    go(page, () => location.assign('/en/login?left=1'));
+    const first = await leavePrompt(app);
+    // The window goes on the key's way down: its way up has nowhere to go.
+    await first.keyboard.press('Escape').catch(() => {});
+    await expect.poll(() => leavePrompts(app)).toBe(0);
+    expect(page.url()).toContain('dirty=1');
+
+    go(page, () => location.replace('/en/login?left=2'));
+    await leavePrompt(app);
+    await closePrompts(app);
+    await expect.poll(() => leavePrompts(app)).toBe(0);
+    await page.waitForTimeout(500);
+    expect(page.url()).toContain('dirty=1');
+
+    // Still unsaved: a replace goes too, and takes the entry's place.
+    const entries = await page.evaluate(() => history.length);
+    go(page, () => location.replace('/en/login?left=2'));
+    await answer(await leavePrompt(app), 'Leave');
+    await expect(page).toHaveURL(/left=2/);
+    expect(await page.evaluate(() => history.length)).toBe(entries);
+    await waitForLogin(page);
+  });
+
+  test('a reload reloads and a step back goes back', async () => {
+    await page.goto(`${APP_ORIGIN}/en/login?before=1`);
+    await waitForLogin(page);
+    await dirtyPage();
+    await page.evaluate(() => ((window as unknown as { __here?: boolean }).__here = true));
+    // The menu's Reload: the shell starts it.
+    void app.evaluate(({ BrowserWindow }) => {
+      for (const w of BrowserWindow.getAllWindows()) if (w.webContents.getURL().includes('dirty=1')) w.webContents.reload();
+    });
+    await answer(await leavePrompt(app), 'Leave');
+    await expect.poll(() => page.evaluate(() => (window as unknown as { __here?: boolean }).__here ?? false).catch(() => true)).toBe(false);
+    expect(page.url()).toContain('dirty=1');
+    await waitForLogin(page);
+
+    await makeDirty();
+    go(page, () => history.back());
+    await answer(await leavePrompt(app), 'Leave');
+    await expect(page).toHaveURL(/before=1/);
+    await waitForLogin(page);
+  });
+
+  test('quitting while it asks keeps the question: Stay keeps the app, Leave quits', async () => {
+    const own = tempProfile('leave-quit');
+    const launched = await launchStandalone(own);
+    const child = launched.app.process();
+    const quit = () => void launched.app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => {});
+    try {
+      await launched.app.evaluate(({ shell }) => {
+        shell.openExternal = async () => {};
+      });
+      await launched.page.goto(`${APP_ORIGIN}/en/login?dirty=1`);
+      await waitForLogin(launched.page);
+      await makeDirty(launched.page);
+      go(launched.page, () => location.assign('/en/login?left=1'));
+      const asked = await leavePrompt(launched.app);
+      // The tray's Quit, say. The quit closes nothing while the page asks.
+      quit();
+      await launched.page.waitForTimeout(3000);
+      expect(asked.isClosed(), 'the same question').toBe(false);
+      expect(await leavePrompts(launched.app)).toBe(1);
+      await answer(asked, 'Stay', launched.app);
+      await launched.page.waitForTimeout(2000);
+      expect(child.exitCode, 'Stay keeps the app').toBeNull();
+      expect(launched.page.url()).toContain('dirty=1');
+
+      // Quitting asks on its own now, and Leave quits.
+      quit();
+      const again = await leavePrompt(launched.app);
+      await again.locator('button.button', { hasText: 'Leave' }).click();
+      await expect.poll(() => child.exitCode, { timeout: 30_000 }).not.toBeNull();
+    } finally {
+      endProcess(child);
+      removeProfile(own);
+    }
+  });
+
+  test('quitting while it asks, then Leave, quits', async () => {
+    const own = tempProfile('leave-quit');
+    const launched = await launchStandalone(own);
+    const child = launched.app.process();
+    try {
+      await launched.app.evaluate(({ shell }) => {
+        shell.openExternal = async () => {};
+      });
+      await launched.page.goto(`${APP_ORIGIN}/en/login?dirty=1`);
+      await waitForLogin(launched.page);
+      await makeDirty(launched.page);
+      go(launched.page, () => location.assign('/en/login?left=1'));
+      const asked = await leavePrompt(launched.app);
+      void launched.app.evaluate(({ app: electronApp }) => electronApp.quit()).catch(() => {});
+      await launched.page.waitForTimeout(3000);
+      expect(child.exitCode).toBeNull();
+      await asked.locator('button.button', { hasText: 'Leave' }).click();
+      await expect.poll(() => child.exitCode, { timeout: 30_000 }).not.toBeNull();
+    } finally {
+      endProcess(child);
+      removeProfile(own);
+    }
   });
 });
 

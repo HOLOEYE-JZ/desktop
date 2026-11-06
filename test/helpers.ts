@@ -136,6 +136,16 @@ export async function fakeOsIntegration(app: ElectronApplication, response = 0):
   }, response);
 }
 
+/**
+ * The app's prompts as its own Bulwark windows again (on), after fakeOsIntegration sent them to
+ * the faked OS dialog, so a test clicks them as the user would. Off sends them back.
+ */
+export async function askInWindows(app: ElectronApplication, on: boolean): Promise<void> {
+  await app.evaluate((_electron, windows) => {
+    (globalThis as unknown as { __bulwarkNativePrompts: boolean }).__bulwarkNativePrompts = !windows;
+  }, on);
+}
+
 export function opened(app: ElectronApplication): Promise<string[]> {
   return app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened);
 }

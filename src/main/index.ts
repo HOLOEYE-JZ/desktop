@@ -899,6 +899,12 @@ if (gotLock) {
   app.on('before-quit', (event) => {
     stateFile.save();
     windowManager?.beginQuit();
+    // A page is asking whether to leave its unsaved changes: closing would take the question
+    // away as a Stay. It stays, and its Leave quits.
+    if (windowManager?.askingToLeave()) {
+      event.preventDefault();
+      return;
+    }
     if (quitFlushed || !windowManager) return;
     event.preventDefault();
     quitFlushed = true;

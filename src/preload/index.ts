@@ -117,6 +117,42 @@ async function keystoreAnswer<T>(call: Promise<KeystoreResult<T>>): Promise<T> {
   return result.value;
 }
 
+/**
+ * Where the page was going when its unsaved-changes question stopped it (windows.ts). The
+ * question is a window of the shell's own, so Chromium's navigation is called off while it
+ * asks, and a Leave starts it again from here. Chromium fires the Navigation API's navigate
+ * event just before beforeunload, in the same task, for a navigation the page starts; one
+ * the shell starts (a reload) has none, and a step in the history is main's to repeat.
+ * A form's POST can't be sent again from here: it reloads, as a reload does.
+ */
+interface NavigateEventLike extends Event {
+  navigationType: string;
+  destination: { url: string; sameDocument: boolean };
+  formData: FormData | null;
+  downloadRequest: string | null;
+}
+type LeaveTarget = { url: string; replace: boolean };
+let navigating: LeaveTarget | null = null;
+let stopped: LeaveTarget | null = null;
+(window as unknown as { navigation?: EventTarget }).navigation?.addEventListener('navigate', (event) => {
+  const { navigationType, destination, formData, downloadRequest } = event as NavigateEventLike;
+  if (destination.sameDocument || formData || downloadRequest !== null) return;
+  if (navigationType !== 'push' && navigationType !== 'replace') return;
+  navigating = { url: destination.url, replace: navigationType === 'replace' };
+  setTimeout(() => (navigating = null), 0);
+});
+window.addEventListener('beforeunload', () => {
+  stopped = navigating;
+  navigating = null;
+});
+ipcRenderer.on(CHANNEL.windowsLeave, () => {
+  const target = stopped;
+  stopped = null;
+  if (!target) window.location.reload();
+  else if (target.replace) window.location.replace(target.url);
+  else window.location.assign(target.url);
+});
+
 const allowedOrigin = argument(PRELOAD_ARG.allowedOrigin);
 const mode = argument(PRELOAD_ARG.mode);
 

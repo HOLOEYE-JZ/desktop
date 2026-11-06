@@ -974,6 +974,8 @@ export const CHANNEL = {
   windowsSpareReady: 'bulwark:windows.spareReady',
   windowsSpareActivate: 'bulwark:windows.spareActivate',
   windowsSpareTaken: 'bulwark:windows.spareTaken',
+  /** Main to the preload: the user chose Leave, go where the page was going (windows.ts). */
+  windowsLeave: 'bulwark:windows.leave',
   menuSetState: 'bulwark:menu.setState',
   menuCommand: 'bulwark:menu.command',
   menuPopup: 'bulwark:menu.popup',

@@ -135,6 +135,12 @@ export interface ManagedWindow {
   closing?: boolean;
   /** The user said Leave to the page's unsaved-changes question: the next unload goes through. */
   leaveConfirmed?: boolean;
+  /** The unsaved-changes question is on screen: another unload meanwhile only changes what Leave does. */
+  askingToLeave?: boolean;
+  /** The history entry the unload was a step to, if it was one: where a Leave goes. */
+  leaveToIndex?: number;
+  /** The history entry the page is on, as last committed. */
+  historyIndex?: number;
   /** What this window's open drafts come back as next time. */
   restoreUrls?: string[];
   /** When its page died lately. */
@@ -462,20 +468,36 @@ export class WindowManager extends EventEmitter<{
       if (!details.isMainFrame || details.isSameDocument) return;
       // The next page names the window itself.
       managed.menuName = undefined;
+      // A Leave is for the unload it was asked about, which is past now (or never came).
+      managed.leaveConfirmed = false;
       this.emit('navigated', window);
+    });
+    const committed = () => {
+      managed.historyIndex = webContents.navigationHistory.getActiveIndex();
+    };
+    webContents.on('did-navigate', committed);
+    webContents.on('did-navigate-in-page', (_event, _url, isMainFrame) => {
+      if (isMainFrame) committed();
     });
     if (type !== 'main') webContents.on('render-process-gone', (_event, details) => this.onPageGone(managed, details.reason));
     // Unanswered, this cancels the close silently, and a quit with it.
     // The question is a window of the app's own, which can't answer Chromium while it
-    // waits: the unload stops here, and a Leave starts it again (a close, a quit or a reload).
+    // waits: the unload stops here, and a Leave starts it again. A close or a quit closes
+    // or quits again; a step in the history goes to the entry it was for, which only main
+    // knows; anything else is the page's to repeat (the preload knows where it was going,
+    // and reloads when nothing was).
     webContents.on('will-prevent-unload', (event) => {
       if (wipeUnderWay() || managed.leaveConfirmed) {
         managed.leaveConfirmed = false;
         event.preventDefault();
         return;
       }
-      const closing = !!managed.closing;
-      const quitting = this.quitting;
+      // While a step is waiting, the history's active entry is the one it goes to.
+      const pending = webContents.navigationHistory.getActiveIndex();
+      managed.leaveToIndex = managed.historyIndex !== undefined && pending !== managed.historyIndex ? pending : undefined;
+      // One question at a time: a close or a quit meanwhile is what its Leave does then.
+      if (managed.askingToLeave) return;
+      managed.askingToLeave = true;
       const text = strings();
       if (window.isMinimized()) window.restore();
       if (!window.isVisible()) window.show();
@@ -489,12 +511,15 @@ export class WindowManager extends EventEmitter<{
         cancelId: 1,
         noLink: true,
       }).then(({ response }) => {
+        managed.askingToLeave = false;
         if (window.isDestroyed()) return;
         if (response === 0) {
           managed.leaveConfirmed = true;
-          if (quitting) app.quit();
-          else if (closing) window.close();
-          else webContents.reload();
+          const index = managed.leaveToIndex;
+          if (this.quitting) app.quit();
+          else if (managed.closing) window.close();
+          else if (index !== undefined && index < webContents.navigationHistory.length()) webContents.navigationHistory.goToIndex(index);
+          else webContents.send(CHANNEL.windowsLeave);
           return;
         }
         for (const other of this.windows.values()) {
@@ -633,6 +658,12 @@ export class WindowManager extends EventEmitter<{
   /** Windows are going. Choosing Stay in a prompt ends that. */
   isQuitting(): boolean {
     return this.quitting;
+  }
+
+  /** A page's unsaved-changes question is on screen. */
+  askingToLeave(): boolean {
+    for (const managed of this.windows.values()) if (managed.askingToLeave) return true;
+    return false;
   }
 
   /** The next main window loads but isn't shown: a start at login, or a toast's button. */
