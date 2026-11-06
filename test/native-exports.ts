@@ -2,6 +2,12 @@
 // against it in the release build; test/native-exports-unit.spec.ts checks the Rust source and the
 // README against it on every run, so a new export can't wait until the release to be noticed.
 export const EXPORTS = [
+  'clipboardWriteFiles',
+  'codeSignatureCheck',
+  'driveLetterAdd',
+  'driveLetterList',
+  'driveLetterRemove',
+  'fileSetPin',
   'filesDriveConnect',
   'filesDriveConvert',
   'filesDriveDehydrate',
@@ -22,6 +28,7 @@ export const EXPORTS = [
   'filesDriveUnregister',
   'filesDriveUpdate',
   'filesUsedDriveLetters',
+  'folderMakePrivate',
   'helloAvailable',
   'helloKeyCancel',
   'helloKeyCreate',
@@ -33,5 +40,10 @@ export const EXPORTS = [
   'keystoreDecrypt',
   'keystoreList',
   'keystoreSign',
+  'notificationQuietState',
   'policyIsForced',
+  'registryDeleteKey',
+  'registryDeleteValue',
+  'registryRead',
+  'registrySetString',
 ];

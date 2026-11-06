@@ -175,8 +175,82 @@ export function filesErrorCode(error: unknown): string {
   return /^files:([a-z-]+)/.exec(message)?.[1] ?? 'failed';
 }
 
+/** A registry value as the helper reads it (native/src/system_windows.rs). */
+export interface NativeRegistryValue {
+  /** Empty for the key's default value. */
+  name: string;
+  kind: 'sz' | 'expand_sz' | 'multi_sz' | 'dword' | 'qword' | 'binary' | 'none' | 'other';
+  /** A string's text (an EXPAND_SZ not expanded), or a QWORD in decimal. */
+  text?: string;
+  list?: string[];
+  /** A DWORD, unsigned. */
+  number?: number;
+}
+
+/** A key the helper read: its path below the key asked for (empty for that key), its values, the names of its subkeys. */
+export interface NativeRegistryNode {
+  path: string;
+  values: NativeRegistryValue[];
+  subkeys: string[];
+}
+
+export type PinState = 'pinned' | 'unpinned' | 'unspecified';
+
+/**
+ * What main used to start Windows' own tools for: reg.exe, PowerShell, whoami and icacls,
+ * subst, attrib. Endpoint protection blocks or flags an app that starts those. Optional: a
+ * helper built before them has none, and each caller then does what it did when the tool failed.
+ */
+export interface NativeSystemModule {
+  /** Null: the key isn't there. Throws `registry:<code>` when it is and can't be read. */
+  registryRead(key: string, depth: number): NativeRegistryNode[] | null;
+  /** Only under HKCU\Software\<name>. No name: the key's default value. */
+  registrySetString(key: string, name: string | undefined, data: string): void;
+  registryDeleteKey(key: string): boolean;
+  registryDeleteValue(key: string, name: string): boolean;
+  notificationQuietState(): Promise<{ profile: number; notificationState: number }>;
+  clipboardWriteFiles(paths: string[]): Promise<void>;
+  folderMakePrivate(path: string): Promise<void>;
+  driveLetterList(): { letter: string; target: string }[];
+  driveLetterAdd(letter: string, target: string): Promise<void>;
+  driveLetterRemove(letter: string): Promise<void>;
+  fileSetPin(path: string, pin: PinState): Promise<void>;
+  codeSignatureCheck(path: string): Promise<CodeSignature>;
+}
+
+/** A file's embedded Authenticode signature, from WinVerifyTrust. */
+export interface CodeSignature {
+  status: 'valid' | 'unsigned' | 'invalid' | 'unsupported';
+  /** WinVerifyTrust's answer, `0x...`. */
+  code: string;
+  /** `CN=..., O=..., C=...`, as .NET's X509Certificate.Subject. */
+  subject?: string;
+}
+
+export const REGISTRY_NATIVE_EXPORTS = ['registryRead', 'registrySetString', 'registryDeleteKey', 'registryDeleteValue'] as const satisfies readonly (keyof NativeSystemModule)[];
+export const DRIVE_LETTER_NATIVE_EXPORTS = ['driveLetterList', 'driveLetterAdd', 'driveLetterRemove'] as const satisfies readonly (keyof NativeSystemModule)[];
+
+/** The registry, through the helper. Writes and deletes only under HKCU\Software. */
+export interface Registry {
+  /** The key and `depth` levels below it. Null: not there. Throws when it is there and can't be read. */
+  read(key: string, depth?: number): NativeRegistryNode[] | null;
+  /** A REG_SZ, the key made if it isn't there. Undefined name: the default value. False if it failed. */
+  setString(key: string, name: string | undefined, data: string): boolean;
+  /** The key and all below it. False if it wasn't there or couldn't go. */
+  deleteKey(key: string): boolean;
+  deleteValue(key: string, name: string): boolean;
+}
+
+/** Drive letters mapped to folders, as `subst` makes them, for this sign-in session. */
+export interface DriveLetters {
+  /** Letter to folder. Empty when the helper can't say. */
+  list(): Map<string, string>;
+  add(letter: string, target: string): Promise<boolean>;
+  remove(letter: string): Promise<boolean>;
+}
+
 /** Every export of the helper. test/native.spec.ts holds the binary to this list. */
-export interface NativeModule extends Partial<NativeFilesModule> {
+export interface NativeModule extends Partial<NativeFilesModule>, Partial<NativeSystemModule> {
   helloAvailable(): Promise<boolean>;
   helloVerify(reason: string, hwnd: Buffer, timeoutMs: number): Promise<HelloResult>;
   // Optional: a helper built before these existed still loads, and Hello's key credential is unavailable.
@@ -362,6 +436,82 @@ export interface NativeHelper {
   };
   /** The Files drive's calls, on Windows with a helper that has them. Null elsewhere. */
   files: NativeFilesModule | null;
+  /**
+   * Windows, in place of its own tools. Without the helper or the call, each answers what its
+   * caller got when the tool failed. Only `registry.read` throws.
+   */
+  system: {
+    /** Null without a helper that reads the registry, and off Windows. */
+    registry: Registry | null;
+    /** Do Not Disturb's profile and the shell's notification state. Null: Windows didn't say. */
+    quietState(): Promise<{ profile: number; notificationState: number } | null>;
+    /** Files on the clipboard as Explorer copies them. */
+    clipboardWriteFiles(paths: string[]): Promise<boolean>;
+    /** Only this user and SYSTEM, nothing inherited. */
+    makeFolderPrivate(folder: string): Promise<boolean>;
+    /** Null without a helper that has them, and off Windows. */
+    driveLetters: DriveLetters | null;
+    setPin(file: string, pin: PinState): Promise<boolean>;
+    /** An update installer's signature. Null: the helper can't say. */
+    codeSignature(file: string): Promise<CodeSignature | null>;
+  };
+}
+
+/** The registry calls, wrapped so that only a read throws. */
+export function registryFrom(native: Partial<NativeSystemModule> | null, warn: (message: string) => void = console.warn): Registry | null {
+  if (!native || !REGISTRY_NATIVE_EXPORTS.every((name) => typeof native[name] === 'function')) return null;
+  const module = native as NativeSystemModule;
+  const quietly = <T>(run: () => T, otherwise: T, what: string): T => {
+    try {
+      return run();
+    } catch (error) {
+      warn(`Registry ${what}: ${(error as Error).message}`);
+      return otherwise;
+    }
+  };
+  return {
+    read: (key, depth = 0) => module.registryRead(key, depth),
+    setString: (key, name, data) =>
+      quietly(
+        () => {
+          module.registrySetString(key, name, data);
+          return true;
+        },
+        false,
+        'write',
+      ),
+    deleteKey: (key) => quietly(() => module.registryDeleteKey(key), false, 'delete'),
+    deleteValue: (key, name) => quietly(() => module.registryDeleteValue(key, name), false, 'delete'),
+  };
+}
+
+/** What `subst` did, in process. */
+export function driveLettersFrom(native: Partial<NativeSystemModule> | null, warn: (message: string) => void = console.warn): DriveLetters | null {
+  if (!native || !DRIVE_LETTER_NATIVE_EXPORTS.every((name) => typeof native[name] === 'function')) return null;
+  const module = native as NativeSystemModule;
+  return {
+    list: () => {
+      try {
+        return new Map(module.driveLetterList().map((mapping) => [mapping.letter.toUpperCase(), mapping.target]));
+      } catch {
+        return new Map();
+      }
+    },
+    add: (letter, target) => tried(() => module.driveLetterAdd(letter, target), warn, `Drive letter ${letter}: add`),
+    remove: (letter) => tried(() => module.driveLetterRemove(letter), warn, `Drive letter ${letter}: remove`),
+  };
+}
+
+/** A call into the helper that may not be there: true if it was, and it worked. */
+async function tried(run: (() => Promise<unknown>) | null, warn: (message: string) => void, what: string): Promise<boolean> {
+  if (!run) return false;
+  try {
+    await run();
+    return true;
+  } catch (error) {
+    warn(`${what}: ${(error as Error)?.message ?? error}`);
+    return false;
+  }
 }
 
 export function wrapHelper(
@@ -494,5 +644,38 @@ export function wrapHelper(
       },
     },
     files: platform === 'win32' && native && FILES_NATIVE_EXPORTS.every((name) => typeof native[name] === 'function') ? (native as NativeFilesModule) : null,
+    system: {
+      registry: platform === 'win32' ? registryFrom(native, warn) : null,
+      quietState: async () => {
+        if (platform !== 'win32' || typeof native?.notificationQuietState !== 'function') return null;
+        try {
+          return await native.notificationQuietState();
+        } catch {
+          return null;
+        }
+      },
+      clipboardWriteFiles: (paths) => {
+        const write = native?.clipboardWriteFiles;
+        return tried(platform === 'win32' && typeof write === 'function' ? () => write(paths) : null, warn, 'Files to the clipboard');
+      },
+      makeFolderPrivate: (folder) => {
+        const make = native?.folderMakePrivate;
+        return tried(platform === 'win32' && typeof make === 'function' ? () => make(folder) : null, warn, 'A private folder');
+      },
+      driveLetters: platform === 'win32' ? driveLettersFrom(native, warn) : null,
+      setPin: (file, pin) => {
+        const set = native?.fileSetPin;
+        return tried(platform === 'win32' && typeof set === 'function' ? () => set(file, pin) : null, warn, 'A pin');
+      },
+      codeSignature: async (file) => {
+        if (platform !== 'win32' || typeof native?.codeSignatureCheck !== 'function') return null;
+        try {
+          return await native.codeSignatureCheck(file);
+        } catch (error) {
+          warn(`A signature check: ${(error as Error)?.message ?? error}`);
+          return null;
+        }
+      },
+    },
   };
 }

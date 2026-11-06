@@ -24,6 +24,10 @@ mod files;
 #[cfg_attr(not(windows), path = "files_status_none.rs")]
 mod files_status;
 
+#[cfg_attr(windows, path = "system_windows.rs")]
+#[cfg_attr(not(windows), path = "system_none.rs")]
+mod system;
+
 use std::time::Duration;
 
 use napi::bindgen_prelude::{AsyncTask, Buffer, ToNapiValue, TypeName, Unknown};
@@ -847,4 +851,205 @@ pub fn files_drive_letter_changed(letter: String) -> Result<()> {
     checked_label(&letter, 1, "letter", |c| c.is_ascii_uppercase())?;
     files::letter_changed(&letter);
     Ok(())
+}
+
+// ─── What Windows' own tools did (reg, PowerShell, icacls, subst, attrib) ───
+//
+// Main started System32's tools for these, and endpoint protection blocks or flags an app
+// that does. Same results, in process. See system_windows.rs.
+
+const MAX_REGISTRY_KEY: usize = 2048;
+const MAX_REGISTRY_NAME: usize = 16_383;
+const MAX_REGISTRY_DATA: usize = 1024 * 1024;
+const MAX_REGISTRY_DEPTH: u32 = 16;
+/// More than main ever puts on the clipboard at once (os-files.ts, MAX_FILES).
+const MAX_CLIPBOARD_FILES: usize = 200;
+
+fn system_invalid(area: &str, what: &str) -> Error {
+    Error::from_reason(format!("{area}:invalid ({what})"))
+}
+
+/// `HKCU\...` or `HKLM\...`: no empty part, none longer than a key's name can be.
+fn checked_registry_key(key: &str) -> Result<&str> {
+    if key.is_empty() || key.chars().count() > MAX_REGISTRY_KEY || key.contains('\0') || key.split('\\').any(|part| part.is_empty() || part.chars().count() > 255) {
+        return Err(system_invalid("registry", "key"));
+    }
+    Ok(key)
+}
+
+fn checked_registry_text(text: &str, max: usize, what: &str) -> Result<()> {
+    if text.chars().count() > max || text.contains('\0') {
+        return Err(system_invalid("registry", what));
+    }
+    Ok(())
+}
+
+/// A drive path, or a share's (`\\server\share\...`) for the clipboard.
+fn checked_any_path(path: &str) -> Result<&str> {
+    if path.starts_with(r"\\") && !path.starts_with(r"\\?\") && !path.starts_with(r"\\.\") && path.len() > 2 && !path.contains('\0') && !path.contains('/') && path.chars().count() <= MAX_PATH_CHARS {
+        return Ok(path);
+    }
+    checked_path(path)
+}
+
+fn checked_letter(letter: &str) -> Result<char> {
+    let mut chars = letter.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_uppercase() => Ok(c),
+        _ => Err(system_invalid("system", "letter")),
+    }
+}
+
+#[napi(object)]
+pub struct RegistryValue {
+    /// Empty for the key's default value.
+    pub name: String,
+    /// `sz`, `expand_sz` (not expanded), `multi_sz`, `dword`, `qword`, `binary`, `none` or `other`.
+    pub kind: String,
+    /// A string's text, up to its first NUL. A QWORD's number, in decimal.
+    pub text: Option<String>,
+    /// A REG_MULTI_SZ's strings.
+    pub list: Option<Vec<String>>,
+    /// A DWORD, unsigned.
+    pub number: Option<f64>,
+}
+
+#[napi(object)]
+pub struct RegistryNode {
+    /// Below the key that was read, `\` between names. Empty for that key itself.
+    pub path: String,
+    pub values: Vec<RegistryValue>,
+    /// The names of the keys right below it, read or not.
+    pub subkeys: Vec<String>,
+}
+
+/// A key and up to `depth` levels of keys below it, under HKCU or HKLM. Null if the key isn't
+/// there. Throws `registry:<code>` when it is and can't be read: never an empty answer then.
+#[napi]
+pub fn registry_read(key: String, depth: u32) -> Result<Option<Vec<RegistryNode>>> {
+    checked_registry_key(&key)?;
+    if depth > MAX_REGISTRY_DEPTH {
+        return Err(system_invalid("registry", "depth"));
+    }
+    system::registry_read(&key, depth).map_err(Error::from_reason)
+}
+
+/// A REG_SZ value, the key made if it isn't there. Only under `HKCU\Software\<name>`. No name
+/// sets the key's default value.
+#[napi]
+pub fn registry_set_string(key: String, name: Option<String>, data: String) -> Result<()> {
+    checked_registry_key(&key)?;
+    if let Some(name) = &name {
+        checked_registry_text(name, MAX_REGISTRY_NAME, "name")?;
+    }
+    checked_registry_text(&data, MAX_REGISTRY_DATA, "data")?;
+    system::registry_set_string(&key, name.as_deref(), &data).map_err(Error::from_reason)
+}
+
+/// A key with everything below it. Only under `HKCU\Software\<name>`. False if it wasn't there.
+#[napi]
+pub fn registry_delete_key(key: String) -> Result<bool> {
+    checked_registry_key(&key)?;
+    system::registry_delete_key(&key).map_err(Error::from_reason)
+}
+
+/// One value. Only under `HKCU\Software\<name>`. False if it, or its key, wasn't there.
+#[napi]
+pub fn registry_delete_value(key: String, name: String) -> Result<bool> {
+    checked_registry_key(&key)?;
+    checked_registry_text(&name, MAX_REGISTRY_NAME, "name")?;
+    system::registry_delete_value(&key, &name).map_err(Error::from_reason)
+}
+
+#[napi(object)]
+pub struct QuietState {
+    /// Do Not Disturb's profile: 1 priority only, 2 alarms only, 0 off or unknown.
+    pub profile: i32,
+    /// SHQueryUserNotificationState: 2 busy, 3 Direct3D full screen, 4 presentation, 6 quiet time. 0 unknown.
+    pub notification_state: i32,
+}
+
+/// Whether Windows holds back notifications now: Do Not Disturb (Focus Assist) and the
+/// shell's own state. Zeros where Windows doesn't say, and on other systems.
+#[napi]
+pub fn notification_quiet_state() -> AsyncTask<FilesJob<QuietState>> {
+    files_job(|| Ok(system::quiet_state()))
+}
+
+/// Puts files on the clipboard as Explorer copies them (CF_HDROP, as a copy). Rejects with
+/// `clipboard:busy` when another program holds the clipboard the whole time.
+#[napi]
+pub fn clipboard_write_files(paths: Vec<String>) -> Result<AsyncTask<FilesJob<()>>> {
+    if paths.is_empty() || paths.len() > MAX_CLIPBOARD_FILES {
+        return Err(system_invalid("clipboard", "paths"));
+    }
+    for path in &paths {
+        checked_any_path(path)?;
+    }
+    Ok(files_job(move || system::clipboard_write_files(&paths)))
+}
+
+/// A folder only this user and SYSTEM can open, with what's in it: full control for both and
+/// nothing inherited from the folders above.
+#[napi]
+pub fn folder_make_private(path: String) -> Result<AsyncTask<FilesJob<()>>> {
+    checked_path(&path)?;
+    Ok(files_job(move || system::folder_make_private(&path)))
+}
+
+#[napi(object)]
+pub struct DriveLetterMapping {
+    pub letter: String,
+    pub target: String,
+}
+
+/// The drive letters mapped to a folder in this sign-in session, as `subst` lists them.
+#[napi]
+pub fn drive_letter_list() -> Vec<DriveLetterMapping> {
+    system::drive_letters()
+}
+
+/// Maps a free letter to a folder, as `subst X: <folder>`. Promise.
+#[napi]
+pub fn drive_letter_add(letter: String, target: String) -> Result<AsyncTask<FilesJob<()>>> {
+    let letter = checked_letter(&letter)?;
+    checked_path(&target)?;
+    Ok(files_job(move || system::drive_letter_add(letter, &target)))
+}
+
+/// Takes a letter's mapping to a folder away, as `subst X: /D`. Never a disk's. Promise.
+#[napi]
+pub fn drive_letter_remove(letter: String) -> Result<AsyncTask<FilesJob<()>>> {
+    let letter = checked_letter(&letter)?;
+    Ok(files_job(move || system::drive_letter_remove(letter)))
+}
+
+/// The pin attributes of a file or folder: `pinned` ("Always keep on this device"),
+/// `unpinned` ("Free up space") or `unspecified`, as `attrib` sets them. Promise: off the JS
+/// thread, since the drive's fetch callbacks come to it.
+#[napi]
+pub fn file_set_pin(path: String, pin: String) -> Result<AsyncTask<FilesJob<()>>> {
+    checked_path(&path)?;
+    if !["pinned", "unpinned", "unspecified"].contains(&pin.as_str()) {
+        return Err(system_invalid("system", "pin"));
+    }
+    Ok(files_job(move || system::set_pin(&path, &pin)))
+}
+
+#[napi(object)]
+pub struct CodeSignature {
+    /// `valid`, `unsigned` or `invalid`; `unsupported` off Windows.
+    pub status: String,
+    /// WinVerifyTrust's answer, `0x...`, for a log.
+    pub code: String,
+    /// The signer's subject, `CN=..., O=..., C=...` as .NET shows it, where Windows found one.
+    pub subject: Option<String>,
+}
+
+/// A file's embedded Authenticode signature and its signer, through WinVerifyTrust, for an
+/// update's installer: what electron-updater asked PowerShell for. Promise.
+#[napi]
+pub fn code_signature_check(path: String) -> Result<AsyncTask<FilesJob<CodeSignature>>> {
+    checked_path(&path)?;
+    Ok(files_job(move || Ok(system::code_signature(&path))))
 }

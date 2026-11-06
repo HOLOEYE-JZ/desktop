@@ -1,6 +1,6 @@
 # The native helper
 
-What the app can't do from JavaScript: Windows Hello, the OS keystore for S/MIME, the macOS check for forced preferences, and the Files drive on Windows (the Cloud Files API). Rust with [napi-rs](https://napi.rs). `npm run build:native` runs cargo and writes `native/dist/<platform>-<arch>/bulwark-native.node`. The binary isn't committed. On Windows it links the C runtime statically and loads its DLLs from System32 only (`native/.cargo/config.toml`). Node-API is stable across Electron versions, so there's no rebuild per Electron version.
+What the app can't do from JavaScript: Windows Hello, the OS keystore for S/MIME, the macOS check for forced preferences, the Files drive on Windows (the Cloud Files API), and what main used to start Windows' own tools for (see below). Rust with [napi-rs](https://napi.rs). `npm run build:native` runs cargo and writes `native/dist/<platform>-<arch>/bulwark-native.node`. The binary isn't committed. On Windows it links the C runtime statically and loads its DLLs from System32 only (`native/.cargo/config.toml`). Node-API is stable across Electron versions, so there's no rebuild per Electron version.
 
 Nothing in here can read a private key or hand one out.
 
@@ -41,9 +41,35 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `filesDriveStatusAttach(id, clsid)`: names the status class in a sync root's registration, where Explorer looks for it. Again after each `filesDriveRegister`.
 - `filesDriveStatusSet(id, status)`: what Explorer shows for a sync root: state, short label, a longer line, the storage used and the limit, a notice. Undefined forgets it.
 - `filesDriveStatusRead(id, waitMs)`: promise of the status as Explorer reads it, out of process; with `waitMs`, after the next change. For tests and for checking a machine.
+- `registryRead(key, depth)`: a key under HKCU or HKLM and up to `depth` levels below it, as `{ path, values, subkeys }` per key. Each value has its `name` (empty for the default), its `kind` (`sz`, `expand_sz` not expanded, `multi_sz`, `dword`, `qword`, `binary`, `none`, `other`) and its data: `text` (a QWORD in decimal), `list` or `number`. Null when the key isn't there; throws `registry:<code>` when it is and can't be read.
+- `registrySetString(key, name, data)`: a REG_SZ value, the key made if it isn't there. No name: the default value. Only under `HKCU\Software\<name>`.
+- `registryDeleteKey(key)`: a key with everything below it. Only under `HKCU\Software\<name>`. False if it wasn't there.
+- `registryDeleteValue(key, name)`: one value, the same way.
+- `notificationQuietState()`: promise of `{ profile, notificationState }`: Do Not Disturb's profile (1 priority only, 2 alarms only) and `SHQueryUserNotificationState`. Zeros where Windows doesn't say, and elsewhere.
+- `clipboardWriteFiles(paths)`: promise. Puts up to 200 files on the clipboard as Explorer copies them: `CF_HDROP` and `Preferred DropEffect` copy. Rejects with `clipboard:busy` when another program holds the clipboard throughout.
+- `folderMakePrivate(path)`: promise. Full control for this user and SYSTEM on a folder and all in it, and nothing inherited from above.
+- `driveLetterList()`: the drive letters mapped to a folder in this sign-in session, as `{ letter, target }`, as `subst` lists them.
+- `driveLetterAdd(letter, target)`: promise. Maps a free letter to an existing folder, as `subst X: <folder>`.
+- `driveLetterRemove(letter)`: promise. Takes a letter's mapping to a folder away, as `subst X: /D`. Refused for anything that isn't a mapped folder.
+- `fileSetPin(path, pin)`: promise. The pin attributes, `pinned`, `unpinned` or `unspecified`, as `attrib +P -U`, `-P +U` and `-P -U` set them.
+- `codeSignatureCheck(path)`: promise of `{ status, code, subject? }`: a file's embedded Authenticode signature through WinVerifyTrust (`valid`, `unsigned` or `invalid`, with Windows' code) and its signer as .NET's X509Certificate.Subject shows it. No revocation check over the network. For an update's installer, where electron-updater would start PowerShell's Get-AuthenticodeSignature.
 <!-- /exports -->
 
 macOS Touch ID needs no helper: Electron has `systemPreferences.promptTouchID`.
+
+## In place of Windows' tools
+
+Endpoint protection (lockdown and "living off the land" rules) blocks or flags an app that starts PowerShell, cmd, reg.exe, icacls and the like, and one such rule kept the installed app from starting. So main starts none of them (`test/no-system-tools-unit.spec.ts`), and the helper does their work in process:
+
+- **The registry** (`registry*`), for Default apps, Open with, the Files drive letter's name, the uninstall cleanup and the policies. Reads take HKCU and HKLM; writes and deletes only `HKCU\Software\<name>`. A read answers the types the way reg.exe showed them: strings up to their first NUL, an EXPAND_SZ not expanded, a DWORD unsigned, a QWORD in decimal text. The policies count a REG_MULTI_SZ, a QWORD past 2^53, binary and a string with a line break as bad values, as they did through reg.exe. A key that's there and can't be read throws, so it never reads as "no policies"; without the helper the policies come through @vscode/policy-watcher, as when reg.exe was blocked.
+- **Focus Assist** (`notificationQuietState`): Do Not Disturb's profile from WNF (`NtQueryWnfStateData`, found in ntdll at run time, so a Windows without it answers 0) and `SHQueryUserNotificationState`.
+- **Files on the clipboard** (`clipboardWriteFiles`): `CF_HDROP` with wide paths and `Preferred DropEffect` copy, from a message-only window of its own on a pool thread, gone again once the data is set. Ten tries 30 ms apart while another program holds the clipboard.
+- **A private folder** (`folderMakePrivate`): `SetNamedSecurityInfoW` with a protected DACL, full control inherited by folders and files for the user from the process token and for SYSTEM.
+- **Drive letters** (`driveLetter*`): `QueryDosDeviceW` and `DefineDosDeviceW`, as subst. Only a mapping to a folder (`\??\...`) is listed or removed, by its exact target.
+- **Pins** (`fileSetPin`): `FILE_ATTRIBUTE_PINNED` and `UNPINNED` with `SetFileAttributesW`, off the JS thread, since a pin can make the drive's fetch callbacks come.
+- **An update's signature** (`codeSignatureCheck`): `WinVerifyTrust` and the signer's subject; main applies electron-updater's publisherName rule to it (`src/main/update-rules.ts`).
+
+Without the helper each caller answers what it did when the tool failed: no registration, no letter, toasts shown, the folder private only under the home folder, the installer unchecked as when PowerShell couldn't run. These link `user32.dll`, `shell32.dll` and `wintrust.dll` from System32.
 
 ## The Files drive
 
