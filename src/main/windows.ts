@@ -26,7 +26,7 @@ import { showMessageBox } from './message-box';
 import { strings, unsentDetail } from './strings';
 import type { ChromeColours, ThemeController } from './theme';
 import { fitInto, isOnSomeDisplay, placeWindow, type Rect } from './window-placement';
-import { nextInCycle, sumAnswers } from './window-logic';
+import { MainStart, nextInCycle, sumAnswers } from './window-logic';
 
 /** The app's toolbar row (h-14), so the window's buttons line up with what's next to them. */
 export const TITLE_BAR_HEIGHT = 56;
@@ -203,7 +203,7 @@ export class WindowManager extends EventEmitter<{
   private restoring = false;
   private restoreDeferred = false;
   private readonly startedAt = Date.now();
-  private mainStartsHidden = false;
+  private readonly mainStart = new MainStart();
 
   constructor(private readonly options: WindowManagerOptions) {
     super();
@@ -637,7 +637,12 @@ export class WindowManager extends EventEmitter<{
 
   /** The next main window loads but isn't shown: a start at login, or a toast's button. */
   startMainHidden(): void {
-    this.mainStartsHidden = true;
+    this.mainStart.startHidden();
+  }
+
+  /** Asked for before the boot opens it: the main window shows when it does, start in the tray or not. */
+  showMainWhenOpened(): void {
+    this.mainStart.wantShown();
   }
 
   cancelQuit(): void {
@@ -647,8 +652,7 @@ export class WindowManager extends EventEmitter<{
 
   private showWhenPainted(managed: ManagedWindow, inactive = false): void {
     const { window } = managed;
-    const hidden = managed.type === 'main' && this.mainStartsHidden;
-    this.mainStartsHidden = false;
+    const hidden = managed.type === 'main' && this.mainStart.take();
     const show = () => {
       if (inactive) window.showInactive();
       else window.show();
@@ -661,9 +665,9 @@ export class WindowManager extends EventEmitter<{
       clearTimeout(fallback);
       if (window.isDestroyed() || managed.closing) return;
       // A window rebuilt with a native frame starts hidden just the same.
-      if (hidden) this.mainStartsHidden = true;
+      if (hidden) this.mainStart.startHidden();
       void this.checkOverlay(managed).then((replaced) => {
-        if (hidden && !replaced) this.mainStartsHidden = false;
+        if (hidden && !replaced) this.mainStart.take();
         if (managed.closing) return;
         if (!hidden && !replaced && !window.isDestroyed() && !window.isVisible()) show();
         if (!replaced && managed.type === 'main' && this.popoutsUsedLately()) this.scheduleSpare(SPARE_FIRST_DELAY_MS);

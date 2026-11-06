@@ -56,6 +56,7 @@ import { changeConnectionUrl, loadErrorPage, noteLoadErrorPage, retryTarget, sho
 import { leaveLaunchFolder } from './launch-folder';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
+import { showMainStep } from './window-logic';
 import { ZoomController } from './zoom';
 import { printWindow, saveWindowAsPdf } from './print';
 import { navigateHistory } from './features/window-input';
@@ -756,11 +757,30 @@ function watchPolicyForRestart(booted: StartDecision): void {
 
 // "Show me the app". With only a pop-out left open, that's a new main window. A second launch
 // comes here through features/os-launch.ts, which knows the ones that show nothing.
-function showMain(): void {
-  // Until the server is up, the boot opens it: a window now would load an error page.
-  if (!windowManager || !mainWindowAllowed) return;
-  if (windowManager.mainWindow()) windowManager.focus();
-  else windowManager.open({ type: 'main', url: appStartUrl });
+// `hidden`: a main window for the page's sake, left in the tray if it's new.
+function showMain(options: { hidden?: boolean } = {}): void {
+  const windows = windowManager;
+  if (!windows) return;
+  const hidden = options.hidden === true;
+  // Until the server is up, the boot opens it: a window now would load an error page. A toast
+  // clicked meanwhile still shows it then, even on a start in the tray.
+  switch (showMainStep({ booted: mainWindowAllowed, hasMain: !!windows.mainWindow(), hidden })) {
+    case 'keep-wish':
+      windows.showMainWhenOpened();
+      break;
+    case 'start-hidden':
+      windows.startMainHidden();
+      break;
+    case 'focus':
+      windows.focus();
+      break;
+    case 'open':
+      if (hidden) windows.startMainHidden();
+      windows.open({ type: 'main', url: appStartUrl });
+      break;
+    case 'none':
+      break;
+  }
 }
 
 // Quitting closes the windows, and each may ask first. Nothing is forgotten until all
