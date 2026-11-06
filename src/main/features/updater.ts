@@ -19,6 +19,7 @@ import path from 'node:path';
 import { app, BrowserWindow, Notification, powerMonitor } from 'electron';
 import type { AppUpdater, CancellationToken, UpdateInfo } from 'electron-updater';
 import { CHANNEL, type UpdateChannel, type UpdateState } from '../../shared/bridge';
+import { native } from '../native';
 import { openExternally } from '../navigation';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../update-policy';
 import {
@@ -26,6 +27,7 @@ import {
   differentialDownloads,
   effectiveChannel,
   installKind,
+  installerSignatureCheck,
   isPrerelease,
   judgeFeedVersion,
   nothingPublished,
@@ -204,6 +206,11 @@ class Updater {
     // differential path ignores the cancellation token: abandonDownload ends its requests with
     // an error, which settles it.
     autoUpdater.disableDifferentialDownload = !differentialDownloads(process.platform);
+    // The installer's publisher, through the native helper: electron-updater would start
+    // PowerShell for it (Get-AuthenticodeSignature), and endpoint protection blocks that.
+    if (process.platform === 'win32') {
+      (autoUpdater as unknown as { verifyUpdateCodeSignature: (names: string[], file: string) => Promise<string | null> }).verifyUpdateCodeSignature = installerSignatureCheck(native().system.codeSignature);
+    }
     // Every hop of every request, redirects included: only GitHub. TLS doesn't help against a
     // release asset that points somewhere else.
     const testOrigin = __BULWARK_UPDATER_TEST__ && this.testFeed ? new URL(this.testFeed).origin : undefined;

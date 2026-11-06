@@ -191,3 +191,111 @@ export function newestReleaseInFeed(atom: string): string | null {
   }
   return newest;
 }
+
+/**
+ * A distinguished name's attributes, as builder-util-runtime's parseDn (9.x) reads one: what
+ * electron-updater compares publisherName with. Quotes, `\` escapes (hex pairs too), and `,`,
+ * `;` or `+` between attributes.
+ */
+export function parseDn(text: string): Map<string, string> {
+  const seq = text.trim();
+  const result = new Map<string, string>();
+  let quoted = false;
+  let key: string | null = null;
+  let token = '';
+  let nextNonSpace = 0;
+  for (let i = 0; i <= seq.length; i += 1) {
+    if (i === seq.length) {
+      if (key !== null) result.set(key, token);
+      break;
+    }
+    const ch = seq[i];
+    if (quoted) {
+      if (ch === '"') {
+        quoted = false;
+        continue;
+      }
+    } else {
+      if (ch === '"') {
+        quoted = true;
+        continue;
+      }
+      if (ch === '\\') {
+        i += 1;
+        const ord = parseInt(seq.slice(i, i + 2), 16);
+        if (Number.isNaN(ord)) {
+          token += seq[i];
+        } else {
+          i += 1;
+          token += String.fromCharCode(ord);
+        }
+        continue;
+      }
+      if (key === null && ch === '=') {
+        key = token;
+        token = '';
+        continue;
+      }
+      if (ch === ',' || ch === ';' || ch === '+') {
+        if (key !== null) result.set(key, token);
+        key = null;
+        token = '';
+        continue;
+      }
+    }
+    if (ch === ' ' && !quoted) {
+      if (token.length === 0) continue;
+      if (i > nextNonSpace) {
+        let j = i;
+        while (seq[j] === ' ') j += 1;
+        nextNonSpace = j;
+      }
+      if (nextNonSpace >= seq.length || seq[nextNonSpace] === ',' || seq[nextNonSpace] === ';' || (key === null && seq[nextNonSpace] === '=') || (key !== null && seq[nextNonSpace] === '+')) {
+        i = nextNonSpace - 1;
+        continue;
+      }
+    }
+    token += ch;
+  }
+  return result;
+}
+
+/**
+ * Whether an update's installer is signed by the publisher app-update.yml names, from the native
+ * helper's WinVerifyTrust (codeSignatureCheck): electron-updater's own rule, which it applied to
+ * PowerShell's Get-AuthenticodeSignature. A name with attributes (`CN=..., O=...`) must match
+ * every one of them; a plain name, the signer's CN. Null: signed by the publisher. Otherwise
+ * why not, which electron-updater reports and refuses the update for.
+ */
+export function signatureVerdict(publisherNames: readonly string[], signature: { status: string; code?: string; subject?: string | null }): string | null {
+  const subject = parseDn(signature.subject ?? '');
+  if (signature.status === 'valid') {
+    for (const name of publisherNames) {
+      const wanted = parseDn(name);
+      const match = wanted.size ? [...wanted.keys()].every((key) => wanted.get(key) === subject.get(key)) : name === subject.get('CN');
+      if (match) return null;
+    }
+  }
+  return `publisherNames: ${publisherNames.join(' | ')}, signature: ${signature.status}${signature.code ? ` (${signature.code})` : ''}, signer: ${signature.subject ?? 'none'}`;
+}
+
+/**
+ * electron-updater's verifyUpdateCodeSignature, through the native helper rather than the
+ * PowerShell it starts by default (endpoint protection blocks that). Without the helper's answer
+ * the installer goes unchecked, as electron-updater lets it when PowerShell can't run: whoever
+ * could remove the helper could change the app itself. A catalog signature doesn't count, only
+ * one in the file, which every installer of ours has.
+ */
+export function installerSignatureCheck(
+  check: (file: string) => Promise<{ status: string; code?: string; subject?: string | null } | null>,
+  warn: (message: string) => void = console.warn,
+): (publisherNames: string[], file: string) => Promise<string | null> {
+  return async (publisherNames, file) => {
+    const signature = await check(file);
+    if (!signature) {
+      warn('The update installer\'s signature could not be checked: the native helper did not answer');
+      return null;
+    }
+    return signatureVerdict(publisherNames, signature);
+  };
+}

@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
-import { acceptDownload, compareVersions, differentialDownloads, effectiveChannel, installKind, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
+import { createRequire } from 'node:module';
+import { acceptDownload, compareVersions, differentialDownloads, effectiveChannel, installKind, installerSignatureCheck, isPrerelease, judgeFeedVersion, newestReleaseInFeed, nothingPublished, parseDn, signatureVerdict, updateAbility, updatePolicyFrom, updateUrlAllowed } from '../src/main/update-rules';
 import { sandboxRefused } from '../src/main/sandbox-check';
 import { LABEL_KEY } from '../src/main/label-keys';
 import { notifyUpdatePolicyChanged, onUpdatePolicyChange, readUpdatePolicy, setUpdatePolicySource } from '../src/main/update-policy';
@@ -241,6 +242,59 @@ test.describe('the policy hook', () => {
     stop();
     notifyUpdatePolicyChanged();
     expect(calls).toBe(2);
+  });
+});
+
+test.describe("an update installer's signature, without PowerShell", () => {
+  const publisher = 'CN=Rath & Blume GbR, O=Rath & Blume GbR, L=Berlin, C=DE';
+
+  test('reads a name as electron-updater\'s own parseDn does', () => {
+    const { parseDn: theirs } = createRequire(import.meta.url)('builder-util-runtime') as { parseDn: (text: string) => Map<string, string> };
+    for (const name of [
+      'Rath & Blume GbR',
+      publisher,
+      'CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US',
+      'CN="Doe, John", O=Example;C=DE',
+      'CN=a\\2Cb + OU=x',
+      '  CN = spaced  name , O = x ',
+      'CN=Mozilla Corporation, OU=Firefox Engineering Operations, O=Mozilla Corporation',
+      '',
+    ]) {
+      expect([...parseDn(name)], name).toEqual([...theirs(name)]);
+    }
+  });
+
+  test('a plain name has to be the CN, a name with attributes all of them', () => {
+    const valid = { status: 'valid', code: '0x00000000', subject: publisher };
+    expect(signatureVerdict(['Rath & Blume GbR'], valid)).toBeNull();
+    expect(signatureVerdict(['CN=Rath & Blume GbR, C=DE'], valid)).toBeNull();
+    expect(signatureVerdict(['Someone Else', 'Rath & Blume GbR'], valid)).toBeNull();
+    expect(signatureVerdict(['Rath & Blume'], valid)).toContain('publisherNames: Rath & Blume');
+    expect(signatureVerdict(['CN=Rath & Blume GbR, C=US'], valid)).not.toBeNull();
+  });
+
+  test('only a valid signature counts, whoever signed it', () => {
+    expect(signatureVerdict(['Rath & Blume GbR'], { status: 'invalid', code: '0x80096010', subject: publisher })).toContain('invalid (0x80096010)');
+    expect(signatureVerdict(['Rath & Blume GbR'], { status: 'unsigned', code: '0x800b0100' })).toContain('unsigned');
+  });
+
+  test('asks the helper for the downloaded file, and goes unchecked only when it cannot answer', async () => {
+    const asked: string[] = [];
+    const warned: string[] = [];
+    const check = installerSignatureCheck(async (file) => {
+      asked.push(file);
+      return file.endsWith('good.exe') ? { status: 'valid', subject: publisher } : file.endsWith('none.exe') ? null : { status: 'invalid', code: '0x80096010', subject: publisher };
+    }, (message) => warned.push(message));
+    expect(await check(['Rath & Blume GbR'], 'C:\\t\\good.exe')).toBeNull();
+    expect(await check(['Rath & Blume GbR'], 'C:\\t\\bad.exe')).not.toBeNull();
+    expect(await check(['Rath & Blume GbR'], 'C:\\t\\none.exe')).toBeNull();
+    expect(asked).toEqual(['C:\\t\\good.exe', 'C:\\t\\bad.exe', 'C:\\t\\none.exe']);
+    expect(warned).toHaveLength(1);
+  });
+
+  test('the updater uses it on Windows, so electron-updater never starts PowerShell', () => {
+    const updater = readFileSync(path.join(ROOT, 'src', 'main', 'features', 'updater.ts'), 'utf8');
+    expect(updater).toMatch(/verifyUpdateCodeSignature = installerSignatureCheck\(native\(\)\.system\.codeSignature\)/);
   });
 });
 
