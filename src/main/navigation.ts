@@ -12,6 +12,8 @@ import { screen, shell, type BrowserWindow, type BrowserWindowConstructorOptions
 import type { Mode } from '../shared/bridge';
 import { FORCED_SSO_LIMIT_MS, SsoChain, isJmapProxyPath, isSsoStart, looksLikeProviderLogout, parse, sameOrigin } from './navigation-rules';
 import { adoptDialogSurface, dialogSurfaceOptions, isDialogFrameName } from './dialog-surfaces';
+import { printPreviews } from './features/print';
+import { isPrintFrameName } from './print-rules';
 import { fitInto } from './window-placement';
 import { windowTypeOf, type WindowManager } from './windows';
 
@@ -79,7 +81,9 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
       return dialog ? { action: 'allow', overrideBrowserWindowOptions: dialog } : { action: 'deny' };
     }
     if (url === 'about:blank' || url === '') {
-      return { action: 'allow', overrideBrowserWindowOptions: bareWindowOptions(windows.webPreferences()) };
+      // A print window: it stays hidden, and the print preview shows what's in it (print-preview.ts).
+      const print = isPrintFrameName(frameName) && printPreviews() ? { show: false, skipTaskbar: true } : {};
+      return { action: 'allow', overrideBrowserWindowOptions: { ...bareWindowOptions(windows.webPreferences()), ...print } };
     }
     const parsed = parse(url);
     if (!parsed) return { action: 'deny' };
@@ -123,6 +127,12 @@ function handleWindowOpen(contents: WebContents, options: GuardOptions) {
     if (parsed?.protocol !== 'blob:' && sameOrigin(parsed, options.origin)) {
       const key = details.frameName && details.frameName !== '_blank' ? details.frameName : details.url;
       windows.adopt(child, windowTypeOf(parsed!.pathname), key, details.url);
+      return;
+    }
+    const previews = printPreviews();
+    if (previews && isPrintFrameName(details.frameName) && (details.url === 'about:blank' || details.url === '')) {
+      previews.adoptPopup(child, contents, details.frameName);
+      guardContents(child.webContents, options);
       return;
     }
     // about:blank and blob: stay outside the manager, under the same guards, and on a screen.

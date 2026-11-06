@@ -287,6 +287,25 @@ export type DialogWindowColour =
 /** A button by its index, a menu item by its id. Null: closed without an answer (Escape, Alt+F4, the page went). */
 export type DialogWindowAnswer = { button: number; checked?: boolean } | { menu: string } | null;
 
+/**
+ * What to show in the shell's print preview (src/main/print-preview.ts): this page as its
+ * print CSS lays it out, a print window this page opened as `window.open('', name)` with a
+ * name `bulwark-print-…` (main keeps it hidden), or a PDF's bytes.
+ */
+export type PrintPreviewRequest = (
+  | { source: 'page' }
+  | { source: 'window'; name: string }
+  | { source: 'pdf'; data: Uint8Array }
+) & {
+  /** For the file name of Save as PDF and the header line. */
+  title?: string;
+  /** The page's look, as for dialogs.show. */
+  theme?: DialogWindowTheme;
+};
+
+/** `refused`: printing is off, or there was nothing to show. `busy`: a preview is open over that window. */
+export type PrintPreviewOutcome = 'printed' | 'saved' | 'system' | 'cancelled' | 'refused' | 'busy' | 'failed';
+
 export interface LanguagesUpdate {
   /** The interface language. The shell's menus follow it too. */
   ui: string;
@@ -956,6 +975,15 @@ export const CHANNEL = {
   dialogWindowSpec: 'bulwark:dialog-window.spec',
   dialogWindowReady: 'bulwark:dialog-window.ready',
   dialogWindowAnswer: 'bulwark:dialog-window.answer',
+  printPreview: 'bulwark:print.preview',
+  printListen: 'bulwark:print.listen',
+  printRequested: 'bulwark:print.requested',
+  /** The print preview's own page: what to draw, a render, the user's choice. */
+  printWindowSpec: 'bulwark:print-window.spec',
+  printWindowChoices: 'bulwark:print-window.choices',
+  printWindowRender: 'bulwark:print-window.render',
+  printWindowReady: 'bulwark:print-window.ready',
+  printWindowRun: 'bulwark:print-window.run',
   clipboardCopyFile: 'bulwark:clipboard.copyFile',
   clipboardClearFiles: 'bulwark:clipboard.clearFiles',
   spellMissing: 'bulwark:spell.missing',

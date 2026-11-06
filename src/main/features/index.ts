@@ -16,6 +16,7 @@ import type { MenuController } from '../menu';
 import type { ZoomController } from '../zoom';
 import { contextMenuFeature } from './context-menu';
 import { dialogsFeature } from './dialogs';
+import { printFeature } from './print';
 import { windowInputFeature } from './window-input';
 import type { ServerRegistry } from '../servers';
 import type { LocalAdmin } from '../local-admin';
@@ -62,7 +63,7 @@ export interface Feature {
 
 // The lock first: whatever comes after reads it as it starts.
 // Folders before the drive: the drive's roots use the folders feature's disk channels.
-export const FEATURES: Feature[] = [appLockFeature, policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, keystoreFeature, privacyFeature, importFeature, clientCertificatesFeature, browserSignInFeature, devToolsFeature, filesFoldersFeature, filesDriveFeature];
+export const FEATURES: Feature[] = [appLockFeature, policiesFeature, updaterFeature, osIntegration, contextMenuFeature, windowInputFeature, dialogsFeature, printFeature, keystoreFeature, privacyFeature, importFeature, clientCertificatesFeature, browserSignInFeature, devToolsFeature, filesFoldersFeature, filesDriveFeature];
 
 export function setupFeatures(ctx: FeatureContext): void {
   for (const feature of FEATURES) {

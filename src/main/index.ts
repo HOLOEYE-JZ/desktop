@@ -58,6 +58,7 @@ import { ThemeController } from './theme';
 import { WindowManager } from './windows';
 import { ZoomController } from './zoom';
 import { printWindow, saveWindowAsPdf } from './print';
+import { printFromMenu } from './features/print';
 import { navigateHistory } from './features/window-input';
 import { appPathOfDeepLink, deepLinkWindowKey, LinkRateLimit, DEEP_LINK_SCHEME, type WindowLink } from './deep-link';
 import { closeDictionaryDownloads } from './spellcheck';
@@ -838,7 +839,11 @@ function buildMenu(): MenuController {
       windowManager?.open({ type: 'main', url: appStartUrl, key: `main:${randomBytes(6).toString('hex')}` });
     },
     zoom: (step) => zoom.step(step),
-    print: (window) => printWindow(window, menu?.commandState(window)),
+    // The app's own preview (features/print.ts); the OS's dialog only before it's there.
+    print: (window) => {
+      const state = menu?.commandState(window);
+      if (!printFromMenu(window, state)) printWindow(window, state);
+    },
     saveAsPdf: (window) => void saveWindowAsPdf(window, menu?.commandState(window)),
     back: (window, direction) => navigateHistory(window, direction),
   });
