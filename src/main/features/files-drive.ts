@@ -20,7 +20,7 @@ import { app, BrowserWindow, shell, type WebContents } from 'electron';
 import { CHANNEL, type FilesDriveState, type FilesFetchRequest, type OsCommand } from '../../shared/bridge';
 import { appLockGate } from '../app-lock-gate';
 import { DriveController, type DrivePolicy, type StoredDrive } from '../files/drive-controller';
-import { substLetters } from '../files/drive-letter';
+import { helperLetters } from '../files/drive-letter';
 import { registryLetterLabels } from '../files/drive-letter-label';
 import { DRIVE_FOLDER, DRIVE_PROVIDER } from '../files/drive-places';
 import { driveNotice, driveSummaryChanged, setDriveHooks } from '../files/drive-hooks';
@@ -181,8 +181,9 @@ function driveController(ctx?: Pick<FeatureContext, 'state' | 'windows' | 'showM
     },
     registry: filesRegistry,
     forgetState: forgetRootState,
-    letters: helper && testArgument('letters') !== 'off' ? substLetters(() => helper.filesUsedDriveLetters()) : null,
-    letterLabels: helper && testArgument('letters') !== 'off' ? registryLetterLabels(registryRoot(), (letter) => helper.filesDriveLetterChanged(letter)) : null,
+    letters: helper && testArgument('letters') !== 'off' ? helperLetters(native().system.driveLetters, () => helper.filesUsedDriveLetters()) : null,
+    letterLabels: helper && testArgument('letters') !== 'off' ? registryLetterLabels(registryRoot(), native().system.registry, (letter) => helper.filesDriveLetterChanged(letter)) : null,
+    setPin: native().system.setPin,
     ...(testArgument('fetch-timeout') ? { fetchFirstAnswerMs: Number(testArgument('fetch-timeout')), fetchIdleMs: Number(testArgument('fetch-timeout')) } : {}),
   });
   return controller;

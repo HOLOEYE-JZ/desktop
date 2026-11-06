@@ -7,11 +7,11 @@ import { expect, test } from '@playwright/test';
 import type { FilesDriveState, FilesFetchRequest, FilesPlaceholder } from '../src/shared/bridge';
 import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
 import { FilesDisk } from '../src/main/files/disk';
-import { substLetters } from '../src/main/files/drive-letter';
+import { helperLetters } from '../src/main/files/drive-letter';
 import { claimLetterLabel, DRIVES_KEY, registryLetterLabels, releaseLetterLabel } from '../src/main/files/drive-letter-label';
 import { fileIdOf, mtimeMsOf } from '../src/main/files/drive-places';
 import type { RegisteredRoot } from '../src/main/files/registry';
-import { helperFile, loadHelperModule, type NativeFetchEvent, type NativeFilesModule } from '../src/main/native-loader';
+import { driveLettersFrom, helperFile, loadHelperModule, registryFrom, wrapHelper, type NativeFetchEvent, type NativeFilesModule, type NativeModule } from '../src/main/native-loader';
 
 /**
  * The Files drive against Windows itself, from plain Node: the helper's Cloud Files calls, and
@@ -319,8 +319,9 @@ function controllerWith(native: NativeFilesModule, page: FakePage, store: { valu
     forgetState: async (rootId) => {
       forgotten.push(rootId);
     },
-    letters: options.letters ? substLetters(() => native.filesUsedDriveLetters()) : null,
-    letterLabels: options.letters ? registryLetterLabels(REGISTRY_ROOT, (letter) => native.filesDriveLetterChanged(letter)) : null,
+    letters: options.letters ? helperLetters(driveLettersFrom(native as NativeModule), () => native.filesUsedDriveLetters()) : null,
+    letterLabels: options.letters ? registryLetterLabels(REGISTRY_ROOT, registryFrom(native as NativeModule), (letter) => native.filesDriveLetterChanged(letter)) : null,
+    setPin: wrapHelper(native as NativeModule, { platform: 'win32' }).system.setPin,
     warn: () => {},
     fetchFirstAnswerMs: options.timeoutMs,
     fetchIdleMs: options.timeoutMs,
@@ -842,7 +843,7 @@ test.describe('the drive controller', () => {
   });
 
   test("the letter's name and icon: written where there's none, taken away again, and someone else's left alone", async () => {
-    const labels = registryLetterLabels(REGISTRY_ROOT, null);
+    const labels = registryLetterLabels(REGISTRY_ROOT, registryFrom(load() as NativeModule), null);
     const key = (letter: string, part?: string) => `${REGISTRY_ROOT}\\${DRIVES_KEY}\\${letter}${part ? `\\${part}` : ''}`;
     try {
       expect(await claimLetterLabel(labels, 'Q', ICON, () => {})).toBe(true);

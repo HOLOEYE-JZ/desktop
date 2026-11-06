@@ -2,25 +2,24 @@
  * Reads OS policies into layers of raw values. No Electron here, so tests can load
  * it: `features/policies.ts` resolves the layers and acts on them.
  *
- * Windows reads with `reg.exe`, in a console set to UTF-8: left alone it writes in the
- * OEM code page and drops what doesn't fit, so https://müller.de would come out as a
- * different address. @vscode/policy-watcher reads a key from HKLM and
- * then HKCU and hands back one merged value: it can't say which hive a value came
- * from, and merging by value would mix two lists entry by entry where the machine's
- * list must win as a whole. It only answers asynchronously too, while the auth
- * switches have to be known before `ready`. So reg.exe gives the exact layers, and
- * the watcher does what reg.exe can't: it tells us at once when Group Policy applies.
+ * Windows reads the registry through the native helper (native-loader.ts), in process: no
+ * reg.exe, which endpoint protection blocks or flags, no code page, and no program another
+ * folder or %SystemRoot% could stand in for. @vscode/policy-watcher reads a key from HKLM and
+ * then HKCU and hands back one merged value: it can't say which hive a value came from, and
+ * merging by value would mix two lists entry by entry where the machine's list must win as a
+ * whole. It only answers asynchronously too, while the auth switches have to be known before
+ * `ready`. So the helper gives the exact layers, and the watcher does what the helper doesn't:
+ * it tells us at once when Group Policy applies.
  *
- * reg.exe can be blocked ("Prevent access to registry editing tools", AppLocker). A
- * blocked reg.exe must not read as "no policies", which would unlock everything, so
- * `readRegistry` tells the two apart with a key that's always there, and the caller
- * falls back to the watcher's merged values. If that's missing as well, the app stops
- * with an error page instead of guessing.
+ * A key that's there and can't be read, or no helper (a build without Rust, an older binary),
+ * must not read as "no policies", which would unlock everything: `readRegistry` fails then,
+ * and the caller falls back to the watcher's merged values. If that's missing as well, the app
+ * stops with an error page instead of guessing.
  */
 
-import { execFile } from 'node:child_process';
-import { existsSync, realpathSync, type Stats } from 'node:fs';
+import { type Stats } from 'node:fs';
 import path from 'node:path';
+import type { NativeRegistryNode, NativeRegistryValue } from './native-loader';
 import {
   POLICY_BUNDLE_ID,
   POLICY_KEYS,
@@ -64,125 +63,44 @@ export function testPolicyRoot(argv: readonly string[], isPackaged: boolean): st
   return value && /^HKCU\\Software\\BulwarkTest\\Policies(\\[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$/.test(value) ? value : null;
 }
 
-const KNOWN_KEY = 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion';
-const REG_MAX_BUFFER = 4 * 1024 * 1024;
-const REG_TIMEOUT_MS = 10_000;
-
-export interface RegResult {
-  /** 0 found, 1 not found or refused. Anything else: it didn't run at all. */
-  code: number;
-  stdout: string;
-}
-
-export type RunReg = (args: string[]) => Promise<RegResult>;
-
-/** The kernel's own link to the Windows folder. No environment variable or user can move it. */
-const KERNEL_SYSTEM_ROOT = '\\\\?\\GLOBALROOT\\SystemRoot';
-
-/** Where Windows really is, or null. */
-export function realSystemRoot(resolve: (file: string) => string = realpathSync.native): string | null {
-  try {
-    const root = resolve(KERNEL_SYSTEM_ROOT);
-    return /^[A-Za-z]:\\[^"]*$/.test(root) ? root : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Where reg.exe is. Not from %SystemRoot%: anyone can start the app with that pointing at
- * their own reg.exe, which would answer "no policies". Not C:\Windows on trust either: with
- * Windows on another drive, anyone may be able to make that folder. Null if Windows won't
- * say, and the caller reads through the watcher instead.
+ * The helper's registry read: the key and `depth` levels below it, null when it isn't there.
+ * Throws when it's there and can't be read. NativeHelper.system.registry.read in the app.
  */
-export function regPath(root: string | null = realSystemRoot(), exists: (file: string) => boolean = existsSync): string | null {
-  if (!root) return null;
-  const file = `${root}\\System32\\reg.exe`;
-  return exists(file) ? file : null;
-}
+export type ReadRegistryTree = (key: string, depth: number) => NativeRegistryNode[] | null;
 
-/** Only keys we name ourselves go on this command line: nothing a policy value could reach. */
-const SAFE_REG_ARG = /^[A-Za-z0-9_\\ ./-]+$/;
-
-export function regCommandLine(file: string, args: readonly string[]): string[] {
-  const quoted = args.map((arg) => {
-    if (!SAFE_REG_ARG.test(arg)) throw new Error('reg: refused argument');
-    return arg.includes(' ') ? `"${arg}"` : arg;
-  });
-  // /d: no AutoRun commands from the user's own registry. /s: keep the outer quotes' meaning plain.
-  return ['/d', '/s', '/c', `"chcp 65001>nul & "${file}" ${quoted.join(' ')}"`];
-}
-
-export const runRegExe: RunReg = (args) =>
-  new Promise((resolve) => {
-    const file = regPath();
-    const cmd = file ? path.win32.join(path.win32.dirname(file), 'cmd.exe') : null;
-    if (!file || !cmd) {
-      resolve({ code: -1, stdout: '' });
-      return;
-    }
-    execFile(cmd, regCommandLine(file, args), { windowsHide: true, windowsVerbatimArguments: true, encoding: 'utf8', maxBuffer: REG_MAX_BUFFER, timeout: REG_TIMEOUT_MS }, (error, stdout) => {
-      if (!error) {
-        resolve({ code: 0, stdout });
-        return;
-      }
-      const code = typeof error.code === 'number' ? error.code : -1;
-      resolve({ code, stdout: '' });
-    });
-  });
+/** The Recommended key's lists lie two levels down. */
+const POLICY_DEPTH = 2;
 
 type RegValues = Map<string, unknown>;
 type RegTree = Map<string, RegValues>;
 
-const VALUE_LINE = /^ {4}(.*?) {4}(REG_[A-Z_]+)(?: {4}(.*))?$/;
-
-function regValue(type: string, data: string | undefined): unknown {
-  if (type === 'REG_SZ' || type === 'REG_EXPAND_SZ') return data ?? '';
-  if (type === 'REG_DWORD' || type === 'REG_QWORD') {
-    const number = Number(data);
-    return Number.isSafeInteger(number) ? number : { invalid: type };
-  }
-  // A type no policy uses. An object fails every parser, so it counts as a bad value.
-  return { invalid: type };
-}
-
-function hiveLong(key: string): string {
-  return key.replace(/^HKLM\\/i, 'HKEY_LOCAL_MACHINE\\').replace(/^HKCU\\/i, 'HKEY_CURRENT_USER\\');
-}
-
 /**
- * `reg query <key> /s` as a tree, by lowercased subkey path. reg.exe prints a value's line
- * breaks as they are, so a value can print what looks like a key. A real key comes after an
- * empty line and lies under the one asked for. Anything else right after a value is more of
- * that value: it counts as a bad one, where cutting it off could leave a different setting.
+ * A value as the layers take it: text, or a whole number. Anything else is an object, which
+ * fails every parser, so a forced policy of a type no policy uses fails closed: a REG_MULTI_SZ,
+ * a QWORD past what a JS number holds, binary. Text with a line break too, as it did when
+ * reg.exe printed one and it couldn't be told from the lines after it.
  */
-export function parseRegOutput(output: string, target: string): RegTree {
-  const root = hiveLong(target).toLowerCase();
+export function policyValue(value: NativeRegistryValue): unknown {
+  if (value.kind === 'sz' || value.kind === 'expand_sz') {
+    const text = value.text ?? '';
+    return /[\r\n]/.test(text) ? { invalid: 'line_break' } : text;
+  }
+  if (value.kind === 'dword' && typeof value.number === 'number') return value.number;
+  if (value.kind === 'qword') {
+    const number = Number(value.text);
+    return Number.isSafeInteger(number) ? number : { invalid: 'REG_QWORD' };
+  }
+  return { invalid: `REG_${value.kind.toUpperCase()}` };
+}
+
+/** The helper's read as a tree, by lowercased subkey path ('' for the key itself) and lowercased value name. */
+export function treeFromNodes(nodes: readonly NativeRegistryNode[]): RegTree {
   const tree: RegTree = new Map();
-  let current: RegValues | null = null;
-  let lastValue: string | null = null;
-  let afterEmptyLine = true;
-  for (const line of output.split(/\r?\n/)) {
-    if (line === '') {
-      afterEmptyLine = true;
-      lastValue = null;
-      continue;
-    }
-    const key = line.trimEnd().toLowerCase();
-    if (afterEmptyLine && line.startsWith('HKEY_') && (key === root || key.startsWith(`${root}\\`))) {
-      current = new Map();
-      tree.set(key.slice(root.length + 1), current);
-      lastValue = null;
-    } else {
-      const value = VALUE_LINE.exec(line);
-      if (value && current) {
-        lastValue = value[1].toLowerCase();
-        current.set(lastValue, regValue(value[2], value[3]));
-      } else if (current && lastValue !== null) {
-        current.set(lastValue, { invalid: 'line_break' });
-      }
-    }
-    afterEmptyLine = false;
+  for (const node of nodes) {
+    const values: RegValues = new Map();
+    for (const value of node.values) values.set(value.name.toLowerCase(), policyValue(value));
+    tree.set(node.path.toLowerCase(), values);
   }
   return tree;
 }
@@ -226,30 +144,26 @@ export function layersFromRegistry(machine: RegTree, user: RegTree): PolicyLayer
   };
 }
 
-export async function readRegistry(targets: RegistryTargets, run: RunReg = runRegExe): Promise<PolicyReadResult> {
-  const [machine, user] = await Promise.all([run(['query', targets.machine, '/s']), run(['query', targets.user, '/s'])]);
-  for (const result of [machine, user]) {
-    if (result.code !== 0 && result.code !== 1) return { ok: false, reason: 'reg_failed' };
+/**
+ * Both levels, through the helper. A key that isn't there is no policy at that level; one
+ * that's there and can't be read, or no helper at all, fails: the caller reads through the
+ * watcher then, never as "no policies".
+ */
+export async function readRegistry(targets: RegistryTargets, read: ReadRegistryTree | null): Promise<PolicyReadResult> {
+  if (!read) return { ok: false, reason: 'reg_failed' };
+  try {
+    const machine = read(targets.machine, POLICY_DEPTH);
+    const user = read(targets.user, POLICY_DEPTH);
+    return { ok: true, layers: layersFromRegistry(machine ? treeFromNodes(machine) : new Map(), user ? treeFromNodes(user) : new Map()) };
+  } catch {
+    return { ok: false, reason: 'reg_failed' };
   }
-  // Exit code 1 is both "no such key" and "registry tools are blocked". Most machines
-  // have no policy at all, so this probe runs often, but it only costs one more process.
-  if (machine.code === 1 || user.code === 1) {
-    const probe = await run(['query', KNOWN_KEY, '/v', 'CurrentBuild']);
-    if (probe.code !== 0) return { ok: false, reason: 'reg_blocked' };
-  }
-  return {
-    ok: true,
-    layers: layersFromRegistry(
-      machine.code === 0 ? parseRegOutput(machine.stdout, targets.machine) : new Map(),
-      user.code === 0 ? parseRegOutput(user.stdout, targets.user) : new Map(),
-    ),
-  };
 }
 
 /** The names a watcher looks at: the single values, or a list's numbers. */
 const SCALARS = POLICY_KEYS.filter((key) => POLICY_SCHEMA[key].type !== 'list');
 const LISTS = POLICY_KEYS.filter((key) => POLICY_SCHEMA[key].type === 'list');
-/** Only for when reg.exe is blocked. Each name is a registry read on each policy refresh. */
+/** Only for when the helper can't read. Each name is a registry read on each policy refresh. */
 const WATCHED_LIST_ITEMS = Math.min(64, POLICY_MAX_LIST_ITEMS);
 
 export interface PolicyWatcherHandle {
@@ -296,8 +210,8 @@ function watchOne(create: CreateWatcher, productName: string, options: { registr
 }
 
 /**
- * For a machine where reg.exe is blocked: the watcher's merged values, machine over user.
- * A single value where a list belongs counts as a bad list, as it does through reg.exe. What
+ * For when the native helper can't read the registry: the watcher's merged values, machine over
+ * user. A single value where a list belongs counts as a bad list, as it does through the helper. What
  * the watcher can't do is see a REG_BINARY or REG_EXPAND_SZ value, or tell a one-line
  * REG_MULTI_SZ from a string: it has no way to report those.
  */

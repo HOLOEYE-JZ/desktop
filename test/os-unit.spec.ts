@@ -6,7 +6,6 @@ import { expect, test } from '@playwright/test';
 import type { FeatureContext } from '../src/main/features';
 import { OsHub } from '../src/main/features/os-hub';
 import { encodePng, overlayPng, overlayText, withUnreadDot } from '../src/main/features/os-icons';
-import { systemExe } from '../src/main/system-exe';
 import {
   buildToastXml,
   cleanSettingsPatch,
@@ -29,7 +28,8 @@ import {
   inQuietHours,
   LOGIN_FLAG,
   parseArgv,
-  parseFocusAssist,
+  focusAssistCheck,
+  focusAssistFrom,
   parseToastArguments,
   parseToastUrl,
   safeFileName,
@@ -368,12 +368,22 @@ test.describe('settings from a page', () => {
 
 test.describe('Do Not Disturb', () => {
   test('profile and shell state', () => {
-    expect(parseFocusAssist('0 5\r\n')).toBe('off');
-    expect(parseFocusAssist('1 5')).toBe('priority');
-    expect(parseFocusAssist('2 5')).toBe('alarms');
-    expect(parseFocusAssist('0 3')).toBe('fullscreen');
-    expect(parseFocusAssist('0 4')).toBe('fullscreen');
-    expect(parseFocusAssist('garbage')).toBe('off');
+    expect(focusAssistFrom({ profile: 0, notificationState: 5 })).toBe('off');
+    expect(focusAssistFrom({ profile: 1, notificationState: 5 })).toBe('priority');
+    expect(focusAssistFrom({ profile: 2, notificationState: 5 })).toBe('alarms');
+    expect(focusAssistFrom({ profile: 0, notificationState: 3 })).toBe('fullscreen');
+    expect(focusAssistFrom({ profile: 0, notificationState: 4 })).toBe('fullscreen');
+    expect(focusAssistFrom(null)).toBe('off');
+  });
+
+  test('comes from the native helper, and counts as off without it, on a failure, or past the limit', async () => {
+    expect(await focusAssistCheck(async () => ({ profile: 2, notificationState: 5 }), 1000)).toBe('alarms');
+    expect(await focusAssistCheck(async () => null, 1000)).toBe('off');
+    expect(await focusAssistCheck(() => Promise.reject(new Error('no')), 1000)).toBe('off');
+    expect(await focusAssistCheck(() => { throw new Error('old helper'); }, 1000)).toBe('off');
+    const started = Date.now();
+    expect(await focusAssistCheck(() => new Promise(() => {}), 50)).toBe('off');
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });
 
@@ -513,19 +523,19 @@ test.describe('registry', () => {
 
   test('an uninstall and a reinstall to the same path registers again: the registry decides', () => {
     const exe = 'C:\\Apps\\Bulwark.exe';
-    expect(needsRegistration({ ok: false, stdout: '' }, exe)).toBe(true);
-    expect(needsRegistration({ ok: true, stdout: 'REG_SZ "C:\\Old\\Bulwark.exe" -- "%1"' }, exe)).toBe(true);
-    expect(needsRegistration({ ok: true, stdout: 'REG_SZ "c:\\apps\\bulwark.exe" -- "%1"' }, exe)).toBe(false);
+    expect(needsRegistration(null, exe)).toBe(true);
+    expect(needsRegistration('"C:\\Old\\Bulwark.exe" -- "%1"', exe)).toBe(true);
+    expect(needsRegistration('"c:\\apps\\bulwark.exe" -- "%1"', exe)).toBe(false);
   });
 
   test('only the exact command counts as registered: the right exe without the terminator does not', () => {
     const exe = 'C:\\Apps\\Bulwark.exe';
-    const answer = (command: string) => ({ ok: true, stdout: `\r\nHKEY_CURRENT_USER\\Software\\Classes\\bulwark\\shell\\open\\command\r\n    (Standard)    REG_SZ    ${command}\r\n\r\n` });
-    expect(needsRegistration(answer(`"${exe}" -- "%1"`), exe)).toBe(false);
-    expect(needsRegistration(answer(`"${exe}" "%1"`), exe)).toBe(true);
-    expect(needsRegistration(answer(`"${exe}" -- "%1" --extra`), exe)).toBe(true);
-    expect(needsRegistration(answer(`"${exe}.old" -- "%1"`), exe)).toBe(true);
-    expect(needsRegistration({ ok: true, stdout: '' }, exe)).toBe(true);
+    expect(needsRegistration(`"${exe}" -- "%1"`, exe)).toBe(false);
+    expect(needsRegistration(` "${exe}" -- "%1" `, exe)).toBe(false);
+    expect(needsRegistration(`"${exe}" "%1"`, exe)).toBe(true);
+    expect(needsRegistration(`"${exe}" -- "%1" --extra`, exe)).toBe(true);
+    expect(needsRegistration(`"${exe}.old" -- "%1"`, exe)).toBe(true);
+    expect(needsRegistration('', exe)).toBe(true);
   });
 
   test('on Windows the app registers its scheme itself: Electron\'s call would leave out the terminator', () => {
@@ -673,11 +683,6 @@ test.describe('programs and retries', () => {
       const source = readFileSync(path.join(dir, name), 'utf8');
       expect(source, name).not.toMatch(/(execFile|spawn|exec|execFileSync|spawnSync)\(\s*['"`](reg|powershell|cmd|where|osascript|gsettings)(\.exe)?['"`]/i);
     }
-  });
-
-  test('Windows tools go by full path, never looked for next to a file', () => {
-    expect(systemExe('reg.exe', 'C:\\Windows')).toBe('C:\\Windows\\System32\\reg.exe');
-    expect(systemExe('powershell.exe', 'C:\\Windows')).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
   });
 
   test('a failed load backs off, up to a minute, and only for network errors', () => {

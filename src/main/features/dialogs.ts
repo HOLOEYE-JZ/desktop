@@ -4,7 +4,6 @@
  * message box; `show` is a window of the app's own (dialog-window.ts).
  */
 
-import { spawn } from 'node:child_process';
 import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -14,7 +13,7 @@ import { CHANNEL, type ConfirmOptions } from '../../shared/bridge';
 import { dialogWindows } from '../dialog-window';
 import { showDialogSurface } from '../dialog-surfaces';
 import { strings } from '../strings';
-import { systemExe } from '../system-exe';
+import { writeFilesToClipboard } from '../file-clipboard';
 import type { Feature } from './index';
 import { writeMarkedFile } from './os-files';
 import { safeDragFileName } from './os-rules';
@@ -47,8 +46,7 @@ function emptyClipboardFolder(): void {
 
 /**
  * The OS's file clipboard. Electron has no call for it, and on Windows the format
- * Explorer pastes isn't one a buffer can be written to. PowerShell's Set-Clipboard
- * sets it, with the path in an environment variable so nothing gets quoted wrong.
+ * Explorer pastes isn't one a buffer can be written to: the native helper writes it.
  */
 function putFileOnClipboard(file: string): Promise<boolean> {
   if (process.platform === 'darwin') {
@@ -62,15 +60,7 @@ function putFileOnClipboard(file: string): Promise<boolean> {
     writeClipboardBuffer('x-special/gnome-copied-files', Buffer.from(`copy\n${uri}`));
     return Promise.resolve(true);
   }
-  return new Promise((resolve) => {
-    const child = spawn(systemExe('powershell.exe'), ['-NoProfile', '-NonInteractive', '-Sta', '-Command', 'Set-Clipboard -LiteralPath $env:BULWARK_CLIPBOARD_FILE'], {
-      windowsHide: true,
-      stdio: 'ignore',
-      env: { ...process.env, BULWARK_CLIPBOARD_FILE: file },
-    });
-    child.once('error', () => resolve(false));
-    child.once('exit', (code) => resolve(code === 0));
-  });
+  return writeFilesToClipboard([file]);
 }
 
 export const dialogsFeature: Feature = {

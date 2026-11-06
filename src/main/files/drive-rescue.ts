@@ -16,12 +16,10 @@
  * No Electron here: plain Node, tested with a fake helper and the real one.
  */
 
-import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream, existsSync, lstatSync, mkdirSync, readdirSync, utimesSync } from 'node:fs';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { NativePlaceholderInfo } from '../native-loader';
-import { systemExe } from '../system-exe';
 
 /** The folder in Documents. The same in every language, as the coordinator decided. */
 export const RESCUE_FOLDER = 'Bulwark – not uploaded';
@@ -159,12 +157,4 @@ export async function rescueFiles(dir: string, relatives: string[], documents: s
     }
   }
   return count + failed > 0 ? { folder, count, failed } : null;
-}
-
-/** "Always keep on this device", as the shell sets it: the pin attribute, through attrib. */
-export function setPinAttribute(absolute: string, pin: 'pinned' | 'unpinned' | 'unspecified'): Promise<boolean> {
-  const args = pin === 'pinned' ? ['-U', '+P'] : pin === 'unpinned' ? ['-P', '+U'] : ['-P', '-U'];
-  return new Promise((resolve) => {
-    execFile(systemExe('attrib.exe'), [...args, absolute], { windowsHide: true, timeout: 15_000 }, (error) => resolve(!error));
-  });
 }

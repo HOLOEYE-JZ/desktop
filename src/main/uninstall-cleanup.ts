@@ -7,13 +7,13 @@
  * folders of its own.
  */
 
-import { execFile } from 'node:child_process';
 import { readdirSync, rmdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { DRIVE_NAME } from './files/drive-places';
 import { DRIVES_KEY, registryLetterLabels } from './files/drive-letter-label';
 import { SEND_TO_NAME, windowsRegistrationKeys } from './features/os-rules';
-import { systemExe } from './system-exe';
+import type { Registry } from './native-loader';
+import { readKey, stringOf, valueOf } from './registry-values';
 
 export const UNINSTALL_CLEANUP_SWITCH = '--uninstall-cleanup';
 
@@ -34,13 +34,6 @@ export interface CleanupPlaces {
   local: string | null;
 }
 
-type Reg = (args: string[]) => Promise<{ ok: boolean; stdout: string }>;
-
-const regExe: Reg = (args) =>
-  new Promise((resolve) => {
-    execFile(systemExe('reg.exe'), args, { windowsHide: true, timeout: 15_000, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout ?? '') }));
-  });
-
 const RUN_KEYS = ['Software\\Microsoft\\Windows\\CurrentVersion\\Run', 'Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run'];
 /** The login item's name for an installed app (os-login.ts). */
 const LOGIN_ITEM_NAME = 'Bulwark';
@@ -48,38 +41,25 @@ const LOGIN_ITEM_NAME = 'Bulwark';
 const unquote = (text: string) => text.trim().replace(/^"(.*)"$/, '$1');
 const sameFile = (a: string, b: string) => unquote(a).toLowerCase() === unquote(b).toLowerCase();
 
-/** The data of a `reg query` line, or null: `    name    REG_SZ    data`. */
-function valueData(line: string): string | null {
-  const match = /\sREG_(?:EXPAND_)?SZ(?:\s+(.*))?$/.exec(line);
-  return match ? (match[1] ?? '').trim() : null;
-}
-
-/** The COM servers Electron registered for this exe's toasts, by their CLSID. */
-async function toastServers(reg: Reg, root: string, exe: string): Promise<string[]> {
-  const found = await reg(['query', `${root}\\Software\\Classes\\CLSID`, '/s', '/f', exe, '/d']);
-  if (!found.ok) return [];
-  const ids = new Set<string>();
-  let key = '';
-  for (const line of found.stdout.split(/\r?\n/)) {
-    if (/^HKEY_/i.test(line)) key = line.trim();
-    else if (/\\LocalServer32$/i.test(key)) {
-      const data = valueData(line);
-      const id = /\\CLSID\\(\{[0-9A-F-]+\})\\LocalServer32$/i.exec(key)?.[1];
-      if (data !== null && id && sameFile(data, exe)) ids.add(id);
-    }
+/** The COM servers Electron registered for this exe's toasts: any CLSID whose LocalServer32 names it. */
+function toastServers(registry: Registry, root: string, exe: string): string[] {
+  const classes = `${root}\\Software\\Classes\\CLSID`;
+  const ids: string[] = [];
+  for (const id of readKey(registry, classes)?.subkeys ?? []) {
+    if (!/^\{[0-9A-F-]+\}$/i.test(id)) continue;
+    const server = readKey(registry, `${classes}\\${id}\\LocalServer32`);
+    if (server?.values.some((value) => stringOf(value) !== null && sameFile(stringOf(value)!, exe))) ids.push(id);
   }
-  return [...ids];
+  return ids;
 }
 
 /** The drive letters whose name and icon in "This PC" are this install's: the same test as the NSIS uninstaller. */
-async function ourDriveLetters(reg: Reg, root: string, exe: string): Promise<string[]> {
+async function ourDriveLetters(registry: Registry, root: string, exe: string): Promise<string[]> {
   const icon = `${path.win32.join(path.win32.dirname(exe), 'resources', 'os-icons', 'bulwark.ico')},0`;
-  const labels = registryLetterLabels(root, null);
+  const labels = registryLetterLabels(root, registry, null);
   const letters: string[] = [];
-  const all = await reg(['query', `${root}\\${DRIVES_KEY}`]);
-  for (const line of all.stdout.split(/\r?\n/)) {
-    const letter = /\\Drives\\([A-Z])$/i.exec(line.trim())?.[1];
-    if (!letter) continue;
+  for (const letter of readKey(registry, `${root}\\${DRIVES_KEY}`)?.subkeys ?? []) {
+    if (!/^[A-Z]$/i.test(letter)) continue;
     const found = await labels.read(letter);
     if (found.icon !== null && found.icon.toLowerCase() === icon.toLowerCase() && (found.label === null || found.label === '' || found.label === DRIVE_NAME)) letters.push(letter);
   }
@@ -109,29 +89,35 @@ export function removeLocalFolders(local: string): void {
   rmSync(path.join(local, 'bulwark-desktop-updater'), { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
 }
 
-export async function uninstallCleanup(places: CleanupPlaces, reg: Reg = regExe): Promise<void> {
-  const { root, exe } = places;
-  const del = (key: string, name?: string) => reg(name === undefined ? ['delete', `${root}\\${key}`, '/f'] : ['delete', `${root}\\${key}`, '/v', name, '/f']);
+/**
+ * `registry` is the native helper's. Without it nothing in the registry goes, as when reg.exe
+ * failed; the folders still do.
+ */
+export async function uninstallCleanup(places: CleanupPlaces, registry: Registry | null): Promise<void> {
+  if (registry) await cleanRegistry(registry, places.root, places.exe);
+  if (places.sendTo) rmSync(path.join(places.sendTo, `${SEND_TO_NAME}.lnk`), { force: true });
+  if (places.local) removeLocalFolders(places.local);
+}
+
+async function cleanRegistry(registry: Registry, root: string, exe: string): Promise<void> {
+  const del = (key: string, name?: string) => (name === undefined ? registry.deleteKey(`${root}\\${key}`) : registry.deleteValue(`${root}\\${key}`, name));
 
   // Default apps, the mail and calendar links, .eml/.ics/.vcf, Open with and "Choose another app".
   const { keys, values } = windowsRegistrationKeys(path.win32.basename(exe));
-  await Promise.all(keys.map((key) => del(key)));
-  await Promise.all(values.map((value) => del(value.key, value.name)));
+  for (const key of keys) del(key);
+  for (const value of values) del(value.key, value.name);
 
   // Electron's toast activator: any CLSID whose server is this exe.
-  for (const id of await toastServers(reg, root, exe)) await del(`Software\\Classes\\CLSID\\${id}`);
+  for (const id of toastServers(registry, root, exe)) del(`Software\\Classes\\CLSID\\${id}`);
 
-  // Start at login, when the entry is this exe's.
-  const run = await reg(['query', `${root}\\${RUN_KEYS[0]}`, '/v', LOGIN_ITEM_NAME]);
-  const command = run.ok ? run.stdout.split(/\r?\n/).map(valueData).find((data) => data !== null) : undefined;
-  if (!run.ok || (command && command.toLowerCase().includes(exe.toLowerCase()))) {
-    for (const key of RUN_KEYS) await del(key, LOGIN_ITEM_NAME);
+  // Start at login, when the entry is this exe's, or there is none (StartupApproved may still have one).
+  const entry = valueOf(readKey(registry, `${root}\\${RUN_KEYS[0]}`) ?? undefined, LOGIN_ITEM_NAME);
+  const command = stringOf(entry)?.trim();
+  if (!entry || (command && command.toLowerCase().includes(exe.toLowerCase()))) {
+    for (const key of RUN_KEYS) del(key, LOGIN_ITEM_NAME);
   }
 
   // The Files drive letter's name and icon, where they are this install's.
-  const labels = registryLetterLabels(root, null);
-  for (const letter of await ourDriveLetters(reg, root, exe)) await labels.remove(letter);
-
-  if (places.sendTo) rmSync(path.join(places.sendTo, `${SEND_TO_NAME}.lnk`), { force: true });
-  if (places.local) removeLocalFolders(places.local);
+  const labels = registryLetterLabels(root, registry, null);
+  for (const letter of await ourDriveLetters(registry, root, exe)) await labels.remove(letter);
 }

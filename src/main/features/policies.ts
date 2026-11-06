@@ -57,6 +57,7 @@ import { standaloneAllowed, type PolicySourceProblem } from '../policy-start';
 import { requestGate } from '../request-gate';
 import type { StateFile } from '../state';
 import { keystorePolicyChanged, setKeystoreOffPolicy } from '../keystore-policy';
+import { native } from '../native';
 import { setKeystoreAllowedOrigins } from './keystore';
 import { clearStoreFiles, runLocalWipe } from './local-wipe';
 import type { Feature, FeatureContext } from '.';
@@ -85,7 +86,7 @@ function loadWatcher(isPackaged: boolean): CreateWatcher | null {
   try {
     // The addon itself: that's all the package's index.js hands on, through `bindings`, and
     // electron-builder doesn't always package that. Without it the app hears nothing from
-    // Group Policy, and has no way around a blocked reg.exe.
+    // Group Policy, and nothing to read with when the native helper can't.
     const require = createRequire(import.meta.url);
     const file = path.join(path.dirname(require.resolve('@vscode/policy-watcher/package.json')), 'build', 'Release', 'vscode-policy-watcher.node');
     if (!addonMayLoad({ file, name: 'watcher', packaged: isPackaged || !__BULWARK_TEST_BUILD__, platform: process.platform, arch: process.arch, pins: __BULWARK_ADDON_PINS__ })) return null;
@@ -164,9 +165,10 @@ export class PolicyManager extends EventEmitter<PolicyEvents> {
 
   private async read(): Promise<PolicyReadResult> {
     if (process.platform === 'win32') {
-      const read = await readRegistry(this.targets);
+      const registry = native().system.registry;
+      const read = await readRegistry(this.targets, registry ? (key, depth) => registry.read(key, depth) : null);
       if (read.ok || !this.watcher) return read;
-      console.warn(`Reading policies with reg.exe failed (${read.reason}). Using the watcher's merged values.`);
+      console.warn(`Reading policies through the native helper failed (${read.reason}). Using the watcher's merged values.`);
       return readThroughWatcher(this.watcher, registryPathOf(this.targets.machine));
     }
     if (process.platform === 'darwin') {

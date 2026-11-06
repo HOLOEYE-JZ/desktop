@@ -176,21 +176,14 @@ test.describe('one app, one hostile server', () => {
   });
 
   test('Copy file: the same mark of the web and name rule as a drag', async () => {
+    // The test build's own clipboard writer (src/main/file-clipboard.ts): the user's clipboard stays as it is.
     await app.evaluate(() => {
-      const g = globalThis as unknown as { __clip: string[] };
+      const g = globalThis as unknown as { __clip: string[]; __bulwarkClipboardWriter: (paths: string[]) => Promise<boolean> };
       g.__clip = [];
-      const getBuiltin = (process as unknown as { getBuiltinModule(name: string): any }).getBuiltinModule;
-      const cp = getBuiltin('node:child_process');
-      const { EventEmitter } = getBuiltin('node:events');
-      const realSpawn = cp.spawn;
-      cp.spawn = (cmd: string, args: string[], options: { env?: Record<string, string> }) => {
-        if (!String(args).includes('Set-Clipboard')) return realSpawn(cmd, args, options);
-        g.__clip.push(options.env?.BULWARK_CLIPBOARD_FILE ?? '');
-        const child = new EventEmitter();
-        setTimeout(() => child.emit('exit', 0), 10);
-        return child;
+      g.__bulwarkClipboardWriter = async (paths) => {
+        g.__clip.push(...paths);
+        return true;
       };
-      getBuiltin('node:module').syncBuiltinESMExports();
     });
     const copy = async (name: string) => {
       const copied = await noGesture(app, 'return d.clipboard.copyFile(a, new Uint8Array([77, 90]).buffer);', name);

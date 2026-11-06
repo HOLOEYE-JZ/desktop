@@ -17,7 +17,7 @@ import { readdirSync, rmSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app, clipboard, nativeImage, type WebContents } from 'electron';
-import { systemExe } from '../system-exe';
+import { writeFilesToClipboard } from '../file-clipboard';
 import { safeDragFileName } from './os-rules';
 import { isInstalledBuild } from '../installed';
 
@@ -57,17 +57,10 @@ function cleanFiles(raw: unknown): Incoming[] | null {
 }
 
 function copyToClipboard(paths: string[]): Promise<boolean> {
+  // A real file list (CF_HDROP), which is what Explorer pastes, through the native helper.
+  if (process.platform === 'win32') return writeFilesToClipboard(paths);
   return new Promise((resolve) => {
-    if (process.platform === 'win32') {
-      // A real file list (CF_HDROP), which is what Explorer pastes. Paths by environment, not in the script.
-      const script = '$p = $env:BULWARK_COPY_PATHS -split "`n"; Set-Clipboard -LiteralPath $p';
-      execFile(
-        systemExe('powershell.exe'),
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-        { windowsHide: true, timeout: 15_000, env: { ...process.env, BULWARK_COPY_PATHS: paths.join('\n') } },
-        (error) => resolve(!error),
-      );
-    } else if (process.platform === 'darwin') {
+    if (process.platform === 'darwin') {
       const script = 'on run argv\nset out to {}\nrepeat with p in argv\nset end of out to (POSIX file (p as text))\nend repeat\nset the clipboard to out\nend run';
       execFile('/usr/bin/osascript', ['-e', script, ...paths], { timeout: 15_000 }, (error) => resolve(!error));
     } else {

@@ -8,12 +8,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import { SEND_TO_NAME, windowsOpenWithRegistration, windowsRegistration } from '../src/main/features/os-rules';
+import { helperFile, loadHelperModule, registryFrom } from '../src/main/native-loader';
 import { uninstallCleanup } from '../src/main/uninstall-cleanup';
 
 test.skip(process.platform !== 'win32', 'Windows only');
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 const MAIN = path.join(ROOT, 'dist', 'main.mjs');
+/** The native helper's registry, as the app's cleanup uses it. */
+const registry = () => {
+  const found = registryFrom(loadHelperModule(helperFile({ packaged: false, mainDir: path.join(ROOT, 'dist'), platform: process.platform, arch: process.arch })));
+  if (!found) throw new Error('No native helper with registry calls: run npm run build:native');
+  return found;
+};
 const DRIVES = 'Software\\Classes\\Applications\\Explorer.exe\\Drives';
 const RUN = 'Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const APPROVED = 'Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run';
@@ -113,7 +120,7 @@ test('takes away everything a start wrote for this exe, and nothing of anyone el
   try {
     plant(r, exe);
     expect(has(r.root, 'Software\\Classes\\bulwark\\shell\\open\\command')).toBe(true);
-    await uninstallCleanup({ root: r.root, exe, sendTo: r.sendTo, local: r.local });
+    await uninstallCleanup({ root: r.root, exe, sendTo: r.sendTo, local: r.local }, registry());
     expectOursGone(r, exe);
     expectTheirsKept(r);
   } finally {
@@ -129,7 +136,7 @@ test('keeps an attachment still being edited, what the folder sync knows, and an
     add(r.root, RUN, 'Bulwark', '"C:\\Users\\someone\\AppData\\Local\\Programs\\bulwark\\Bulwark.exe" --bulwark-from-login');
     writeFileSync(path.join(r.local, 'Bulwark', 'edit-files', 'letter.docx'), 'draft');
     writeFileSync(path.join(r.local, 'Bulwark', 'files-sync', 'roots.json'), '{"roots":[]}');
-    await uninstallCleanup({ root: r.root, exe, sendTo: r.sendTo, local: r.local });
+    await uninstallCleanup({ root: r.root, exe, sendTo: r.sendTo, local: r.local }, registry());
     expect(existsSync(path.join(r.local, 'Bulwark', 'edit-files', 'letter.docx'))).toBe(true);
     expect(existsSync(path.join(r.local, 'Bulwark', 'files-sync', 'roots.json'))).toBe(true);
     expect(existsSync(path.join(r.local, 'Bulwark', 'files-sync', 'state'))).toBe(false);

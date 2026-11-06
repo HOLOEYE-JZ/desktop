@@ -208,21 +208,35 @@ export function inQuietHours(settings: Pick<OsSettings, 'quietHoursEnabled' | 'q
 export type FocusAssist = 'off' | 'priority' | 'alarms' | 'fullscreen';
 
 /**
- * The state of Windows' Do Not Disturb, from the one-line answer of the check in
- * os-toasts.ts: `<profile> <quns>`. WNF profile 1 is priority only, 2 alarms only.
+ * The state of Windows' Do Not Disturb, from the native helper's notificationQuietState
+ * (os-toasts.ts). WNF profile 1 is priority only, 2 alarms only.
  * SHQueryUserNotificationState: 2 busy (full screen), 3 Direct3D full screen, 4
- * presentation, 6 quiet time. An answer that can't be read counts as off: Windows
- * still holds the toast itself, and only our own sound depends on this.
+ * presentation, 6 quiet time. No answer counts as off: Windows still holds the toast
+ * itself, and only our own sound depends on this.
  */
-export function parseFocusAssist(output: string): FocusAssist {
-  const match = /^\s*(-?\d+)\s+(-?\d+)\s*$/.exec(output);
-  if (!match) return 'off';
-  const profile = Number(match[1]);
-  const quns = Number(match[2]);
+export function focusAssistFrom(state: { profile: number; notificationState: number } | null): FocusAssist {
+  if (!state) return 'off';
+  const { profile, notificationState: quns } = state;
   if (profile === 2) return 'alarms';
   if (profile === 1) return 'priority';
   if (quns === 2 || quns === 3 || quns === 4 || quns === 6) return 'fullscreen';
   return 'off';
+}
+
+/** The check, with a limit: off when the helper isn't there, fails, or takes longer than `timeoutMs`. */
+export function focusAssistCheck(quietState: () => Promise<{ profile: number; notificationState: number } | null>, timeoutMs: number): Promise<FocusAssist> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('off'), timeoutMs);
+    const settle = (value: FocusAssist) => {
+      clearTimeout(timer);
+      resolve(value);
+    };
+    try {
+      quietState().then((state) => settle(focusAssistFrom(state)), () => settle('off'));
+    } catch {
+      settle('off');
+    }
+  });
 }
 
 /** A mailto: or webcal: link. bulwark: links have their one parser, src/main/deep-link.ts. */
@@ -658,12 +672,12 @@ export function windowsRegistration(exe: string): RegistryValue[] {
 /**
  * An uninstall takes the keys, and a reinstall to the same path must still put them back. Only the
  * exact command counts: the right exe with another command line is something else's registration,
- * and the rest of what the app offers may never have been written.
+ * and the rest of what the app offers may never have been written. `command` is the command key's
+ * default value, null when there's none (or it isn't text).
  */
-export function needsRegistration(handlerQuery: { ok: boolean; stdout: string }, exe: string): boolean {
-  if (!handlerQuery.ok) return true;
-  const command = /REG_(?:EXPAND_)?SZ\s+(.*)/.exec(handlerQuery.stdout)?.[1]?.trim();
-  return command?.toLowerCase() !== windowsOpenCommand(exe).toLowerCase();
+export function needsRegistration(command: string | null, exe: string): boolean {
+  if (command === null) return true;
+  return command.trim().toLowerCase() !== windowsOpenCommand(exe).toLowerCase();
 }
 
 /** How long a failed main window waits before it tries again. */
@@ -731,8 +745,8 @@ export function windowsOpenWithKeys(exeName: string): { keys: string[]; values: 
 }
 
 /** Whether the Open with keys are this exe's, by the attach class's command. */
-export function needsOpenWithRegistration(attachQuery: { ok: boolean; stdout: string }, exe: string): boolean {
-  return needsRegistration(attachQuery, exe);
+export function needsOpenWithRegistration(attachCommand: string | null, exe: string): boolean {
+  return needsRegistration(attachCommand, exe);
 }
 
 /** The Send to shortcut: the app, then the marker, then `--`. Explorer adds the files after it. */

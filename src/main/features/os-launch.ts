@@ -11,7 +11,7 @@ import { app } from 'electron';
 import type { OsCommand, OsFile } from '../../shared/bridge';
 import type { OsHub } from './os-hub';
 import { deepLinkFromArgv, parseDeepLink } from '../deep-link';
-import { launchFolder } from '../system-exe';
+import { launchFolder } from '../launch-folder';
 import { deliverSignInLink } from './browser-sign-in';
 import {
   fileReason,

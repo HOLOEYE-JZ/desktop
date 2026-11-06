@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1186,16 +1185,26 @@ test.describe('the app menu and windows', () => {
   });
 
   test('an attachment copied as a file is what Explorer pastes', async () => {
-    test.skip(process.platform !== 'win32', 'reads the clipboard through PowerShell');
+    test.skip(process.platform !== 'win32', 'the Windows file clipboard');
+    // The test build's own clipboard writer: the user's clipboard stays as it is. What the helper
+    // puts on the real clipboard is checked in a window station of its own (native-system.spec.ts).
+    await app.evaluate(() => {
+      const g = globalThis as unknown as { __clip: string[]; __bulwarkClipboardWriter: (paths: string[]) => Promise<boolean> };
+      g.__clip = [];
+      g.__bulwarkClipboardWriter = async (paths) => {
+        g.__clip.push(...paths);
+        return true;
+      };
+    });
     const copied = await page.evaluate(() => (window as unknown as { bulwarkDesktop: { clipboard: { copyFile: (n: string, d: ArrayBuffer) => Promise<boolean> } } }).bulwarkDesktop.clipboard.copyFile('../report: q3?.txt', new TextEncoder().encode('hello').buffer));
     expect(copied).toBe(true);
-    const run = spawnSync('powershell.exe', ['-NoProfile', '-Sta', '-Command', '(Get-Clipboard -Format FileDropList).FullName'], { encoding: 'utf8' });
-    const file = run.stdout.trim();
+    const handed = await app.evaluate(() => (globalThis as unknown as { __clip: string[] }).__clip);
+    expect(handed).toHaveLength(1);
+    const file = handed[0];
     expect(path.basename(file)).toBe('_report_ q3_.txt');
     // In this profile, never next to something else, and it holds the bytes.
     expect(file.toLowerCase().startsWith(path.join(profile, 'clipboard-files').toLowerCase())).toBe(true);
     expect(readFileSync(file, 'utf8')).toBe('hello');
-    await app.evaluate(({ clipboard }) => clipboard.clear());
   });
 
   test('refuses anything but bytes', async () => {

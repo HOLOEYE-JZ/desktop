@@ -6,8 +6,8 @@
  * No Electron here.
  */
 
-import { execFile } from 'node:child_process';
-import { systemExe } from '../system-exe';
+import type { Registry } from '../native-loader';
+import { readKey, readString } from '../registry-values';
 import { DRIVE_NAME } from './drive-places';
 
 /** Under HKCU, or a test's own key in its place. build/installer.nsh removes it at an uninstall. */
@@ -27,43 +27,30 @@ export interface LetterLabelSystem {
   changed(letter: string): void;
 }
 
-function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
-  return new Promise((resolve) => {
-    execFile(systemExe('reg.exe'), args, { windowsHide: true, timeout: 10_000, encoding: 'utf8' }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout ?? '') }));
-  });
-}
-
-/** The default value's data in `reg query <key> /ve` output, or null. */
-export function parseDefaultValue(stdout: string): string | null {
-  const line = stdout.split(/\r?\n/).find((entry) => /\sREG_(?:EXPAND_)?SZ(\s|$)/.test(entry));
-  if (!line) return null;
-  return /\sREG_(?:EXPAND_)?SZ(?:\s+(.*))?$/.exec(line)?.[1]?.trim() ?? '';
-}
-
 /**
- * Through System32's reg.exe. `root` is `HKCU`, or in a test build the key that stands in for
- * it. `notify` is the helper's call that tells Explorer, where there is one.
+ * Through the native helper's registry calls. `root` is `HKCU`, or in a test build the key that
+ * stands in for it. Without a registry nothing is read or written. `notify` is the helper's call
+ * that tells Explorer, where there is one.
  */
-export function registryLetterLabels(root: string, notify: ((letter: string) => void) | null): LetterLabelSystem {
+export function registryLetterLabels(root: string, registry: Registry | null, notify: ((letter: string) => void) | null): LetterLabelSystem {
   const key = (letter: string, part?: 'DefaultLabel' | 'DefaultIcon') => `${root}\\${DRIVES_KEY}\\${letter}${part ? `\\${part}` : ''}`;
-  const value = async (letter: string, part: 'DefaultLabel' | 'DefaultIcon') => {
-    const { ok, stdout } = await reg(['query', key(letter, part), '/ve']);
-    return ok ? parseDefaultValue(stdout) : null;
-  };
+  // The default value, trimmed as reg.exe's answer was. Null: no key, no default value, or not text.
+  const value = (letter: string, part: 'DefaultLabel' | 'DefaultIcon') => readString(registry, key(letter, part))?.trim() ?? null;
   return {
-    read: async (letter) => ({ label: await value(letter, 'DefaultLabel'), icon: await value(letter, 'DefaultIcon') }),
+    read: async (letter) => ({ label: value(letter, 'DefaultLabel'), icon: value(letter, 'DefaultIcon') }),
     write: async (letter, wanted) => {
-      const label = await reg(['add', key(letter, 'DefaultLabel'), '/ve', '/t', 'REG_SZ', '/d', wanted.label, '/f']);
-      const icon = await reg(['add', key(letter, 'DefaultIcon'), '/ve', '/t', 'REG_SZ', '/d', wanted.icon, '/f']);
-      return label.ok && icon.ok;
+      if (!registry) return false;
+      const label = registry.setString(key(letter, 'DefaultLabel'), undefined, wanted.label);
+      const icon = registry.setString(key(letter, 'DefaultIcon'), undefined, wanted.icon);
+      return label && icon;
     },
     remove: async (letter) => {
-      await reg(['delete', key(letter, 'DefaultLabel'), '/f']);
-      await reg(['delete', key(letter, 'DefaultIcon'), '/f']);
+      if (!registry) return;
+      registry.deleteKey(key(letter, 'DefaultLabel'));
+      registry.deleteKey(key(letter, 'DefaultIcon'));
       // The letter's own key only if nothing of anyone else's is left in it.
-      const rest = await reg(['query', key(letter), '/s']);
-      const lines = rest.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      if (rest.ok && lines.every((line) => line.toLowerCase() === key(letter).toLowerCase())) await reg(['delete', key(letter), '/f']);
+      const rest = readKey(registry, key(letter));
+      if (rest && rest.values.length === 0 && rest.subkeys.length === 0) registry.deleteKey(key(letter));
     },
     changed: (letter) => {
       try {

@@ -15,10 +15,10 @@ import { createHash } from 'node:crypto';
 import { app, BrowserWindow, Notification } from 'electron';
 import type { OsNotification, OsNotifyResult } from '../../shared/bridge';
 import { LinkRateLimit } from '../deep-link';
+import { native } from '../native';
 import { strings } from '../strings';
-import { systemExe } from '../system-exe';
 import type { OsHub } from './os-hub';
-import { buildToastXml, inQuietHours, parseFocusAssist, parseToastArguments, REPLY_INPUT, type FocusAssist } from './os-rules';
+import { buildToastXml, focusAssistCheck, inQuietHours, parseToastArguments, REPLY_INPUT, type FocusAssist } from './os-rules';
 import { osRegistrationAllowed } from '../installed';
 
 export const TOAST_CLSID = '{7B1E4F2A-93C6-4D0E-A5B8-2F6C1D9E3A47}';
@@ -42,25 +42,9 @@ export function setToastActivator(): void {
   app.setToastActivatorCLSID(osRegistrationAllowed() ? TOAST_CLSID : DEV_TOAST_CLSID);
 }
 
-/** Do Not Disturb's profile (WNF) and the shell's notification state. PowerShell because Electron has no call for either. */
-const FOCUS_ASSIST_SCRIPT = `
-Add-Type -Namespace B -Name F -MemberDefinition '[DllImport("ntdll.dll")] public static extern int NtQueryWnfStateData(ref ulong n, IntPtr t, IntPtr s, out uint c, byte[] b, ref uint z); [DllImport("shell32.dll")] public static extern int SHQueryUserNotificationState(out int s);'
-$n = [uint64]"0xD83063EA3BF1C75"; $b = New-Object byte[] 4; [uint32]$z = 4; [uint32]$c = 0; $q = 0
-[void][B.F]::NtQueryWnfStateData([ref]$n, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$c, $b, [ref]$z)
-[void][B.F]::SHQueryUserNotificationState([ref]$q)
-Write-Output ("{0} {1}" -f [BitConverter]::ToInt32($b, 0), $q)
-`;
-
+/** Do Not Disturb's profile (WNF) and the shell's notification state, from the native helper: Electron has no call for either. */
 function runFocusAssistCheck(): Promise<FocusAssist> {
-  const encoded = Buffer.from(FOCUS_ASSIST_SCRIPT, 'utf16le').toString('base64');
-  return new Promise((resolve) => {
-    execFile(
-      systemExe('powershell.exe'),
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      { windowsHide: true, timeout: FOCUS_ASSIST_TIMEOUT_MS },
-      (error, stdout) => resolve(error ? 'off' : parseFocusAssist(stdout)),
-    );
-  });
+  return focusAssistCheck(native().system.quietState, FOCUS_ASSIST_TIMEOUT_MS);
 }
 
 function runLinuxQuietCheck(): Promise<FocusAssist> {

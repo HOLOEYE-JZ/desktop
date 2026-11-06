@@ -36,17 +36,16 @@
  * of recent files, which can name this folder. The strings and the README say so.
  */
 
-import { execFile } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { createReadStream, mkdirSync, readdirSync, readFileSync, rmSync, watch, type FSWatcher } from 'node:fs';
-import { chmod, mkdir, open as openFile, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open as openFile, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { app, shell, type WebContents } from 'electron';
 import { CHANNEL, type EditBeginResult, type EditClearResult, type EditFile, type EditOpenResult, type EditReadResult, type EditSession } from '../../shared/bridge';
 import { allowEditExtensionForTest, EDIT_CHANGED_KEEP_MS, EDIT_CHANGED_MAX_MS, EDIT_LAST_CALL_MS, EDIT_TAIL_BYTES, EDIT_UNCHANGED_KEEP_MS, editFileLooksWhole, editFileName, editNeedsMark, isEditTempName } from '../../shared/edit-rules';
 import { strings } from '../strings';
-import { systemExe } from '../system-exe';
+import { native } from '../native';
+import { makeFolderPrivate } from '../private-folder';
 import { takeUserGesture, watchUserGestures } from '../user-gesture';
 import { addWipeStep } from './local-wipe';
 import type { OsHub } from './os-hub';
@@ -126,30 +125,12 @@ function editRoot(): string {
   return path.join(app.getPath('userData'), 'edit-files');
 }
 
-const run = promisify(execFile);
-
 /**
- * Only this user, whatever the folder above allows: a profile can be moved somewhere the
- * machine's other users can read. On Windows that takes an explicit list without what's
- * inherited. If the tools are blocked, as AppLocker can do, it holds only where the OS's
- * own defaults for a home folder apply.
+ * Only this user, whatever the folder above allows (private-folder.ts). Without the native
+ * helper it holds only where the OS's own defaults for a home folder apply.
  */
-export async function makeRootPrivate(root: string): Promise<boolean> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') {
-    await chmod(root, 0o700);
-    return true;
-  }
-  try {
-    const { stdout } = await run(systemExe('whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 15_000 });
-    const sid = /S-1-[\d-]+/.exec(stdout)?.[0];
-    if (!sid) throw new Error('No SID');
-    await run(systemExe('icacls.exe'), [root, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F'], { windowsHide: true, timeout: 15_000 });
-    return true;
-  } catch (error) {
-    console.error('Could not set the edit folder private:', error);
-    return root.toLowerCase().startsWith(`${app.getPath('home').toLowerCase()}${path.sep}`);
-  }
+export function makeRootPrivate(root: string): Promise<boolean> {
+  return makeFolderPrivate(root, { platform: process.platform, makePrivate: native().system.makeFolderPrivate, home: app.getPath('home') });
 }
 
 function hashFile(file: string): Promise<string> {

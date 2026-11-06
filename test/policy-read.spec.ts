@@ -5,27 +5,25 @@ import path from 'node:path';
 import { expect, test } from '@playwright/test';
 import {
   layersFromJson,
-  parseRegOutput,
   layersFromRegistry,
   policyFileProblem,
   managedPlistPaths,
   managedPlistProblem,
   readMacPolicies,
-  regCommandLine,
-  runRegExe,
   readPolicyFile,
   readRegistry,
   readThroughWatcher,
   policySourceName,
-  realSystemRoot,
-  regPath,
   REAL_REGISTRY_TARGETS,
   testPolicyRoot,
   testRegistryTargets,
   watchRegistry,
   type CreateWatcher,
-  type RunReg,
+  policyValue,
+  treeFromNodes,
+  type ReadRegistryTree,
 } from '../src/main/policy-read';
+import { helperFile, loadHelperModule, registryFrom, type NativeRegistryNode, type NativeRegistryValue } from '../src/main/native-loader';
 import { FORCED_SSO_LIMIT_MS, SsoChain } from '../src/main/navigation-rules';
 import { connectionMustChange, decideStart, restartKey, standaloneAllowed } from '../src/main/policy-start';
 import { deniedEnvironment, deniedSwitches, withoutDeniedSwitches } from '../src/main/switch-guard';
@@ -43,41 +41,40 @@ function each<const Row>(rows: readonly Row[]) {
 }
 
 const TARGETS = testRegistryTargets('HKCU\\Software\\BulwarkTest\\Policies\\x');
-const ROOT_LONG = 'HKEY_CURRENT_USER\\Software\\BulwarkTest\\Policies\\x\\Machine';
+const ROOT = path.resolve(import.meta.dirname, '..');
 
 const snapshot = (forcedMachine: PolicyLayer = {}, recommendedMachine: PolicyLayer = {}) =>
   resolvePolicies({ ...EMPTY_POLICY_LAYERS, forcedMachine, recommendedMachine });
 
-test.describe('reading reg.exe', () => {
-  const output = [
-    '',
-    ROOT_LONG,
-    '    InstanceUrl    REG_SZ    https://mail.example.com',
-    '    AllowStandalone    REG_DWORD    0x0',
-    '    AutoUpdate    REG_MULTI_SZ    a\\0b',
-    '    QuickComposeShortcut    REG_SZ    ',
-    '    Name With Spaces    REG_SZ    has    four    spaces',
-    '',
-    `${ROOT_LONG}\\AllowedJmapServers`,
-    '    2    REG_SZ    https://b.example',
-    '    10    REG_SZ    https://c.example',
-    '    1    REG_SZ    https://a.example',
-    '    x    REG_SZ    https://not-numbered.example',
-    '',
-    `${ROOT_LONG}\\PluginAllowlist`,
-    '',
-    `${ROOT_LONG}\\Recommended`,
-    '    UpdateChannel    REG_SZ    beta',
-    '',
-    `${ROOT_LONG}\\Recommended\\PluginAllowlist`,
-    '    1    REG_SZ    good-plugin',
-    '',
-    'HKEY_LOCAL_MACHINE\\Software\\Somewhere\\Else',
-    '    InstanceUrl    REG_SZ    https://elsewhere.example',
-    '',
-  ].join('\r\n');
+const sz = (name: string, text: string): NativeRegistryValue => ({ name, kind: 'sz', text });
 
-  const layers = () => layersFromRegistry(parseRegOutput(output, TARGETS.machine), new Map());
+/** The native helper's registry, as main reads policies with it. */
+const helperRead = (): ReadRegistryTree => {
+  const registry = registryFrom(loadHelperModule(helperFile({ packaged: false, mainDir: path.join(ROOT, 'dist'), platform: process.platform, arch: process.arch })));
+  if (!registry) throw new Error('No native helper with registry calls: run npm run build:native');
+  return (key, depth) => registry.read(key, depth);
+};
+
+test.describe('reading the registry through the native helper', () => {
+  const nodes: NativeRegistryNode[] = [
+    {
+      path: '',
+      subkeys: ['AllowedJmapServers', 'PluginAllowlist', 'Recommended'],
+      values: [
+        sz('InstanceUrl', 'https://mail.example.com'),
+        { name: 'AllowStandalone', kind: 'dword', number: 0 },
+        { name: 'AutoUpdate', kind: 'multi_sz', list: ['a', 'b'] },
+        sz('QuickComposeShortcut', ''),
+        sz('Name With Spaces', 'has    four    spaces'),
+      ],
+    },
+    { path: 'AllowedJmapServers', subkeys: [], values: [sz('2', 'https://b.example'), sz('10', 'https://c.example'), sz('1', 'https://a.example'), sz('x', 'https://not-numbered.example')] },
+    { path: 'PluginAllowlist', subkeys: [], values: [] },
+    { path: 'Recommended', subkeys: ['PluginAllowlist'], values: [sz('UpdateChannel', 'beta')] },
+    { path: 'Recommended\\PluginAllowlist', subkeys: [], values: [sz('1', 'good-plugin')] },
+  ];
+
+  const layers = () => layersFromRegistry(treeFromNodes(nodes), new Map());
 
   test('reads values, types and numbered lists in number order', () => {
     const { forcedMachine } = layers();
@@ -92,8 +89,20 @@ test.describe('reading reg.exe', () => {
 
   test('a type no policy uses fails the parser, so a forced one fails closed', () => {
     const { forcedMachine } = layers();
-    expect(typeof forcedMachine.AutoUpdate).toBe('object');
+    expect(forcedMachine.AutoUpdate).toEqual({ invalid: 'REG_MULTI_SZ' });
     expect(resolvePolicies({ ...EMPTY_POLICY_LAYERS, forcedMachine }).AutoUpdate).toMatchObject({ value: false, invalid: 'not_a_switch' });
+    expect(policyValue({ name: 'a', kind: 'binary' })).toEqual({ invalid: 'REG_BINARY' });
+    expect(policyValue({ name: 'a', kind: 'other' })).toEqual({ invalid: 'REG_OTHER' });
+  });
+
+  test('numbers as reg.exe read them: a DWORD unsigned, a QWORD only while a JS number holds it', () => {
+    expect(policyValue({ name: 'a', kind: 'dword', number: 4294967295 })).toBe(4294967295);
+    expect(policyValue({ name: 'a', kind: 'qword', text: '5' })).toBe(5);
+    expect(policyValue({ name: 'a', kind: 'qword', text: '9007199254740993' })).toEqual({ invalid: 'REG_QWORD' });
+  });
+
+  test('an expandable string stays as written, not expanded', () => {
+    expect(policyValue({ name: 'a', kind: 'expand_sz', text: '%APPDATA%\\x' })).toBe('%APPDATA%\\x');
   });
 
   test('an empty list key is what disabling leaves behind: not set, rather than "nothing allowed"', () => {
@@ -108,115 +117,75 @@ test.describe('reading reg.exe', () => {
     expect(recommendedMachine.InstanceUrl).toBeUndefined();
   });
 
-  test('ignores anything outside the key it asked for', () => {
-    const elsewhere = 'HKEY_LOCAL_MACHINE\\Software\\Somewhere\\Else\r\n    InstanceUrl    REG_SZ    https://evil.example\r\n';
-    expect(layersFromRegistry(parseRegOutput(elsewhere, TARGETS.machine), new Map()).forcedMachine).toEqual({});
+  test('names and keys compare without case, as the registry does', () => {
+    const tree = treeFromNodes([
+      { path: '', subkeys: ['RECOMMENDED'], values: [sz('instanceurl', 'https://mail.example.com')] },
+      { path: 'RECOMMENDED', subkeys: [], values: [sz('UPDATECHANNEL', 'beta')] },
+    ]);
+    const { forcedMachine, recommendedMachine } = layersFromRegistry(tree, new Map());
+    expect(forcedMachine.InstanceUrl).toBe('https://mail.example.com');
+    expect(recommendedMachine.UpdateChannel).toBe('beta');
   });
 
-  test('a value with a line break is a bad value, and can\'t blank what comes after it', () => {
-    const output = [
-      '',
-      ROOT_LONG,
-      '    AllowStandalone    REG_DWORD    0x0',
-      '    InstanceUrl    REG_SZ    https://mail.example.com',
-      'HKEY_LOCAL_MACHINE\\Software\\Somewhere\\Else',
-      '    PluginsMode    REG_SZ    off',
-      '    UpdateChannel    REG_SZ    beta',
-      `${ROOT_LONG}\\Recommended`,
-      '    OfflineEnabled    REG_SZ    1',
-      '',
-      `${ROOT_LONG}\\PluginAllowlist`,
-      '    1    REG_SZ    good-plugin',
-      '',
-      'End of search: 3 match(es) found.',
-      '',
-    ].join('\r\n');
-    const { forcedMachine, recommendedMachine } = layersFromRegistry(parseRegOutput(output, TARGETS.machine), new Map());
-    expect(forcedMachine.AllowStandalone).toBe(0);
+  test('a value with a line break is a bad value, and leaves the others as they are', () => {
+    const tree = treeFromNodes([
+      { path: '', subkeys: [], values: [sz('InstanceUrl', 'https://mail.example.com\r\nHKEY_LOCAL_MACHINE\\Software\\Else'), sz('PluginsMode', 'off')] },
+    ]);
+    const { forcedMachine } = layersFromRegistry(tree, new Map());
     expect(forcedMachine.InstanceUrl).toEqual({ invalid: 'line_break' });
     expect(forcedMachine.PluginsMode).toBe('off');
-    expect(forcedMachine.PluginAllowlist).toEqual(['good-plugin']);
-    // Not after an empty line, so not a key: this is still the value above it.
-    expect(forcedMachine.UpdateChannel).toEqual({ invalid: 'line_break' });
-    expect(recommendedMachine.OfflineEnabled).toBeUndefined();
     expect(resolvePolicies({ ...EMPTY_POLICY_LAYERS, forcedMachine }).InstanceUrl).toMatchObject({ value: null, invalid: 'not_text' });
   });
 
   test('machine and user stay separate levels', async () => {
-    const run: RunReg = async ([, key]) => ({
-      code: 0,
-      stdout: `${key.replace('HKCU', 'HKEY_CURRENT_USER')}\r\n    UpdateChannel    REG_SZ    ${key.endsWith('Machine') ? 'beta' : 'stable'}\r\n`,
+    const read: ReadRegistryTree = (key) => [{ path: '', subkeys: [], values: [sz('UpdateChannel', key.endsWith('Machine') ? 'beta' : 'stable')] }];
+    const result = await readRegistry(TARGETS, read);
+    expect(result.ok && result.layers.forcedMachine.UpdateChannel).toBe('beta');
+    expect(result.ok && result.layers.forcedUser.UpdateChannel).toBe('stable');
+  });
+
+  test('asks for the Recommended lists, two levels down', async () => {
+    const asked: [string, number][] = [];
+    await readRegistry(REAL_REGISTRY_TARGETS, (key, depth) => {
+      asked.push([key, depth]);
+      return null;
     });
-    const read = await readRegistry(TARGETS, run);
-    expect(read.ok && read.layers.forcedMachine.UpdateChannel).toBe('beta');
-    expect(read.ok && read.layers.forcedUser.UpdateChannel).toBe('stable');
+    expect(asked).toEqual([
+      [REAL_REGISTRY_TARGETS.machine, 2],
+      [REAL_REGISTRY_TARGETS.user, 2],
+    ]);
   });
 });
 
-test.describe('when reg.exe gives no answer', () => {
-  test('no key on a working reg.exe is no policy', async () => {
-    const run: RunReg = async (args) => (args.includes('/v') ? { code: 0, stdout: 'CurrentBuild' } : { code: 1, stdout: '' });
-    const read = await readRegistry(REAL_REGISTRY_TARGETS, run);
-    expect(read).toEqual({ ok: true, layers: EMPTY_POLICY_LAYERS });
+test.describe('when the helper gives no answer', () => {
+  test('no key is no policy', async () => {
+    expect(await readRegistry(REAL_REGISTRY_TARGETS, () => null)).toEqual({ ok: true, layers: EMPTY_POLICY_LAYERS });
   });
 
-  test('a blocked reg.exe does not read as no policy', async () => {
-    // "Prevent access to registry editing tools": exit code 1, the same as a missing key.
-    const run: RunReg = async () => ({ code: 1, stdout: '' });
-    expect(await readRegistry(REAL_REGISTRY_TARGETS, run)).toEqual({ ok: false, reason: 'reg_blocked' });
+  test('a key that is there and can\'t be read does not read as no policy', async () => {
+    const read: ReadRegistryTree = (key) => {
+      if (key.startsWith('HKCU')) throw new Error('registry:denied (0x80070005)');
+      return null;
+    };
+    expect(await readRegistry(REAL_REGISTRY_TARGETS, read)).toEqual({ ok: false, reason: 'reg_failed' });
   });
 
-  test('a reg.exe that will not start does not either', async () => {
-    const run: RunReg = async () => ({ code: -1, stdout: '' });
-    expect(await readRegistry(REAL_REGISTRY_TARGETS, run)).toEqual({ ok: false, reason: 'reg_failed' });
+  test('no helper does not either: the caller reads through the watcher', async () => {
+    expect(await readRegistry(REAL_REGISTRY_TARGETS, null)).toEqual({ ok: false, reason: 'reg_failed' });
   });
 
-  test('non-ASCII comes through whole, through the real reg.exe', async () => {
+  test('non-ASCII comes through whole, through the real helper', async () => {
     test.skip(process.platform !== 'win32', 'Windows registry');
     const key = `HKCU\\Software\\BulwarkTest\\Policies\\enc${process.pid}`;
-    spawnSync('reg.exe', ['add', `${key}\\Machine`, '/v', 'InstanceUrl', '/t', 'REG_SZ', '/d', 'https://m\u00fcller.de', '/f'], { windowsHide: true });
+    spawnSync('reg.exe', ['add', `${key}\\Machine`, '/v', 'InstanceUrl', '/t', 'REG_SZ', '/d', 'https://müller.de', '/f'], { windowsHide: true });
+    spawnSync('reg.exe', ['add', `${key}\\Machine\\AllowedJmapServers`, '/v', '1', '/t', 'REG_SZ', '/d', 'https://ä.example', '/f'], { windowsHide: true });
     try {
-      const read = await readRegistry(testRegistryTargets(key));
-      expect(read.ok && read.layers.forcedMachine.InstanceUrl).toBe('https://m\u00fcller.de');
+      const read = await readRegistry(testRegistryTargets(key), helperRead());
+      expect(read.ok && read.layers.forcedMachine.InstanceUrl).toBe('https://müller.de');
+      expect(read.ok && read.layers.forcedMachine.AllowedJmapServers).toEqual(['https://ä.example']);
       if (read.ok) expect(resolvePolicies(read.layers).InstanceUrl.value).toBe('https://xn--mller-kva.de/');
     } finally {
       spawnSync('reg.exe', ['delete', key, '/f'], { windowsHide: true });
-    }
-  });
-
-  test('reg.exe\'s own exit codes still come through cmd', async () => {
-    test.skip(process.platform !== 'win32', 'Windows registry');
-    expect((await runRegExe(['query', 'HKCU\\Software\\BulwarkTest\\NotThere'])).code).toBe(1);
-    expect((await runRegExe(['query', 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', '/v', 'CurrentBuild'])).code).toBe(0);
-  });
-
-  test('nothing unusual gets onto cmd\'s command line', () => {
-    expect(() => regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKCU\\a & calc'])).toThrow('refused');
-    expect(() => regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKCU\\a"b'])).toThrow('refused');
-    expect(regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'HKLM\\Windows NT'])[3]).toContain('"HKLM\\Windows NT"');
-    expect(regCommandLine('C:\\Windows\\System32\\reg.exe', ['query', 'k']).slice(0, 3)).toEqual(['/d', '/s', '/c']);
-  });
-
-  test('its path comes from Windows: not the environment, and not a folder someone made on C:', () => {
-    const planted = (file: string) => file === 'C:\\Windows\\System32\\reg.exe' || file.startsWith('D:\\');
-    expect(regPath('D:\\Windows', planted)).toBe('D:\\Windows\\System32\\reg.exe');
-    expect(regPath('D:\\Windows', (file) => file === 'C:\\Windows\\System32\\reg.exe')).toBeNull();
-    expect(regPath(null, () => true)).toBeNull();
-    expect(realSystemRoot(() => { throw new Error('no'); })).toBeNull();
-    expect(realSystemRoot(() => '\\\\server\\share')).toBeNull();
-  });
-
-  test('the real lookup ignores %SystemRoot%', () => {
-    test.skip(process.platform !== 'win32', 'Windows');
-    const real = realSystemRoot();
-    expect(real).toMatch(/^[A-Z]:\\Windows$/i);
-    const before = process.env.SystemRoot;
-    process.env.SystemRoot = 'C:\\Users\\me\\fake';
-    try {
-      expect(realSystemRoot()).toBe(real);
-      expect(regPath()).toBe(`${real}\\System32\\reg.exe`);
-    } finally {
-      process.env.SystemRoot = before;
     }
   });
 
@@ -237,7 +206,7 @@ test.describe('when reg.exe gives no answer', () => {
     expect(read.ok).toBe(true);
     if (!read.ok) return;
     expect(resolvePolicies(read.layers).AllowedJmapServers).toMatchObject({ value: [], invalid: 'not_a_list' });
-    const throughReg = layersFromRegistry(parseRegOutput(`${ROOT_LONG}\r\n    AllowedJmapServers    REG_SZ    https://a.example\r\n`, TARGETS.machine), new Map());
+    const throughReg = layersFromRegistry(treeFromNodes([{ path: '', subkeys: [], values: [sz('AllowedJmapServers', 'https://a.example')] }]), new Map());
     expect(read.layers.forcedMachine.AllowedJmapServers).toEqual(throughReg.forcedMachine.AllowedJmapServers);
   });
 

@@ -9,8 +9,9 @@
  * default for those types. The OpenWithEnabled policy takes them away again. macOS and
  * Linux declare the same types in their packages (electron-builder.yml).
  *
- * Values go through reg.exe: Electron has no registry call and this is no reason for a
- * native module. The installer's uninstall step removes the same keys.
+ * Values go through the native helper's registry calls (native-loader.ts): Electron has none,
+ * and an app that starts reg.exe is what endpoint protection blocks. Without the helper nothing
+ * is written, as when reg.exe failed. The installer's uninstall step removes the same keys.
  */
 
 import { execFile } from 'node:child_process';
@@ -18,7 +19,9 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { app, shell } from 'electron';
 import type { OsDefaultAppStatus } from '../../shared/bridge';
-import { systemExe } from '../system-exe';
+import { native } from '../native';
+import type { Registry } from '../native-loader';
+import { hasValue, readKey, readString } from '../registry-values';
 import type { OsHub } from './os-hub';
 import { effectivePolicyValue } from '../../shared/policy-schema';
 import { policies } from './policies';
@@ -83,23 +86,31 @@ export function openWithAllowed(): boolean {
   return effectivePolicyValue(policies.snapshot.OpenWithEnabled, undefined) !== false;
 }
 
-function reg(args: string[]): Promise<{ ok: boolean; stdout: string }> {
-  return new Promise((resolve) => {
-    execFile(systemExe('reg.exe'), args, { windowsHide: true, timeout: 10_000 }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout) }));
-  });
+function registry(): Registry | null {
+  return native().system.registry;
 }
 
-async function writeValue(value: RegistryValue): Promise<boolean> {
-  const args = ['add', `${REGISTRY_ROOT}\\${value.key}`, '/f'];
-  if (value.name === undefined) args.push('/ve');
-  else args.push('/v', value.name);
-  args.push('/t', 'REG_SZ', '/d', value.data);
-  return (await reg(args)).ok;
+function writeValue(value: RegistryValue): boolean {
+  return registry()?.setString(`${REGISTRY_ROOT}\\${value.key}`, value.name, value.data) ?? false;
+}
+
+/** Keys and values taken away. One that isn't there is fine. */
+function removeAll({ keys, values }: { keys: string[]; values: { key: string; name: string }[] }): void {
+  const found = registry();
+  if (!found) return;
+  for (const key of keys) found.deleteKey(`${REGISTRY_ROOT}\\${key}`);
+  for (const value of values) found.deleteValue(`${REGISTRY_ROOT}\\${value.key}`, value.name);
+}
+
+/** The default value of a class's open command: whose registration it is. Null for none. */
+function openCommand(progId: string): string | null {
+  return readString(registry(), `${REGISTRY_ROOT}\\Software\\Classes\\${progId}\\shell\\open\\command`);
 }
 
 export async function registerOnWindows(exe: string): Promise<boolean> {
   if (!mayRegister()) return false;
-  const results = await Promise.all(windowsRegistration(exe).map(writeValue));
+  // Every one, not only up to the first that fails.
+  const results = windowsRegistration(exe).map(writeValue);
   return results.every(Boolean);
 }
 
@@ -139,29 +150,25 @@ function removeOurSendTo(): void {
 /** "Open with", "Choose another app" and the Send to shortcut, for this exe. */
 export async function registerOpenWithOnWindows(exe: string): Promise<boolean> {
   if (!mayRegister()) return false;
-  const results = await Promise.all(windowsOpenWithRegistration(exe).map(writeValue));
+  const results = windowsOpenWithRegistration(exe).map(writeValue);
   return results.every(Boolean) && repairSendTo(exe, true);
 }
 
 /** Only what's ours: our class in each type's list, our own keys, our shortcut. */
 export async function unregisterOpenWithOnWindows(exe: string): Promise<void> {
   if (!mayRegister()) return;
-  const { keys, values } = windowsOpenWithKeys(path.win32.basename(exe));
-  await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
-  await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
+  removeAll(windowsOpenWithKeys(path.win32.basename(exe)));
   removeOurSendTo();
 }
 
 export async function unregisterOnWindows(): Promise<void> {
   if (!mayRegister()) return;
-  const { keys, values } = windowsRegistrationKeys(path.win32.basename(process.execPath));
-  await Promise.all(keys.map((key) => reg(['delete', `${REGISTRY_ROOT}\\${key}`, '/f'])));
-  await Promise.all(values.map((value) => reg(['delete', `${REGISTRY_ROOT}\\${value.key}`, '/v', value.name, '/f'])));
+  removeAll(windowsRegistrationKeys(path.win32.basename(process.execPath)));
 }
 
-async function isChosenOnWindows(scheme: string): Promise<boolean> {
-  const { ok, stdout } = await reg(['query', `${REGISTRY_ROOT}\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\${scheme}\\UserChoice`, '/v', 'ProgId']);
-  return ok && stdout.includes(WINDOWS_URLS[scheme]);
+function isChosenOnWindows(scheme: string): boolean {
+  const progId = readString(registry(), `${REGISTRY_ROOT}\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\${scheme}\\UserChoice`, 'ProgId');
+  return progId !== null && progId.includes(WINDOWS_URLS[scheme]);
 }
 
 const LINUX_TYPES = ['x-scheme-handler/webcals', 'x-scheme-handler/mailto', 'x-scheme-handler/webcal', 'message/rfc822', 'text/calendar', 'text/vcard'];
@@ -186,12 +193,11 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
 
   const status = async (): Promise<OsDefaultAppStatus> => {
     if (win32) {
-      const [registered, mailto, webcal] = await Promise.all([
-        reg(['query', `${REGISTRY_ROOT}\\Software\\RegisteredApplications`, '/v', WINDOWS_APP_NAME]).then((result) => result.ok),
-        isChosenOnWindows('mailto'),
-        isChosenOnWindows('webcal'),
-      ]);
-      return { registered, mailto, webcal };
+      return {
+        registered: hasValue(registry(), `${REGISTRY_ROOT}\\Software\\RegisteredApplications`, WINDOWS_APP_NAME),
+        mailto: isChosenOnWindows('mailto'),
+        webcal: isChosenOnWindows('webcal'),
+      };
     }
     return { registered: true, mailto: app.isDefaultProtocolClient('mailto'), webcal: app.isDefaultProtocolClient('webcal') };
   };
@@ -219,9 +225,9 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
     // Its own check, so an update that brings it writes it, and the policy can take it back.
     // `keysRewritten`: the mail keys were missing or named another exe just now.
     const applyOpenWith = async (keysRewritten: boolean) => {
-      const query = await reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\${WINDOWS_ATTACH_PROGID}\\shell\\open\\command`, '/ve']);
+      const commandKey = `${REGISTRY_ROOT}\\Software\\Classes\\${WINDOWS_ATTACH_PROGID}\\shell\\open\\command`;
       if (!openWithAllowed()) {
-        if (query.ok) await unregisterOpenWithOnWindows(exe);
+        if (readKey(registry(), commandKey)) await unregisterOpenWithOnWindows(exe);
         else removeOurSendTo();
         return;
       }
@@ -229,12 +235,11 @@ export function setupDefaultApp(hub: OsHub): DefaultAppHandle {
       // path, another copy's registration (an installer writes these keys before the app starts).
       // Our Send to shortcut is pointed at this exe at every start; one the user deleted while the
       // keys stayed isn't put back.
-      if (needsOpenWithRegistration(query, exe)) await registerOpenWithOnWindows(exe);
+      if (needsOpenWithRegistration(readString(registry(), commandKey), exe)) await registerOpenWithOnWindows(exe);
       else repairSendTo(exe, keysRewritten);
     };
     const first = async () => {
-      const query = await reg(['query', `${REGISTRY_ROOT}\\Software\\Classes\\bulwark\\shell\\open\\command`, '/ve']);
-      const rewrite = needsRegistration(query, exe);
+      const rewrite = needsRegistration(openCommand('bulwark'), exe);
       if (rewrite) await register();
       await applyOpenWith(rewrite);
     };

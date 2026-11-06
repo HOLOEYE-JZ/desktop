@@ -4,10 +4,9 @@
  * folder counts as ours: anyone else's `subst` is never touched. No Electron here.
  */
 
-import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { systemExe } from '../system-exe';
-import { inside, parseSubst } from './drive-places';
+import type { DriveLetters } from '../native-loader';
+import { inside } from './drive-places';
 
 export interface LetterSystem {
   /** Letter to target, for every `subst` mapping of this session. */
@@ -18,19 +17,16 @@ export interface LetterSystem {
   usedMask(): number;
 }
 
-function run(file: string, args: string[]): Promise<{ ok: boolean; stdout: string }> {
-  return new Promise((resolve) => {
-    execFile(file, args, { windowsHide: true, timeout: 10_000, encoding: 'utf8' }, (error, stdout) => resolve({ ok: !error, stdout: String(stdout ?? '') }));
-  });
-}
-
-/** Through System32's subst.exe, by its full path. */
-export function substLetters(usedMask: () => number): LetterSystem {
-  const subst = systemExe('subst.exe');
+/**
+ * What subst did, through the native helper (QueryDosDevice, DefineDosDevice): starting subst.exe
+ * is what endpoint protection blocks. Without the helper's calls, as when subst.exe failed: no
+ * mappings seen, none made.
+ */
+export function helperLetters(letters: DriveLetters | null, usedMask: () => number): LetterSystem {
   return {
-    list: async () => parseSubst((await run(subst, [])).stdout),
-    add: async (letter, target) => (await run(subst, [`${letter}:`, target])).ok,
-    remove: async (letter) => (await run(subst, [`${letter}:`, '/D'])).ok,
+    list: async () => letters?.list() ?? new Map(),
+    add: async (letter, target) => (letters ? letters.add(letter, target) : false),
+    remove: async (letter) => (letters ? letters.remove(letter) : false),
     usedMask,
   };
 }

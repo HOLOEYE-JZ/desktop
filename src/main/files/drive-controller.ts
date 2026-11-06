@@ -41,7 +41,7 @@ import type {
 } from '../../shared/bridge';
 import { filesErrorCode, type NativeFilesModule, type NativeSyncRoot } from '../native-loader';
 import { FetchRelay, type FetchFailure } from './drive-fetch';
-import { pinnedPaths, rescueFiles, setPinAttribute, unsyncedFiles, type PlaceholderInfo, type Rescued } from './drive-rescue';
+import { pinnedPaths, rescueFiles, unsyncedFiles, type PlaceholderInfo, type Rescued } from './drive-rescue';
 import { settleLetter, type LetterSystem } from './drive-letter';
 import { claimLetterLabel, releaseLetterLabel, type LetterLabelSystem } from './drive-letter-label';
 import {
@@ -149,9 +149,12 @@ export interface DriveDeps {
   documents?: string;
   /** Files were copied there. `reason`: why the folder went (`policy` for FilesDriveEnabled). */
   rescued?: (rescued: Rescued, reason: DisableReason | 'policy' | 'start') => void;
-  /** The pin attribute, as the shell sets it. Tests give a fake. */
+  /** The pin attribute, as the shell sets it: the native helper's (NativeHelper.system.setPin). None: pins fail. */
   setPin?: (absolute: string, pin: 'pinned' | 'unpinned' | 'unspecified') => Promise<boolean>;
 }
+
+/** Without the helper's call there's nothing that sets the attribute. */
+const noPin = async (): Promise<boolean> => false;
 
 interface Live {
   account: string;
@@ -986,7 +989,7 @@ export class DriveController {
 
   /** Pins from before the sign-out, on paths placed again just now. The watcher fetches the content. */
   private restorePins(live: Live, entries: FilesPlaceholder[], answers: { path: string; error?: FilesError }[]): void {
-    const setPin = this.deps.setPin ?? setPinAttribute;
+    const setPin = this.deps.setPin ?? noPin;
     entries.forEach((entry, index) => {
       if (answers[index].error || !live.pins.has(entry.path)) return;
       live.pins.delete(entry.path);
@@ -1212,7 +1215,7 @@ export class DriveController {
     if (pin !== 'pinned' && pin !== 'unpinned') return fail('failed');
     const found = this.resolveFile(live, relative);
     if (typeof found === 'string') return fail(found);
-    const setPin = this.deps.setPin ?? setPinAttribute;
+    const setPin = this.deps.setPin ?? noPin;
     if (!(await setPin(found.absolute, pin))) return fail('failed');
     if (this.live.get(live.account) === live) this.checkPin(found.absolute, null);
     return ok(null);

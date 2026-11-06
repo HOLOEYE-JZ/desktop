@@ -182,16 +182,6 @@ export function filesErrorOf(code: string): FilesError {
 
 export const LETTERS = 'DEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
-/** `subst` with no arguments: `X:\: => C:\folder` per line. */
-export function parseSubst(output: string): Map<string, string> {
-  const found = new Map<string, string>();
-  for (const line of output.split(/\r?\n/)) {
-    const match = /^([A-Z]):\\: => (.+)$/i.exec(line.trim());
-    if (match) found.set(match[1].toUpperCase(), match[2].trim());
-  }
-  return found;
-}
-
 /** The letters D to Z that nothing uses, from GetLogicalDrives' mask, plus our own. */
 export function freeLetters(usedMask: number, ours: string | null): string[] {
   return LETTERS.filter((letter) => letter === ours || (usedMask & (1 << (letter.charCodeAt(0) - 65))) === 0);

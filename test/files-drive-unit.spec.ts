@@ -5,8 +5,8 @@ import { expect, test } from '@playwright/test';
 import type { FilesFetchRequest } from '../src/shared/bridge';
 import { DriveController, type StoredDrive } from '../src/main/files/drive-controller';
 import { ALIGN, FetchRelay, PIECE } from '../src/main/files/drive-fetch';
-import { settleLetter, type LetterSystem } from '../src/main/files/drive-letter';
-import { isOurLabel, parseDefaultValue, type LetterLabel, type LetterLabelSystem } from '../src/main/files/drive-letter-label';
+import { helperLetters, settleLetter, type LetterSystem } from '../src/main/files/drive-letter';
+import { isOurLabel, registryLetterLabels, type LetterLabel, type LetterLabelSystem } from '../src/main/files/drive-letter-label';
 import {
   accountKey,
   displayNameFor,
@@ -15,13 +15,13 @@ import {
   freeLetters,
   letterTarget,
   nativeStatusOf,
-  parseSubst,
   relativeParts,
   resolveUnder,
   statusClassId,
   wantedLetter,
 } from '../src/main/files/drive-places';
 import type { NativeFetchEvent, NativeFilesModule, NativeSyncRoot } from '../src/main/native-loader';
+import { fakeRegistry } from './fake-registry';
 
 /**
  * The Files drive's rules that need no Windows: the fetch relay against a fake helper, names,
@@ -246,13 +246,26 @@ test.describe('the drive letter', () => {
     expect(free).toContain('E');
   });
 
-  test('subst output is read per line', () => {
-    expect(parseSubst('X:\\: => C:\\Users\\a\\Bulwark Files\\a@b.c\r\nY:\\: => D:\\other\r\n')).toEqual(
-      new Map([
-        ['X', 'C:\\Users\\a\\Bulwark Files\\a@b.c'],
-        ['Y', 'D:\\other'],
-      ]),
+  test('the letters come from the native helper, and without it there are none and none are made', async () => {
+    const added: string[] = [];
+    const letters = helperLetters(
+      {
+        list: () => new Map([['X', 'C:\\Users\\a\\Bulwark Files\\a@b.c']]),
+        add: async (letter, target) => {
+          added.push(`${letter}:${target}`);
+          return true;
+        },
+        remove: async () => true,
+      },
+      () => 0,
     );
+    expect(await letters.list()).toEqual(new Map([['X', 'C:\\Users\\a\\Bulwark Files\\a@b.c']]));
+    expect(await letters.add('Y', 'C:\\f')).toBe(true);
+    expect(added).toEqual(['Y:C:\\f']);
+    const none = helperLetters(null, () => 0);
+    expect(await none.list()).toEqual(new Map());
+    expect(await none.add('Y', 'C:\\f')).toBe(false);
+    expect(await none.remove('Y')).toBe(false);
   });
 
   function fakeLetters(initial: Record<string, string>, usedMask = 0): LetterSystem & { map: Map<string, string> } {
@@ -614,9 +627,32 @@ test.describe("the drive letter's name and icon in This PC", () => {
     expect(isOurLabel({ label: 'Bulwark Files', icon: null }, ICON)).toBe(false);
   });
 
-  test("reg query's default value is read in any language", () => {
-    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\\DefaultLabel\r\n    (Standard)    REG_SZ    Bulwark Files\r\n\r\n')).toBe('Bulwark Files');
-    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\\DefaultIcon\r\n    (Default)    REG_EXPAND_SZ    C:\\a b\\bulwark.ico,0\r\n')).toBe('C:\\a b\\bulwark.ico,0');
-    expect(parseDefaultValue('\r\nHKEY_CURRENT_USER\\X\r\n')).toBeNull();
+  test('the default values are read, as text of either kind, and a key without one has none', async () => {
+    const drives = 'HKCU\\Software\\Classes\\Applications\\Explorer.exe\\Drives';
+    const registry = fakeRegistry({
+      [`${drives}\\X\\DefaultLabel`]: [{ name: '', kind: 'sz', text: 'Bulwark Files' }],
+      [`${drives}\\X\\DefaultIcon`]: [{ name: '', kind: 'expand_sz', text: 'C:\\a b\\bulwark.ico,0 ' }],
+      [`${drives}\\Y\\DefaultLabel`]: [{ name: 'Other', kind: 'sz', text: 'x' }],
+      [`${drives}\\Y\\DefaultIcon`]: [{ name: '', kind: 'binary' }],
+    });
+    const labels = registryLetterLabels('HKCU', registry, null);
+    expect(await labels.read('X')).toEqual({ label: 'Bulwark Files', icon: 'C:\\a b\\bulwark.ico,0' });
+    expect(await labels.read('Y')).toEqual({ label: null, icon: null });
+    expect(await labels.read('Z')).toEqual({ label: null, icon: null });
+    expect(await registryLetterLabels('HKCU', null, null).read('X')).toEqual({ label: null, icon: null });
+  });
+
+  test('a letter\'s labels are written as default values, and its key goes only when nothing else is in it', async () => {
+    const drives = 'HKCU\\Software\\Classes\\Applications\\Explorer.exe\\Drives';
+    const registry = fakeRegistry({ [`${drives}\\Q\\Other`]: [] });
+    const labels = registryLetterLabels('HKCU', registry, null);
+    expect(await labels.write('P', { label: 'Bulwark Files', icon: 'i.ico,0' })).toBe(true);
+    expect(await labels.write('Q', { label: 'Bulwark Files', icon: 'i.ico,0' })).toBe(true);
+    expect(registry.read(`${drives}\\P\\DefaultLabel`)?.[0].values).toEqual([{ name: '', kind: 'sz', text: 'Bulwark Files' }]);
+    await labels.remove('P');
+    await labels.remove('Q');
+    expect(registry.read(`${drives}\\P`)).toBeNull();
+    expect(registry.read(`${drives}\\Q`)?.[0].subkeys).toEqual(['Other']);
+    expect(await registryLetterLabels('HKCU', null, null).write('P', { label: 'a', icon: 'b' })).toBe(false);
   });
 });

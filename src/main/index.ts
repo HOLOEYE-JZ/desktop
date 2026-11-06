@@ -53,7 +53,7 @@ import { strings, uiLanguageNow, unsentDetail } from './strings';
 import { checkInstance } from './instance-check';
 import { useWelcomeMenu } from './welcome-menu';
 import { changeConnectionUrl, loadErrorPage, noteLoadErrorPage, retryTarget, showsLoadError } from './load-error';
-import { leaveLaunchFolder } from './system-exe';
+import { leaveLaunchFolder } from './launch-folder';
 import { ThemeController } from './theme';
 import { WindowManager } from './windows';
 import { ZoomController } from './zoom';
@@ -95,7 +95,7 @@ if (asksForUninstallCleanup(process.argv)) {
   const allowed = process.platform === 'win32' && (!__BULWARK_TEST_BUILD__ || root !== 'HKCU');
   if (allowed) {
     const local = __BULWARK_TEST_BUILD__ ? argValue('bulwark-test-local-dir') ?? null : process.env.LOCALAPPDATA ?? null;
-    await uninstallCleanup({ root, exe: process.execPath, sendTo: sendToFolder(), local }).catch(() => undefined);
+    await uninstallCleanup({ root, exe: process.execPath, sendTo: sendToFolder(), local }, native().system.registry).catch(() => undefined);
   }
   app.exit(allowed || process.platform !== 'win32' ? 0 : 1);
   await new Promise(() => {});
@@ -123,7 +123,7 @@ const userDataArg = __BULWARK_TEST_BUILD__ && DEV ? argValue('bulwark-user-data'
 if (userDataArg) app.setPath('userData', userDataArg);
 if (__BULWARK_TEST_PROFILE__) app.setPath('userData', __BULWARK_TEST_PROFILE__);
 
-// Before anything can run a program: see system-exe.ts.
+// Before anything can run a program: see launch-folder.ts.
 leaveLaunchFolder(app.getPath('userData'));
 
 app.setName('Bulwark');
