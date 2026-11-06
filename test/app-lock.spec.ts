@@ -308,7 +308,7 @@ test.describe('through the real preload and IPC', () => {
       await call(page, 'lock');
       await expect.poll(async () => (await state())['file.unlock']).toBe(true);
       const locked = await state();
-      for (const id of ['file.newMessage', 'file.newWindow', 'file.print', 'file.savePdf', 'file.import', 'view.zoomIn', 'view.refresh', 'edit.search', 'go.inbox', 'message.reply', 'help.shortcuts']) {
+      for (const id of ['file.newMessage', 'file.newWindow', 'file.open', 'file.saveAs', 'file.print', 'file.savePdf', 'file.import', 'view.zoomIn', 'view.refresh', 'edit.search', 'go.inbox', 'message.reply', 'help.shortcuts']) {
         expect(locked[id], id).toBe(false);
       }
       if (process.platform !== 'darwin') expect(locked['file.settings']).toBe(false);

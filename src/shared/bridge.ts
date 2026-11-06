@@ -506,6 +506,26 @@ export type OsCommand =
   /** The tray's "Pause syncing" and "Resume syncing": every drive and synced folder. Older pages ignore it. */
   | { type: 'files-sync'; action: 'pause-all' | 'resume-all' };
 
+/**
+ * File > Save as… and the message's own "Save as…": the page names the files, main asks
+ * where (the OS's Save dialog for one, a folder for several, starting in the folder used
+ * last), and the page then hands over each file's bytes. Only messages so far: each is
+ * written as an .eml, whatever the name says.
+ */
+export interface SaveAsRequest {
+  kind: 'message';
+  /** One per file, in the order the bytes come. A name only: main makes it safe. */
+  names: string[];
+}
+
+/** `id` for `write` and `end`. Refused: no click or menu pick just before, the organisation's policy, the app lock. */
+export type SaveAsBegin = { id: string } | { cancelled: true } | { refused: 'gesture' | 'policy' | 'locked' | 'invalid' };
+
+export interface SaveAsResult {
+  saved: number;
+  failed: number;
+}
+
 /** The page's `os.onCommand` options. `messageFileWindows`: it opens an .eml in a window of its own. */
 export interface OsCommandOptions {
   messageFileWindows?: boolean;
@@ -1021,6 +1041,9 @@ export const CHANNEL = {
   osCopyFiles: 'bulwark:os.copyFiles',
   osDefaultAppStatus: 'bulwark:os.defaultAppStatus',
   osDefaultAppOpen: 'bulwark:os.defaultAppOpen',
+  saveAsBegin: 'bulwark:saveAs.begin',
+  saveAsWrite: 'bulwark:saveAs.write',
+  saveAsEnd: 'bulwark:saveAs.end',
   editBegin: 'bulwark:edit.begin',
   editOpen: 'bulwark:edit.open',
   editReopen: 'bulwark:edit.reopen',

@@ -22,6 +22,7 @@ import { setupPower } from './os-power';
 import { setupQuickCompose } from './os-quick-compose';
 import { setupRecentFiles } from './os-recent';
 import { setupResilience } from './os-resilience';
+import { setupSaveOpen } from './os-save-open';
 import { setupTaskbar } from './os-taskbar';
 import { setupToasts } from './os-toasts';
 import { closesToBackground, pageSetPause, settingsAllowedWithoutClick } from './os-rules';
@@ -110,6 +111,7 @@ function setup(ctx: FeatureContext): void {
     driveOn: driveHooks().running?.() ?? false,
   }));
   const launch = setupLaunch(hub);
+  const saveOpen = setupSaveOpen(hub, launch);
   const defaultApp = setupDefaultApp(hub);
   const files = setupFiles(path.join(ICONS, 'tray-dark-32.png'));
   const edit = setupEdit(hub);
@@ -164,6 +166,7 @@ function setup(ctx: FeatureContext): void {
       taskbar,
       toasts,
       launch,
+      saveOpen,
       defaultApp,
       files,
       edit,

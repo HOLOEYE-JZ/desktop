@@ -110,6 +110,9 @@ export interface ShellState {
    * it was chosen in. Gone at that account's sign-out, and all of them at the last one.
    */
   certificateChoices?: Record<string, { fingerprint: string; account?: string }>;
+  /** Where File > Save as… and File > Open… last were: the next dialog starts there. */
+  saveAsFolder?: string;
+  openFolder?: string;
   /** Local imports under way: paths the user confirmed, so one can go on after a restart. */
   importJobs?: StoredImportJob[];
   /** The Files drive: the accounts the user turned it on for, and the letter they chose. */

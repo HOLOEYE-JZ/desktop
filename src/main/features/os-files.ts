@@ -74,9 +74,12 @@ function copyToClipboard(paths: string[]): Promise<boolean> {
   });
 }
 
-/** Marked as coming from outside, as a browser's download is. Off NTFS there's nowhere to put the mark. */
-export async function writeMarkedFile(target: string, data: Uint8Array): Promise<void> {
-  await writeFile(target, data, { mode: 0o600 });
+/**
+ * Marked as coming from outside, as a browser's download is. Off NTFS there's nowhere to put the mark.
+ * `exclusive`: fails with EEXIST rather than overwrite what's there.
+ */
+export async function writeMarkedFile(target: string, data: Uint8Array, options: { exclusive?: boolean } = {}): Promise<void> {
+  await writeFile(target, data, { mode: 0o600, flag: options.exclusive ? 'wx' : 'w' });
   if (process.platform === 'win32') {
     await writeFile(`${target}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n').catch(() => {});
   }
