@@ -63,6 +63,9 @@ import {
   type PrivacyState,
   type RecentFileAttachResult,
   type RecentFilesResult,
+  type SaveAsBegin,
+  type SaveAsRequest,
+  type SaveAsResult,
   type DevToolsState,
   type FilesChangeEvent,
   type FilesControls,
@@ -376,6 +379,17 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
       setSource: (id: string, source: string) => ipcRenderer.send(CHANNEL.editSetSource, id, source),
       claim: (id: string, on: boolean) => ipcRenderer.send(CHANNEL.editClaim, id, on),
       onChange: (listener: (sessions: EditSession[]) => void) => subscribe(CHANNEL.editChanged, listener),
+    },
+    saveAs: {
+      /**
+       * File > Save as… and the message's "Save as…": asks where, natively, starting in the folder
+       * used last. Main wants a click or menu pick of its own just before, and says no under the
+       * organisation's "no exporting mail" and the app lock.
+       */
+      begin: (request: SaveAsRequest): Promise<SaveAsBegin> => ipcRenderer.invoke(CHANNEL.saveAsBegin, request, clicked()),
+      /** The bytes of file `index` of the request. False when it couldn't be written. */
+      write: (id: string, index: number, data: Uint8Array): Promise<boolean> => ipcRenderer.invoke(CHANNEL.saveAsWrite, id, index, data),
+      end: (id: string): Promise<SaveAsResult> => ipcRenderer.invoke(CHANNEL.saveAsEnd, id),
     },
     recentFiles: {
       /** Main wants a click or key press of its own for each: a script alone gets `gesture`. */

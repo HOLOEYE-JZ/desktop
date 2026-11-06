@@ -108,6 +108,8 @@ async function readFiles(files: readonly string[], sendTo: boolean): Promise<Fil
 
 export interface LaunchHandle {
   handle: (argv: string[], cwd: string) => Promise<number>;
+  /** File > Open…: the files picked go exactly where "Open with" from Explorer sends them. */
+  openFiles: (files: string[]) => void;
 }
 
 export function setupLaunch(hub: OsHub): LaunchHandle {
@@ -149,6 +151,13 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   };
   for (const { argv, cwd } of early.launches.splice(0)) liveSecondLaunch(argv, cwd);
 
+  // A second launch with these files on its command line, as Explorer's "Open with" makes one.
+  const openFiles = (files: string[]) => {
+    const request: LaunchRequest = { commands: [], links: [], files, fromLogin: false, toastUrls: [], sendTo: false };
+    if (!launchOpensOwnWindow(request, hub.messageFileWindows)) hub.ctx.showMain();
+    void run(request);
+  };
+
   const first = parseArgv(process.argv, { cwd: launchFolder(), skip });
   const wasAtLogin = process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin;
   for (const url of early.urls) {
@@ -166,5 +175,5 @@ export function setupLaunch(hub: OsHub): LaunchHandle {
   if (staysHidden(first) && hub.settings().closeToTray) hub.ctx.windows.startMainHidden();
   void run(first);
 
-  return { handle };
+  return { handle, openFiles };
 }

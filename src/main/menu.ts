@@ -35,6 +35,8 @@ export interface MenuHooks {
   print: (window: BrowserWindow) => void;
   saveAsPdf: (window: BrowserWindow) => void;
   back: (window: BrowserWindow, direction: 1 | -1) => void;
+  /** File > Open…: the OS's open dialog, then what "Open with" does with the files. Set by the os feature. */
+  open?: (window: BrowserWindow) => void;
 }
 
 /** Features add their own lines, such as "Restart to update". */
@@ -54,7 +56,8 @@ const MAIN_WINDOW_COMMANDS = new Set(['file.newEvent', 'file.newContact', 'file.
 const FIND_KEY_ID = 'edit.forwardOrSearch';
 
 /** Commands whose page action opens a file picker, which needs a user gesture in the page. */
-const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import', 'file.uploadFiles']);
+// Save as… asks main for its dialog (os-save-open.ts), which wants a gesture of main's own as well.
+const GESTURE_COMMANDS = new Set(['compose.attach', 'file.import', 'file.uploadFiles', 'file.saveAs']);
 
 /** The part of the app the window shows, as its page reports it. Mail when it says nothing. */
 export type AppSection = 'mail' | 'calendar' | 'contacts' | 'files' | 'settings';
@@ -124,6 +127,12 @@ export class MenuController {
     this.hooks.switchMode = switchMode;
     this.hooks.switchModeNow = switchMode ? switchModeNow : undefined;
     this.rebuild();
+  }
+
+  /** File > Open…, once the os feature can take the files. */
+  allowOpening(open: (window: BrowserWindow) => void): void {
+    this.hooks.open = open;
+    this.scheduleRebuild();
   }
 
   /** The page asked and the answer was Change. False where switching isn't allowed. */
@@ -376,6 +385,21 @@ export class MenuController {
         ] : []),
         ...(this.extensions.get('new') ?? []).flatMap((extension) => extension()),
         { id: 'file.newWindow', label: text.menuNewWindow, accelerator: 'CmdOrCtrl+Shift+N', enabled: !!windows, click: hooks.newWindow },
+        { type: 'separator' },
+        // Thunderbird's File menu: a saved message (or an event or contact file) opens as
+        // "Open with" opens it from Explorer, and the message on screen saves as an .eml.
+        {
+          id: 'file.open',
+          label: text.menuOpen,
+          accelerator: 'CmdOrCtrl+O',
+          enabled: !!windows && !!hooks.open,
+          click: () => {
+            const window = focused() ?? windows?.mainWindow();
+            if (window) hooks.open?.(window);
+          },
+        },
+        // Ctrl+S is the composer's Save draft while one is open, so Save as has no key then.
+        ...(mail ? [this.command('file.saveAs', text.menuSaveAs, composing ? {} : { accelerator: 'CmdOrCtrl+S' })] : []),
         { type: 'separator' },
         // Files has nothing to print: a list of names would be all.
         {
