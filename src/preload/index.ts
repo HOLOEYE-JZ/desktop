@@ -32,6 +32,8 @@ import {
   type ConfirmOptions,
   type DialogWindowAnswer,
   type DialogWindowRequest,
+  type PrintPreviewOutcome,
+  type PrintPreviewRequest,
   type FlushAnswer,
   type LanguagesUpdate,
   type MenuBarEntry,
@@ -280,6 +282,18 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
        * once the page has drawn its dialog into it. False when there is no such window.
        */
       showWindow: (name: string): Promise<boolean> => ipcRenderer.invoke(CHANNEL.dialogsShowWindow, name),
+    },
+    print: {
+      /**
+       * The shell's print preview over this window: this page, a print window it opened as
+       * `window.open('', 'bulwark-print-…')` (hidden by main), or a PDF. Resolves when it closes.
+       */
+      preview: (request: PrintPreviewRequest): Promise<PrintPreviewOutcome> => ipcRenderer.invoke(CHANNEL.printPreview, request),
+      /** File > Print and Ctrl+P ask the page to run its own Print, instead of printing it as it stands. */
+      onRequest: (listener: () => void) => {
+        ipcRenderer.send(CHANNEL.printListen);
+        return subscribe(CHANNEL.printRequested, listener);
+      },
     },
     clipboard: {
       /** Puts a file on the clipboard, for pasting into a folder. False when that didn't work. */

@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { Mode, OsSettings, ThemeColours, UpdateChannel, WindowType } from '../shared/bridge';
 import type { StoredDrive } from './files/drive-controller';
+import type { PrintMemory } from './print-rules';
 
 export interface StoredBounds {
   x: number;
@@ -116,6 +117,8 @@ export interface ShellState {
   importJobs?: StoredImportJob[];
   /** The Files drive: the accounts the user turned it on for, and the letter they chose. */
   filesDrive?: StoredDrive;
+  /** The print preview's last destination and the choices per destination (print-rules.ts). */
+  print?: PrintMemory;
 }
 
 const EMPTY: ShellState = { approvedServers: [], corsOrigins: [], windowBounds: {}, overlayByOrigin: {} };
