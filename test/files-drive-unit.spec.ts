@@ -12,6 +12,7 @@ import {
   displayNameFor,
   filesErrorOf,
   folderNameFor,
+  driveBase,
   freeLetters,
   letterTarget,
   nativeStatusOf,
@@ -655,4 +656,11 @@ test.describe("the drive letter's name and icon in This PC", () => {
     expect(registry.read(`${drives}\\Q`)?.[0].subkeys).toEqual(['Other']);
     expect(await registryLetterLabels('HKCU', null, null).write('P', { label: 'a', icon: 'b' })).toBe(false);
   });
+});
+
+test("a test build keeps its drive in its own profile, never in the user's Bulwark Files", () => {
+  const where = { profile: 'C:\\Temp\\test-profile', home: 'C:\\Users\\someone' };
+  expect(driveBase({ ...where, chosen: null, testBuild: true })).toBe(path.join(where.profile, 'Bulwark Files'));
+  expect(driveBase({ ...where, chosen: null, testBuild: false })).toBe(path.join(where.home, 'Bulwark Files'));
+  expect(driveBase({ ...where, chosen: 'C:\\elsewhere', testBuild: true })).toBe('C:\\elsewhere');
 });

@@ -16,6 +16,16 @@ export const DRIVE_PROVIDER = 'Bulwark';
 export const DRIVE_FOLDER = 'Bulwark Files';
 export const DRIVE_NAME = 'Bulwark Files';
 
+/**
+ * The folder the accounts' sync roots go in. A test build keeps it in its own profile: in the
+ * user's `Bulwark Files` it would take over the installed app's folders, and its drive letter
+ * with them, which a test run then removes.
+ */
+export function driveBase(o: { chosen: string | null | undefined; testBuild: boolean; profile: string; home: string }): string {
+  if (o.chosen) return o.chosen;
+  return path.join(o.testBuild ? o.profile : o.home, DRIVE_FOLDER);
+}
+
 /** The account part of a sync root's id: never the address, and different per profile. */
 export function accountKey(profile: string, account: string): string {
   return createHash('sha256').update(`${profile}\0${account}`).digest('hex').slice(0, 24);
