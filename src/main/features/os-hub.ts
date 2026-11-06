@@ -181,7 +181,11 @@ export class OsHub extends EventEmitter<{
   toastAction(action: string, context: string, reply?: string): void {
     // An old toast's Delete must not act behind the lock. The lock screen is what opens.
     if (this.locked) {
-      this.ctx.showMain();
+      // Starting, main hasn't heard from a page yet. A button leaves the window to the start, in
+      // the tray or not: asking for it would win over a start in the tray. A click, or a lock
+      // that's real, brings it up.
+      const starting = !this.lockIsReal && !this.ctx.windows.mainWindow();
+      if (!starting || action === 'open' || action === 'reply') this.ctx.showMain();
       return;
     }
     if (action === 'open' || action === 'reply') this.dispatch({ type: 'notification', action, context, reply });
@@ -231,8 +235,8 @@ export class OsHub extends EventEmitter<{
     if (options.show && !ownWindow) {
       this.ctx.showMain();
     } else if (!windows.mainWindow()) {
-      windows.startMainHidden();
-      this.ctx.showMain();
+      // Not a wish to see it: while the app starts, that would win over a start in the tray.
+      this.ctx.showMain({ hidden: true });
     }
   }
 }

@@ -44,8 +44,8 @@ export interface FeatureContext {
   /** Standalone only. */
   servers?: ServerRegistry;
   localAdmin?: LocalAdmin;
-  /** The main window, made if it's gone. */
-  showMain: () => void;
+  /** The main window, made if it's gone. `hidden`: made for the page's sake, and left in the tray. */
+  showMain: (options?: { hidden?: boolean }) => void;
   /** Opens a bulwark:// link in its window, once someone is signed in. */
   openLink: (link: WindowLink) => void;
   /** A request-reply channel, callable only from the app's own main frames. */
