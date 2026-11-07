@@ -6,44 +6,44 @@
 
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
-import { createServer, type Server, type Socket } from 'node:net';
 import path from 'node:path';
 import { app, utilityProcess, type UtilityProcess } from 'electron';
-import type { HostEvent, InitMessage, MainErrorMessage, PrivacyMessage } from '../server/protocol';
-import { lifelinePath } from '../server/lifeline';
+import type { InitMessage, MainErrorMessage, PrivacyMessage } from '../server/protocol';
+import { isFileSocket, LifelineGate, lifelinePath, removeStaleLifelines, serveLifeline } from '../server/lifeline';
+import { PARENT_PID_SWITCH, SERVER_ROOT_SWITCH } from '../server/parent-watch';
+import { ServerStartError, watchStart } from './server-start-watch';
 
+export { ServerStartError };
+
+/** From the init message on: reading the secrets before it can take as long as the user does. */
 const READY_TIMEOUT_MS = 90_000;
 
-let lifelineServer: { server: Server; path: string; sockets: Set<Socket> } | null = null;
-
+/** One connection per server process spawned (src/server/lifeline.ts). */
+const lifelineGate = new LifelineGate();
+let lifelinePending: Promise<string | null> | null = null;
 
 /**
  * The servers' lifeline: a local socket main listens on and every server process connects to.
  * Nothing goes over it. When main ends, however it ends, the OS closes main's side, and the
- * server sees its connection close and exits (src/server/host.ts). Resolves to null if it
- * can't listen; the host then checks main's pid on a timer as before.
+ * server sees its connection close and exits (src/server/parent-watch.ts). Resolves to null if
+ * it can't listen; the host then checks main's pid on a timer.
  */
 export function lifeline(): Promise<string | null> {
-  if (lifelineServer) return Promise.resolve(lifelineServer.path);
+  lifelinePending ??= openLifeline();
+  return lifelinePending;
+}
+
+async function openLifeline(): Promise<string | null> {
   const where = lifelinePath(process.platform, randomBytes(12).toString('hex'));
-  const sockets = new Set<Socket>();
-  const server = createServer((socket) => {
-    sockets.add(socket);
-    socket.on('data', () => {});
-    socket.on('error', () => {});
-    socket.on('close', () => sockets.delete(socket));
+  // A socket file left by a run that crashed: gone, if nothing answers on it.
+  if (isFileSocket(where)) await removeStaleLifelines(path.dirname(where)).catch(() => {});
+  const server = await serveLifeline(where, lifelineGate);
+  if (!server) return null;
+  app.once('will-quit', () => {
+    server.close();
+    if (isFileSocket(where)) rmSync(where, { force: true });
   });
-  return new Promise((resolve) => {
-    server.once('error', () => resolve(null));
-    server.listen(where, () => {
-      lifelineServer = { server, path: where, sockets };
-      app.once('will-quit', () => {
-        server.close();
-        if (process.platform === 'darwin') rmSync(where, { force: true });
-      });
-      resolve(where);
-    });
-  });
+  return where;
 }
 
 export interface ServerProcessOptions {
@@ -71,22 +71,13 @@ export interface ServerProcess {
   stop(): void;
 }
 
-export class ServerStartError extends Error {
-  constructor(
-    message: string,
-    readonly code?: string,
-  ) {
-    super(message);
-    this.name = 'ServerStartError';
-  }
-}
-
 export function startServerProcess(options: ServerProcessOptions): ServerProcess {
   mkdirSync(options.logDir, { recursive: true });
   const log = createWriteStream(path.join(options.logDir, 'server.log'), { flags: options.append ? 'a' : 'w' });
 
-  // The folder only, so the host can load Next before init comes; everything secret goes by message.
-  const child = utilityProcess.fork(options.hostScript, [`--server-root=${options.serverDir}`], {
+  // The folder and main's pid only, so the host can load Next and watch main before init
+  // comes; everything secret goes by message.
+  const child = utilityProcess.fork(options.hostScript, [`${SERVER_ROOT_SWITCH}${options.serverDir}`, `${PARENT_PID_SWITCH}${process.pid}`], {
     serviceName: 'Bulwark mail service',
     // A real folder, whatever serverDir is: an asar can't be a working directory. host.ts
     // makes process.cwd() answer serverDir.
@@ -97,34 +88,13 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
   child.stdout?.pipe(log, { end: false });
   child.stderr?.pipe(log, { end: false });
 
-  let listened: () => void = () => {};
-  const listening = new Promise<void>((resolve) => {
-    listened = resolve;
+  lifelineGate.grant();
+  const { listening, ready } = watchStart(child, {
+    init: options.init,
+    lifeline,
+    timeoutMs: READY_TIMEOUT_MS,
+    log: (line) => log.write(line),
   });
-  const ready = new Promise<{ systemCertificates: number; caError?: string }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new ServerStartError('The server did not report ready.')), READY_TIMEOUT_MS);
-    child.on('message', (event: HostEvent) => {
-      if (event.type === 'listening') {
-        listened();
-      } else if (event.type === 'ready') {
-        listened();
-        clearTimeout(timer);
-        resolve({ systemCertificates: event.systemCertificates, caError: event.caError });
-      } else if (event.type === 'fatal') {
-        clearTimeout(timer);
-        log.write(`fatal: ${event.error}\n`);
-        reject(new ServerStartError(event.error, event.code));
-      } else if (event.type === 'log') {
-        log.write(`${event.level}: ${event.message}\n`);
-      }
-    });
-    child.once('exit', (code) => {
-      clearTimeout(timer);
-      reject(new ServerStartError(`The server exited with code ${code}.`));
-    });
-  });
-
-  child.once('spawn', () => void Promise.all([options.init, lifeline()]).then(([init, line]) => child.postMessage(line ? { ...init, lifeline: line } : init)).catch(() => {}));
 
   let stopped = false;
   const stop = () => {
@@ -140,8 +110,7 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
   return {
     process: child,
     stopped: () => stopped,
-    // Whatever ends the start before the port listens ends this too.
-    listening: Promise.race([listening, ready.then(() => undefined)]),
+    listening,
     ready,
     sendTrusted: (origins) => child.postMessage({ type: 'trusted', origins }),
     sendPrivacy: (privacy) => child.postMessage({ type: 'privacy', privacy }),
