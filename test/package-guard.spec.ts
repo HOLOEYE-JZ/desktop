@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, lstatSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -433,6 +433,36 @@ test.describe('loose files', () => {
     mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
     writeFileSync(path.join(root, relative), text);
   };
+
+  // A worktree's ./webmail is often a link to a build several checkouts share.
+  test('packing a linked server folder leaves the folder it points at as it was', async () => {
+    const project = dir();
+    try {
+      const real = path.join(project, 'shared-webmail');
+      for (const file of ['server.js', 'package.json', '.next/required-server-files.json', 'node_modules/next/dist/server.js', 'node_modules/esbuild/index.js', 'node_modules/caniuse-lite/data.js']) {
+        put(real, file, file.endsWith('.json') ? '{}' : `// ${file}`);
+      }
+      const source = path.join(project, 'webmail');
+      symlinkSync(real, source, process.platform === 'win32' ? 'junction' : 'dir');
+      const { buildServerArchive } = await import('../scripts/server-archive.mjs');
+      const { dir: out, trim } = await buildServerArchive({ projectDir: project, platform: 'linux', arch: 'x64', source });
+      // The trim took them out of the package...
+      expect(trim.removed.sort()).toEqual(['caniuse-lite', 'esbuild']);
+      expect(asarFiles(path.join(out, 'server.asar'))).not.toContain('node_modules/esbuild/index.js');
+      // ...and not out of the shared folder.
+      expect(existsSync(path.join(real, 'node_modules', 'esbuild', 'index.js'))).toBe(true);
+      expect(existsSync(path.join(real, 'node_modules', 'caniuse-lite', 'data.js'))).toBe(true);
+      expect(lstatSync(source).isSymbolicLink()).toBe(true);
+    } finally {
+      // The link only, never what it points at.
+      try {
+        unlinkSync(path.join(project, 'webmail'));
+      } catch {
+        rmdirSync(path.join(project, 'webmail'));
+      }
+      rmSync(project, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
 
   // A small server tree packed as before-pack packs the real one.
   test('the server archive keeps only native modules out of the asar', async () => {

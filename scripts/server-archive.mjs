@@ -14,7 +14,7 @@
 //                                                    extraResources whatever the filter says
 
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { guardPackage } from './package-guard.mjs';
@@ -36,8 +36,10 @@ export async function buildServerArchive({ projectDir, platform, arch, source = 
   rmSync(out, { recursive: true, force: true });
   const tree = path.join(out, 'tree');
   mkdirSync(out, { recursive: true });
-  // No `dereference`: a link has to reach the guard as a link, not as what it points at.
-  cpSync(source, tree, { recursive: true, verbatimSymlinks: true });
+  // No `dereference`: a link has to reach the guard as a link, not as what it points at. The
+  // folder itself may be a link (a worktree's ./webmail): copied as one, the trim, the guard's
+  // rewrites and the code cache would change the folder it points at.
+  cpSync(realpathSync(source), tree, { recursive: true, verbatimSymlinks: true });
 
   const trim = trimServer(tree, platform, arch);
   guardPackage(tree);
