@@ -68,14 +68,8 @@ import { showMessageBox } from '../message-box';
 declare const __BULWARK_TEST_BUILD__: boolean;
 declare const __BULWARK_ADDON_PINS__: AddonPins;
 
-/**
- * A value written with `reg add`, by an installer or an MDM's registry CSP fires no event, and
- * no watcher sees /etc/bulwark or a policy key appear where there was none. Group Policy, a
- * macOS profile and an existing /etc/bulwark do fire one, at once. This catches the rest, and
- * is the only timer an idle app's main process has: every 15 minutes, as the webmail refetches
- * its own policy, and well inside Windows' 90-minute Group Policy refresh and an MDM's check-in.
- */
-const POLL_MS = 15 * 60_000;
+/** A value written with `reg add` or by an installer fires no event. Group Policy does. */
+const POLL_MS = 2 * 60_000;
 const MAX_REMEMBERED_WIPES = 32;
 const RESTART_ASK_MS = 15 * 60_000;
 const RESTART_DEADLINE_MS = 60 * 60_000;
