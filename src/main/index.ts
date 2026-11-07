@@ -487,9 +487,10 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   registerBridge(ctx, { origin: APP_ORIGIN, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
+  // The window opens once the port listens: it starts its renderer and sends its first request
+  // while Next is still loading, and the host holds that request until Next can answer it.
   try {
-    const ready = await server.ready;
-    if (ready.caError) console.warn('System certificates are not in use:', ready.caError);
+    await server.listening;
   } catch (error) {
     // Only a port someone took between the probe and now can be fixed by trying again.
     if (error instanceof ServerStartError && error.code === 'EADDRINUSE' && !process.argv.includes('--port-retry')) {
@@ -500,6 +501,28 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     console.error(error);
     const text = strings();
     await showErrorPage(text.errorServerTitle, text.errorServerBody);
+    return;
+  }
+
+  windows.on('created', ({ window }) => watchForReplacedCertificate(window));
+  mainWindowAllowed = true;
+  // Once: the first screen's address fills the sign-in page, and only on this start.
+  const email = welcomeEmail;
+  welcomeEmail = null;
+  windows.open({ type: 'main', url: firstPageUrl(APP_ORIGIN, email) });
+
+  try {
+    const ready = await server.ready;
+    if (ready.caError) console.warn('System certificates are not in use:', ready.caError);
+  } catch (error) {
+    console.error(error);
+    // As before the window opened early: the error page, and no window waiting on a server
+    // that isn't coming. The error page first, so the app doesn't quit with its last window.
+    const text = strings();
+    const shown = showErrorPage(text.errorServerTitle, text.errorServerBody);
+    mainWindowAllowed = false;
+    for (const managed of windows.all()) if (!managed.window.isDestroyed()) managed.window.destroy();
+    await shown;
     return;
   }
 
@@ -518,13 +541,6 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     });
   };
   watch();
-
-  windows.on('created', ({ window }) => watchForReplacedCertificate(window));
-  mainWindowAllowed = true;
-  // Once: the first screen's address fills the sign-in page, and only on this start.
-  const email = welcomeEmail;
-  welcomeEmail = null;
-  windows.open({ type: 'main', url: firstPageUrl(APP_ORIGIN, email) });
 }
 
 async function bootInstance(instanceUrl: string, theme: ThemeController): Promise<void> {

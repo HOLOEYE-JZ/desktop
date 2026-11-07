@@ -16,6 +16,7 @@ import { createServer } from 'node:https';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
+import { HeldRequests } from './held-requests';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
 import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, normalizeStack, type HostMessage, type InitMessage, type MainErrorMessage, type PrivacyMessage } from './protocol';
 import { isAdminLogin, isImageOptimizer, sanitizeRequest } from './sanitize';
@@ -123,12 +124,7 @@ async function start(init: InitMessage): Promise<void> {
   const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
   process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(config);
 
-  const requireFromServer = createRequire(path.join(serverDir, 'server.js'));
-  const next = requireFromServer('next');
-  const app = next({ dev: false, dir: serverDir, hostname: APP_HOST, port: 443, quiet: true, conf: config });
-  await app.prepare();
-  const handle = app.getRequestHandler();
-
+  const pages = new HeldRequests();
   const secret = Buffer.from(init.launchSecret);
   const mainSecret = Buffer.from(init.mainSecret);
   const server = createServer({ key: init.tls.key, cert: init.tls.cert }, (req: IncomingMessage, res: ServerResponse) => {
@@ -153,13 +149,32 @@ async function start(init: InitMessage): Promise<void> {
       void forwardJmap(req, res, isTrusted);
       return;
     }
-    void handle(req, res);
+    pages.handle(req, res);
   });
 
   // The same as the generated server.js.
   server.keepAliveTimeout = 65_000;
-  server.once('error', (error: NodeJS.ErrnoException) => send({ type: 'fatal', code: error.code, error: error.message }));
-  server.listen(init.port, '127.0.0.1', () => send({ type: 'ready', systemCertificates: ca.added, caError: ca.error }));
+  const listening = new Promise<boolean>((resolve) => {
+    server.once('error', (error: NodeJS.ErrnoException) => {
+      send({ type: 'fatal', code: error.code, error: error.message });
+      resolve(false);
+    });
+    server.listen(init.port, '127.0.0.1', () => resolve(true));
+  });
+  if (!(await listening)) return;
+  send({ type: 'listening' });
+
+  try {
+    const requireFromServer = createRequire(path.join(serverDir, 'server.js'));
+    const next = requireFromServer('next');
+    const app = next({ dev: false, dir: serverDir, hostname: APP_HOST, port: 443, quiet: true, conf: config });
+    await app.prepare();
+    pages.open(app.getRequestHandler());
+  } catch (error) {
+    pages.fail();
+    throw error;
+  }
+  send({ type: 'ready', systemCertificates: ca.added, caError: ca.error });
 }
 
 process.on('uncaughtException', (error) => {

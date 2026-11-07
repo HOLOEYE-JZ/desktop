@@ -64,6 +64,8 @@ export interface ServerPolicyMessage {
 export type HostMessage = InitMessage | TrustedMessage | ServerPolicyMessage | PrivacyMessage | MainErrorMessage;
 
 export type HostEvent =
+  /** The port takes requests; page requests wait until Next has loaded. */
+  | { type: 'listening' }
   | { type: 'ready'; systemCertificates: number; caError?: string }
   | { type: 'fatal'; code?: string; error: string }
   | { type: 'log'; level: string; message: string };

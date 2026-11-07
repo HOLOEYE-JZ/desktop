@@ -25,6 +25,8 @@ export interface ServerProcess {
   process: UtilityProcess;
   /** True once stop() was called: an exit after that is expected. */
   stopped(): boolean;
+  /** The port takes requests. Page requests wait in the host until `ready`. */
+  listening: Promise<void>;
   ready: Promise<{ systemCertificates: number; caError?: string }>;
   sendTrusted(origins: string[]): void;
   sendPrivacy(privacy: PrivacyMessage['privacy']): void;
@@ -58,10 +60,17 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
   child.stdout?.pipe(log, { end: false });
   child.stderr?.pipe(log, { end: false });
 
+  let listened: () => void = () => {};
+  const listening = new Promise<void>((resolve) => {
+    listened = resolve;
+  });
   const ready = new Promise<{ systemCertificates: number; caError?: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new ServerStartError('The server did not report ready.')), READY_TIMEOUT_MS);
     child.on('message', (event: HostEvent) => {
-      if (event.type === 'ready') {
+      if (event.type === 'listening') {
+        listened();
+      } else if (event.type === 'ready') {
+        listened();
         clearTimeout(timer);
         resolve({ systemCertificates: event.systemCertificates, caError: event.caError });
       } else if (event.type === 'fatal') {
@@ -94,6 +103,8 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
   return {
     process: child,
     stopped: () => stopped,
+    // Whatever ends the start before the port listens ends this too.
+    listening: Promise.race([listening, ready.then(() => undefined)]),
     ready,
     sendTrusted: (origins) => child.postMessage({ type: 'trusted', origins }),
     sendPrivacy: (privacy) => child.postMessage({ type: 'privacy', privacy }),
