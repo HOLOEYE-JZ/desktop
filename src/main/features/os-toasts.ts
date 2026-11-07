@@ -12,7 +12,7 @@
 
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { app, BrowserWindow, Notification } from 'electron';
+import { app, BrowserWindow, clipboard, Notification } from 'electron';
 import type { OsNotification, OsNotifyResult } from '../../shared/bridge';
 import { LinkRateLimit } from '../deep-link';
 import { native } from '../native';
@@ -126,6 +126,7 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
   };
 
   const onActivation = (action: string, context: string, reply?: string) => hub.toastAction(action, context, reply);
+  hub.copyText = (value) => clipboard.writeText(value);
 
   if (win32) {
     Notification.handleActivation((details) => {

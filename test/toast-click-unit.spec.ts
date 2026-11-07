@@ -101,4 +101,27 @@ test.describe('a toast action reaching the hub', () => {
     locked.os.toastAction('open', '{}');
     expect(locked.shows).toEqual(['show']);
   });
+
+  test("Copy code puts the code on the clipboard and leaves the window and the page alone; behind the lock it copies nothing", () => {
+    const unlocked = setup(true);
+    const copied: string[] = [];
+    unlocked.os.copyText = (text) => copied.push(text);
+    unlocked.os.subscribe(unlocked.contents as never);
+    unlocked.os.setLockedByPage(false, unlocked.contents as never);
+    unlocked.os.toastAction('copy:177945', '{"emailId":"e1"}');
+    unlocked.os.toastAction('copy:HUK-6QR', '{}');
+    // Not a code: dropped, and not handed to the page either.
+    unlocked.os.toastAction('copy:<script>', '{}');
+    unlocked.os.toastAction('copy:', '{}');
+    expect(copied).toEqual(['177945', 'HUK-6QR']);
+    expect(unlocked.shows).toEqual([]);
+    expect(unlocked.sent).toEqual([]);
+
+    const locked = setup(true);
+    const lockedCopies: string[] = [];
+    locked.os.copyText = (text) => lockedCopies.push(text);
+    locked.os.setLockedByMain(true);
+    locked.os.toastAction('copy:177945', '{}');
+    expect(lockedCopies).toEqual([]);
+  });
 });

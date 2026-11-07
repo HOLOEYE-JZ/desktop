@@ -10,7 +10,7 @@ import type { WebContents } from 'electron';
 import { CHANNEL, type OsCommand, type OsSettings, type OsStatus, type OsSummary, type QuickComposeStatus } from '../../shared/bridge';
 import { LinkRateLimit } from '../deep-link';
 import type { FeatureContext } from './index';
-import { cleanSettingsPatch, currentOsSettings, defaultSettings, onlyMessageFiles } from './os-rules';
+import { cleanSettingsPatch, currentOsSettings, defaultSettings, onlyMessageFiles, toastCopyText } from './os-rules';
 
 const EMPTY_SUMMARY: OsSummary = { unread: [], recent: [], nextEvent: null };
 
@@ -40,6 +40,8 @@ export class OsHub extends EventEmitter<{
   /** Opens the quick composer: os-quick-compose.ts. */
   quickCompose: (() => void) | null = null;
   quickComposeStatus: QuickComposeStatus | undefined;
+  /** Writes to the clipboard, for a toast's copy button: os-toasts.ts. */
+  copyText: ((text: string) => void) | null = null;
   /** Any web page can fire `bulwark://new` in a loop, and each would take the focus. */
   private readonly newMessageLimit = new LinkRateLimit();
 
@@ -186,6 +188,11 @@ export class OsHub extends EventEmitter<{
       // that's real, brings it up.
       const starting = !this.lockIsReal && !this.ctx.windows.mainWindow();
       if (!starting || action === 'open' || action === 'reply') this.ctx.showMain();
+      return;
+    }
+    if (action.startsWith('copy:')) {
+      const text = toastCopyText(action);
+      if (text !== null) this.copyText?.(text);
       return;
     }
     if (action === 'open' || action === 'reply') this.dispatch({ type: 'notification', action, context, reply });

@@ -473,6 +473,20 @@ function xml(raw: string): string {
 }
 
 export const REPLY_INPUT = 'reply';
+const TOAST_COPY_PREFIX = 'copy:';
+const TOAST_COPY_TEXT = /^[\p{L}\p{N}\- ]{1,24}$/u;
+
+/**
+ * A button whose id is `copy:<text>` puts the text on the clipboard and nothing else, such as
+ * the code from a sign-in mail. Main does it, so the window stays where it is.
+ * Only short codes: letters, digits, dashes and spaces.
+ */
+export function toastCopyText(action: string): string | null {
+  if (!action.startsWith(TOAST_COPY_PREFIX)) return null;
+  const text = action.slice(TOAST_COPY_PREFIX.length);
+  return TOAST_COPY_TEXT.test(text) ? text : null;
+}
+
 const TOAST_ARGS_PREFIX = 'bulwark:';
 const TOAST_URL_PREFIX = 'bulwark://toast/';
 
