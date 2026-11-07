@@ -22,6 +22,8 @@ files:
   - dist/**/*
   # Windows reads these itself: they go in resources/os-icons, below.
   - '!dist/os-icons/*.ico'
+  # Makes the server's code cache at package time (scripts/server-archive.mjs); never run by the app.
+  - '!dist/code-cache-gen.cjs'
   - package.json
   # The native helper, per architecture. after-pack.cjs fails without it on Windows and macOS.
   - from: native/dist/${platform}-${arch}

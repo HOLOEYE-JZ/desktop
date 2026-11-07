@@ -16,6 +16,7 @@ import { createServer } from 'node:https';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
+import { useCodeCache } from './code-cache';
 import { HeldRequests } from './held-requests';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
 import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, normalizeStack, type HostMessage, type InitMessage, type MainErrorMessage, type PrivacyMessage } from './protocol';
@@ -164,6 +165,8 @@ async function start(init: InitMessage): Promise<void> {
   if (!(await listening)) return;
   send({ type: 'listening' });
 
+  // Before the first server file loads: Next and the webmail compile from the package's cache.
+  const codeCache = useCodeCache(serverDir);
   try {
     const requireFromServer = createRequire(path.join(serverDir, 'server.js'));
     const next = requireFromServer('next');
@@ -175,6 +178,7 @@ async function start(init: InitMessage): Promise<void> {
     throw error;
   }
   send({ type: 'ready', systemCertificates: ca.added, caError: ca.error });
+  if (codeCache) send({ type: 'log', level: 'info', message: `code cache: ${codeCache.stats.used} used, ${codeCache.stats.rejected} rejected, ${codeCache.stats.compiled} compiled` });
 }
 
 process.on('uncaughtException', (error) => {
