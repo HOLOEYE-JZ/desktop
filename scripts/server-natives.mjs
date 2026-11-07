@@ -45,6 +45,30 @@ function isForeign(name, targets) {
   return match ? !targets.includes(match[1]) : false;
 }
 
+/**
+ * Next's files that only `next build` and `next dev` use, about 13 MB that the standalone trace
+ * takes along anyway: the Babel and CSS tool chains, the font loaders and their 4 MB of font
+ * metrics, the dev overlay and its MCP server, and the page runtimes for Turbopack builds and for
+ * React's experimental channel (the webmail builds with webpack and stable React; the server
+ * picks a runtime by TURBOPACK and __NEXT_EXPERIMENTAL_REACT, which the app never sets). A
+ * started server with every page of the app rendered read none of them.
+ */
+export const NEXT_BUILD_ONLY = [
+  'dist/server/capsize-font-metrics.json',
+  'dist/compiled/babel',
+  'dist/compiled/babel-packages',
+  'dist/compiled/next-devtools',
+  'dist/compiled/@next/font',
+  'dist/compiled/@next/react-refresh-utils',
+  'dist/compiled/@modelcontextprotocol',
+  'dist/compiled/postcss-preset-env',
+  'dist/compiled/cssnano-simple',
+  'dist/compiled/next-server/app-page-turbo.runtime.prod.js',
+  'dist/compiled/next-server/app-page-turbo-experimental.runtime.prod.js',
+  'dist/compiled/next-server/app-page-experimental.runtime.prod.js',
+  'dist/compiled/next-server/pages-turbo.runtime.prod.js',
+];
+
 export function trimServer(server, platform, arch) {
   const modules = path.join(server, 'node_modules');
   const targets = sharpTargets(platform, arch);
@@ -55,6 +79,13 @@ export function trimServer(server, platform, arch) {
   for (const dir of ['esbuild', '@esbuild', 'caniuse-lite']) {
     const full = path.join(modules, dir);
     if (existsSync(full)) bytes += remove(full, removed);
+  }
+  for (const relative of NEXT_BUILD_ONLY) {
+    const full = path.join(modules, 'next', ...relative.split('/'));
+    if (!existsSync(full)) continue;
+    bytes += sizeOf(full);
+    rmSync(full, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    removed.add(`next/${relative}`);
   }
 
   const img = path.join(modules, '@img');

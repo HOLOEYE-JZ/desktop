@@ -701,6 +701,22 @@ test.describe('the server tree per target', () => {
     rmSync(server, { recursive: true, force: true });
   });
 
+  test('Next goes without what only next build and next dev read, and keeps what the server runs', () => {
+    const server = tree(['colour', 'sharp-win32-x64']);
+    const next = path.join(server, 'node_modules', 'next');
+    const keep = ['dist/server/next-server.js', 'dist/compiled/next-server/app-page.runtime.prod.js', 'dist/compiled/next-server/app-route.runtime.prod.js', 'dist/compiled/next-server/pages.runtime.prod.js', 'dist/server/dev/hot-reloader-types.js', 'dist/compiled/@next/other/index.js'];
+    const drop = ['dist/server/capsize-font-metrics.json', 'dist/compiled/babel/bundle.js', 'dist/compiled/next-devtools/index.js', 'dist/compiled/@next/font/dist/fontkit/index.js', 'dist/compiled/next-server/app-page-turbo.runtime.prod.js', 'dist/compiled/next-server/app-page-experimental.runtime.prod.js'];
+    for (const file of [...keep, ...drop]) {
+      mkdirSync(path.dirname(path.join(next, file)), { recursive: true });
+      writeFileSync(path.join(next, file), 'x');
+    }
+    const result = trimServer(server, 'win32', 'x64');
+    for (const file of keep) expect(existsSync(path.join(next, file)), file).toBe(true);
+    for (const file of drop) expect(existsSync(path.join(next, file)), file).toBe(false);
+    expect(result.removed).toContain('next/dist/compiled/babel');
+    rmSync(server, { recursive: true, force: true });
+  });
+
   test('a build for an architecture whose sharp is missing fails, instead of shipping broken', () => {
     const server = tree(['colour', 'sharp-win32-x64']);
     expect(() => trimServer(server, 'win32', 'arm64')).toThrow(/no sharp for win32-arm64/);
