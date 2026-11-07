@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, lstatSync, readdirSync, readFileSync, rmdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -434,6 +434,36 @@ test.describe('loose files', () => {
     writeFileSync(path.join(root, relative), text);
   };
 
+  // A worktree's ./webmail is often a link to a build several checkouts share.
+  test('packing a linked server folder leaves the folder it points at as it was', async () => {
+    const project = dir();
+    try {
+      const real = path.join(project, 'shared-webmail');
+      for (const file of ['server.js', 'package.json', '.next/required-server-files.json', 'node_modules/next/dist/server.js', 'node_modules/esbuild/index.js', 'node_modules/caniuse-lite/data.js']) {
+        put(real, file, file.endsWith('.json') ? '{}' : `// ${file}`);
+      }
+      const source = path.join(project, 'webmail');
+      symlinkSync(real, source, process.platform === 'win32' ? 'junction' : 'dir');
+      const { buildServerArchive } = await import('../scripts/server-archive.mjs');
+      const { dir: out, trim } = await buildServerArchive({ projectDir: project, platform: 'linux', arch: 'x64', source });
+      // The trim took them out of the package...
+      expect(trim.removed.sort()).toEqual(['caniuse-lite', 'esbuild']);
+      expect(asarFiles(path.join(out, 'server.asar'))).not.toContain('node_modules/esbuild/index.js');
+      // ...and not out of the shared folder.
+      expect(existsSync(path.join(real, 'node_modules', 'esbuild', 'index.js'))).toBe(true);
+      expect(existsSync(path.join(real, 'node_modules', 'caniuse-lite', 'data.js'))).toBe(true);
+      expect(lstatSync(source).isSymbolicLink()).toBe(true);
+    } finally {
+      // The link only, never what it points at.
+      try {
+        unlinkSync(path.join(project, 'webmail'));
+      } catch {
+        rmdirSync(path.join(project, 'webmail'));
+      }
+      rmSync(project, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+    }
+  });
+
   // A small server tree packed as before-pack packs the real one.
   test('the server archive keeps only native modules out of the asar', async () => {
     const project = dir();
@@ -668,6 +698,37 @@ test.describe('the server tree per target', () => {
     expect(existsSync(path.join(server, 'node_modules', 'esbuild'))).toBe(false);
     expect(existsSync(path.join(server, 'node_modules', '@esbuild'))).toBe(false);
     expect(result.bytes).toBeGreaterThan(1000);
+    rmSync(server, { recursive: true, force: true });
+  });
+
+  test('Next goes without what only next build and next dev read, and keeps what the server runs', () => {
+    const server = tree(['colour', 'sharp-win32-x64']);
+    const next = path.join(server, 'node_modules', 'next');
+    const keep = ['dist/server/next-server.js', 'dist/compiled/next-server/app-page.runtime.prod.js', 'dist/compiled/next-server/app-route.runtime.prod.js', 'dist/compiled/next-server/pages.runtime.prod.js', 'dist/server/dev/hot-reloader-types.js', 'dist/compiled/@next/other/index.js'];
+    const drop = ['dist/server/capsize-font-metrics.json', 'dist/compiled/babel/bundle.js', 'dist/compiled/next-devtools/index.js', 'dist/compiled/@next/font/dist/fontkit/index.js', 'dist/compiled/next-server/app-page-turbo.runtime.prod.js', 'dist/compiled/next-server/app-page-experimental.runtime.prod.js'];
+    for (const file of [...keep, ...drop]) {
+      mkdirSync(path.dirname(path.join(next, file)), { recursive: true });
+      writeFileSync(path.join(next, file), 'x');
+    }
+    const result = trimServer(server, 'win32', 'x64');
+    for (const file of keep) expect(existsSync(path.join(next, file)), file).toBe(true);
+    for (const file of drop) expect(existsSync(path.join(next, file)), file).toBe(false);
+    expect(result.removed).toContain('next/dist/compiled/babel');
+    rmSync(server, { recursive: true, force: true });
+  });
+
+  test("what the build's server code names stays, even when it is on the build-only list", () => {
+    const server = tree(['colour', 'sharp-win32-x64']);
+    const next = path.join(server, 'node_modules', 'next');
+    for (const file of ['dist/compiled/next-devtools/index.js', 'dist/compiled/babel/bundle.js']) {
+      mkdirSync(path.dirname(path.join(next, file)), { recursive: true });
+      writeFileSync(path.join(next, file), 'x');
+    }
+    mkdirSync(path.join(server, '.next', 'server', 'chunks'), { recursive: true });
+    writeFileSync(path.join(server, '.next', 'server', 'chunks', '1.js'), 'module.exports = () => require("next/dist/compiled/next-devtools");');
+    trimServer(server, 'win32', 'x64');
+    expect(existsSync(path.join(next, 'dist/compiled/next-devtools/index.js'))).toBe(true);
+    expect(existsSync(path.join(next, 'dist/compiled/babel/bundle.js'))).toBe(false);
     rmSync(server, { recursive: true, force: true });
   });
 

@@ -1,0 +1,127 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
+import { expect, test } from '@playwright/test';
+import { launch, removeProfile, tempProfile } from './helpers';
+
+/**
+ * The main window opens while Next is still loading, and its first request waits in the host.
+ * A stand-in for the webmail: a `next` whose prepare takes a while (or fails), so the order
+ * can be read back without timing anything.
+ */
+// The page sets --titlebar-right-inset, or the window would be rebuilt with a native frame.
+function fakeServer(dir: string, prepare: 'slow' | 'fails'): string {
+  mkdirSync(path.join(dir, '.next'), { recursive: true });
+  mkdirSync(path.join(dir, 'node_modules', 'next'), { recursive: true });
+  writeFileSync(path.join(dir, '.next', 'required-server-files.json'), JSON.stringify({ config: { experimental: { preloadEntriesOnStart: true } } }));
+  writeFileSync(path.join(dir, 'server.js'), '');
+  writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fake-webmail', version: '0.0.0' }));
+  const marker = JSON.stringify(path.join(dir, 'prepared.txt'));
+  const body =
+    prepare === 'slow'
+      ? `new Promise((resolve) => setTimeout(() => { require('fs').writeFileSync(${marker}, String(Date.now())); resolve(); }, 4000))`
+      : `new Promise((_resolve, reject) => setTimeout(() => reject(new Error('fake next failed to load')), 1500))`;
+  writeFileSync(
+    path.join(dir, 'node_modules', 'next', 'index.js'),
+    `module.exports = (options) => {
+  require('fs').writeFileSync(${JSON.stringify(path.join(dir, 'options.json'))}, JSON.stringify({ conf: options.conf, env: JSON.parse(process.env.__NEXT_PRIVATE_STANDALONE_CONFIG || '{}') }));
+  return {
+  prepare: () => ${body},
+  getRequestHandler: () => (req, res) => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><html><head><title>Fake</title><style>:root { --titlebar-right-inset: 0px }</style></head><body><p id="fake">held and answered</p></body></html>');
+  },
+  };
+};`,
+  );
+  return dir;
+}
+
+test('the main window is there before Next has loaded, and its first request gets the page', async () => {
+  const profile = tempProfile('start-order');
+  const server = fakeServer(tempProfile('fake-next'), 'slow');
+  const app = await launch(profile, '--standalone', `--bulwark-server-dir=${server}`);
+  try {
+    // Read in main: Playwright reports a window only once its first page has come.
+    let windowAt = 0;
+    await expect
+      .poll(
+        async () => {
+          const count = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
+          if (count > 0 && !windowAt) windowAt = Date.now();
+          return count;
+        },
+        { timeout: 60_000, intervals: [50] },
+      )
+      .toBeGreaterThan(0);
+    const page = await app.firstWindow({ timeout: 60_000 });
+    await expect(page.locator('#fake')).toHaveText('held and answered', { timeout: 60_000 });
+    const preparedAt = Number(readFileSync(path.join(server, 'prepared.txt'), 'utf8'));
+    // The prepare takes 4 s: a window made after it would come after the marker.
+    expect(windowAt).toBeLessThan(preparedAt);
+    expect(new URL(page.url()).origin).toBe('https://app.bulwark.localhost');
+    // Routes load when first asked for, not all at start (Next's preloadEntriesOnStart).
+    const options = JSON.parse(readFileSync(path.join(server, 'options.json'), 'utf8'));
+    expect(options.conf.experimental.preloadEntriesOnStart).toBe(false);
+    expect(options.env.experimental.preloadEntriesOnStart).toBe(false);
+  } finally {
+    await app.close();
+    removeProfile(profile);
+    removeProfile(server);
+  }
+});
+
+test('Next failing after the port listens shows the error page, and no window is left waiting', async () => {
+  const profile = tempProfile('start-fail');
+  const server = fakeServer(tempProfile('fake-next'), 'fails');
+  const app = await launch(profile, '--standalone', `--bulwark-server-dir=${server}`);
+  try {
+    await expect
+      .poll(
+        () =>
+          app.evaluate(({ BrowserWindow }) =>
+            BrowserWindow.getAllWindows()
+              .filter((w) => !w.isDestroyed())
+              .map((w) => w.webContents.getURL().slice(0, 30)),
+          ),
+        { timeout: 60_000 },
+      )
+      .toEqual(['data:text/html;charset=utf-8,%']);
+    const error = app.windows().find((w) => w.url().startsWith('data:'));
+    await expect(error!.locator('h1')).toHaveText("Bulwark couldn't start");
+  } finally {
+    await app.close();
+    removeProfile(profile);
+    removeProfile(server);
+  }
+});
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('the mail service ends at once when the app is killed, with no timer of its own', async () => {
+  const profile = tempProfile('start-kill');
+  const server = fakeServer(tempProfile('fake-next'), 'slow');
+  const app = await launch(profile, '--standalone', `--bulwark-server-dir=${server}`);
+  try {
+    const page = await app.firstWindow({ timeout: 60_000 });
+    await expect(page.locator('#fake')).toHaveText('held and answered', { timeout: 60_000 });
+    const serverPid = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((m) => m.type === 'Utility' && m.name === 'Bulwark mail service')?.pid ?? 0);
+    expect(serverPid).toBeGreaterThan(0);
+    // The browser process itself (the launcher Playwright started may be another one), killed:
+    // TerminateProcess on Windows, SIGKILL elsewhere. Nothing of main's runs after this.
+    const mainPid = await app.evaluate(() => process.pid);
+    process.kill(mainPid, 'SIGKILL');
+    await expect.poll(() => alive(mainPid), { timeout: 5000, intervals: [100] }).toBe(false);
+    await expect.poll(() => alive(serverPid), { timeout: 3000, intervals: [100] }).toBe(false);
+  } finally {
+    await app.close().catch(() => {});
+    removeProfile(profile);
+    removeProfile(server);
+  }
+});

@@ -14,7 +14,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, screen, session as electronSession, shell } from 'electron';
-import { APP_HOST, APP_ORIGIN } from '../server/protocol';
+import { APP_HOST, APP_ORIGIN, type InitMessage } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
 import { firstPageUrl, parseWelcomeAddress, parseWelcomeEmail, welcomeLinkUrl } from '../shared/welcome-address';
@@ -46,7 +46,7 @@ import { policyProblems } from '../shared/policy-schema';
 import { deniedEnvironment, deniedSwitches, withoutDeniedSwitches } from './switch-guard';
 import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
-import { startServerProcess, ServerStartError } from './server-process';
+import { startServerProcess, ServerStartError, type ServerProcess } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
 import { strings, uiLanguageNow, unsentDetail } from './strings';
@@ -387,12 +387,46 @@ async function keySafeOnDisk(instance: boolean): Promise<boolean> {
   }
 }
 
+/**
+ * The server spawned before the secrets are read, until it has its init message. A start
+ * that never gets that far (secrets refused, a throw on the way) stops it, or it would stay
+ * up with Next loaded and nothing to serve.
+ */
+let serverAwaitingInit: ServerProcess | null = null;
+
 async function bootStandalone(theme: ThemeController): Promise<void> {
+  try {
+    await bootStandaloneServer(theme);
+  } finally {
+    serverAwaitingInit?.stop();
+    serverAwaitingInit = null;
+  }
+}
+
+async function bootStandaloneServer(theme: ThemeController): Promise<void> {
   const userData = app.getPath('userData');
   const secretsDir = path.join(userData, KEYS_FOLDER);
   mkdirSync(secretsDir, { recursive: true });
   const secrets = new SecretStore(secretsDir);
   const profile = profilePaths(userData);
+
+  // The server's process starts now and loads Next's code while the secrets are read. They,
+  // and everything else it needs, go to it by message once they're here.
+  const serverOptions = (append: boolean, init: InitMessage | Promise<InitMessage>) => ({
+    hostScript: SERVER_HOST,
+    serverDir: serverDirectory(),
+    env: {
+      ...serverEnv(profile, process.env, process.platform),
+      // Only a test build: the local stand-in for the collector needs it.
+      ...(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE === '1' ? { BULWARK_TELEMETRY_ALLOW_PRIVATE: '1' } : {}),
+    },
+    logDir: path.join(userData, 'logs'),
+    append,
+    init,
+  });
+  let giveFirstInit: (init: InitMessage) => void = () => {};
+  const firstServer = startServerProcess(serverOptions(false, new Promise<InitMessage>((resolve) => (giveFirstInit = resolve))));
+  serverAwaitingInit = firstServer;
 
   let sessionSecret: string;
   let adminPassword: string;
@@ -408,6 +442,8 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     adminPassword = admin.value;
     tlsPair = await tlsMaterial(secrets, secretsDir);
   } catch (error) {
+    serverAwaitingInit = null;
+    firstServer.stop();
     if (error instanceof SecretStoreError) {
       const text = strings();
       if (error.code === 'missing') await showErrorPage(text.errorSecretMissingTitle, text.errorSecretMissingBody(secretsDir));
@@ -431,32 +467,24 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   applyPermissionPolicy(session, APP_ORIGIN);
 
   const cors = new CorsInjector(session, APP_ORIGIN);
-  const spawnServer = (append: boolean) =>
-    startServerProcess({
-      hostScript: SERVER_HOST,
-      serverDir: serverDirectory(),
-      env: {
-        ...serverEnv(profile, process.env, process.platform),
-        // Only a test build: the local stand-in for the collector needs it.
-        ...(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE === '1' ? { BULWARK_TELEMETRY_ALLOW_PRIVATE: '1' } : {}),
-      },
-      logDir: path.join(userData, 'logs'),
-      append,
-      init: {
-        type: 'init',
-        serverDir: serverDirectory(),
-        port: SERVER_PORT,
-        parentPid: process.pid,
-        launchSecret,
-        mainSecret,
-        tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
-        secrets: { sessionSecret, adminPassword },
-        trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
-        policy: policies.serverPolicy(),
-        privacy: privacy.serverView('standalone'),
-      },
-    });
-  let server = spawnServer(false);
+  const initMessage = (): InitMessage => ({
+    type: 'init',
+    serverDir: serverDirectory(),
+    port: SERVER_PORT,
+    parentPid: process.pid,
+    launchSecret,
+    mainSecret,
+    tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
+    secrets: { sessionSecret, adminPassword },
+    trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
+    policy: policies.serverPolicy(),
+    privacy: privacy.serverView('standalone'),
+  });
+  // A restart after a crash gets what holds then.
+  const spawnServer = (append: boolean) => startServerProcess(serverOptions(append, initMessage()));
+  giveFirstInit(initMessage());
+  serverAwaitingInit = null;
+  let server = firstServer;
   const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins), isAllowedByPolicy: policies.serverAllowed });
   requestGate(session).add((url) => servers.refusesRequest(url));
   // config-manager notices the changed file by itself, within seconds.
@@ -487,9 +515,10 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   registerBridge(ctx, { origin: APP_ORIGIN, pluginPolicy: policies.pluginPolicy });
   setupFeatures(ctx);
 
+  // The window opens once the port listens: it starts its renderer and sends its first request
+  // while Next is still loading, and the host holds that request until Next can answer it.
   try {
-    const ready = await server.ready;
-    if (ready.caError) console.warn('System certificates are not in use:', ready.caError);
+    await server.listening;
   } catch (error) {
     // Only a port someone took between the probe and now can be fixed by trying again.
     if (error instanceof ServerStartError && error.code === 'EADDRINUSE' && !process.argv.includes('--port-retry')) {
@@ -500,6 +529,28 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     console.error(error);
     const text = strings();
     await showErrorPage(text.errorServerTitle, text.errorServerBody);
+    return;
+  }
+
+  windows.on('created', ({ window }) => watchForReplacedCertificate(window));
+  mainWindowAllowed = true;
+  // Once: the first screen's address fills the sign-in page, and only on this start.
+  const email = welcomeEmail;
+  welcomeEmail = null;
+  windows.open({ type: 'main', url: firstPageUrl(APP_ORIGIN, email) });
+
+  try {
+    const ready = await server.ready;
+    if (ready.caError) console.warn('System certificates are not in use:', ready.caError);
+  } catch (error) {
+    console.error(error);
+    // As before the window opened early: the error page, and no window waiting on a server
+    // that isn't coming. The error page first, so the app doesn't quit with its last window.
+    const text = strings();
+    const shown = showErrorPage(text.errorServerTitle, text.errorServerBody);
+    mainWindowAllowed = false;
+    for (const managed of windows.all()) if (!managed.window.isDestroyed()) managed.window.destroy();
+    await shown;
     return;
   }
 
@@ -518,13 +569,6 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     });
   };
   watch();
-
-  windows.on('created', ({ window }) => watchForReplacedCertificate(window));
-  mainWindowAllowed = true;
-  // Once: the first screen's address fills the sign-in page, and only on this start.
-  const email = welcomeEmail;
-  welcomeEmail = null;
-  windows.open({ type: 'main', url: firstPageUrl(APP_ORIGIN, email) });
 }
 
 async function bootInstance(instanceUrl: string, theme: ThemeController): Promise<void> {

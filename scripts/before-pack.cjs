@@ -14,10 +14,11 @@ exports.default = async function beforePack(context) {
     for (const file of readdirSync(built)) cpSync(path.join(built, file), path.join(target, file));
   }
   const { buildServerArchive } = await import('./server-archive.mjs');
-  const { trim } = await buildServerArchive({
+  const { trim, codeCache } = await buildServerArchive({
     projectDir: context.packager.projectDir,
     platform: context.electronPlatformName,
     arch: ARCH[context.arch] ?? 'x64',
   });
   console.log(`[before-pack] trimmed ${Math.round(trim.bytes / 1048576)} MB (${trim.removed.join(', ') || 'nothing'})`);
+  console.log(`[before-pack] code cache: ${codeCache.made ? 'in server.asar' : 'none'} (${codeCache.reason})`);
 };

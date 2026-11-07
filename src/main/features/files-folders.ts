@@ -29,6 +29,7 @@ import { entryOf, errorOf, fail, FilesDisk, ok } from '../files/disk';
 import { driveHooks } from '../files/drive-hooks';
 import { isNetworkFsType, isNetworkPath, overlapReason, systemFolders } from '../files/paths';
 import { FILES_SCHEME, FilesReadGrants } from '../files/read-grants';
+import { IdleSweep } from '../files/idle-sweep';
 import { filesRegistry, type RegisteredRoot } from '../files/registry';
 import { FolderRoots } from '../files/folder-roots';
 import { FolderRootStore, MAX_STATE_CHARS, validRootId } from '../files/store';
@@ -120,13 +121,38 @@ export const filesFoldersFeature: Feature = {
 
     const watchers = new Map<string, RootWatcher>();
     const cleaned = new Set<string>();
+    // Writes a page left open, read grants to expire, a root's temp files still to clean: the
+    // sweep runs every minute while any of those is there, and not at all when none is.
+    const sweep = new IdleSweep({
+      everyMs: SWEEP_MS,
+      work: () => {
+        void disk.abortIdle(IDLE_WRITE_MS);
+        grants.sweep();
+        const live = filesRegistry.list().filter((entry) => !entry.root.paused);
+        for (const entry of live) cleanOnce(entry);
+        return disk.writeCount > 0 || grants.size > 0 || live.some((entry) => !cleaned.has(entry.root.id));
+      },
+    });
     const cleanOnce = (entry: RegisteredRoot) => {
       if (cleaned.has(entry.root.id)) return;
       cleaned.add(entry.root.id);
+      const retry = () => {
+        cleaned.delete(entry.root.id);
+        sweep.arm();
+      };
       void disk.cleanTemps(entry).then((removed) => {
-        if (removed < 0) cleaned.delete(entry.root.id);
-      }, () => cleaned.delete(entry.root.id));
+        if (removed < 0) retry();
+      }, retry);
     };
+    // Every files call from a page can leave a write or a grant behind.
+    const handle: typeof ctx.handle = (channel, handler) =>
+      ctx.handle(channel, async (...args) => {
+        try {
+          return await handler(...args);
+        } finally {
+          sweep.arm();
+        }
+      });
     // A root that's new, back from a pause or back from an error starts with "scan it all":
     // that's also how the page learns of a root it doesn't know yet.
     const reconcile = () => {
@@ -272,7 +298,7 @@ export const filesFoldersFeature: Feature = {
     const chosen = new Map<string, { path: string; at: number }>();
     const CHOSEN_MS = 10 * 60_000;
 
-    ctx.handle(CHANNEL.filesChooseFolder, async (event, window, clicked) => {
+    handle(CHANNEL.filesChooseFolder, async (event, window, clicked) => {
       fromMain(window);
       await loaded;
       if (!folderSyncAllowed()) return fail('policy');
@@ -296,7 +322,7 @@ export const filesFoldersFeature: Feature = {
       }
     });
 
-    ctx.handle(CHANNEL.filesAddFolder, async (event, window, request, clicked) => {
+    handle(CHANNEL.filesAddFolder, async (event, window, request, clicked) => {
       fromMain(window);
       await loaded;
       const { account, remoteId, remoteLabel, chosen: token } = (request ?? {}) as { account?: unknown; remoteId?: unknown; remoteLabel?: unknown; chosen?: unknown };
@@ -331,13 +357,13 @@ export const filesFoldersFeature: Feature = {
       }
     });
 
-    ctx.handle(CHANNEL.filesRoots, async (_event, window) => {
+    handle(CHANNEL.filesRoots, async (_event, window) => {
       fromMain(window);
       await loaded;
       return appLockGate.locked ? [] : filesRegistry.list().map((entry) => entry.root);
     });
 
-    ctx.handle(CHANNEL.filesRemoveRoot, async (_event, window, rootId) => {
+    handle(CHANNEL.filesRemoveRoot, async (_event, window, rootId) => {
       fromMain(window);
       await loaded;
       const entry = filesRegistry.get(rootId);
@@ -354,23 +380,23 @@ export const filesFoldersFeature: Feature = {
       if (!filesRegistry.get(entry.root.id)) await store.removeState(entry.root.id);
     });
 
-    ctx.handle(CHANNEL.filesSetPaused, async (_event, window, rootId, paused) => {
+    handle(CHANNEL.filesSetPaused, async (_event, window, rootId, paused) => {
       fromMain(window);
       await loaded;
       if (typeof paused === 'boolean' && filesRegistry.get(rootId)) await folders.setPaused(rootId as string, paused);
     });
 
-    ctx.handle(CHANNEL.filesScan, async (_event, window, rootId, under) => {
+    handle(CHANNEL.filesScan, async (_event, window, rootId, under) => {
       const root = await rootFor(window, rootId);
       return root ? disk.scan(root, under ?? '') : fail('inactive');
     });
 
-    ctx.handle(CHANNEL.filesStat, async (_event, window, rootId, relative) => {
+    handle(CHANNEL.filesStat, async (_event, window, rootId, relative) => {
       const root = await rootFor(window, rootId);
       return root ? disk.stat(root, relative) : fail('inactive');
     });
 
-    ctx.handle(CHANNEL.filesOpenRead, async (_event, window, rootId, relative): Promise<FilesResult<{ url: string; entry: FilesLocalEntry }>> => {
+    handle(CHANNEL.filesOpenRead, async (_event, window, rootId, relative): Promise<FilesResult<{ url: string; entry: FilesLocalEntry }>> => {
       const root = await rootFor(window, rootId);
       if (!root) return fail('inactive');
       const found = await disk.resolve(root, relative);
@@ -384,16 +410,16 @@ export const filesFoldersFeature: Feature = {
       return ok({ url: grants.add(root.root.id, entry), entry });
     });
 
-    ctx.handle(CHANNEL.filesBeginWrite, async (_event, window, rootId, relative, options) => {
+    handle(CHANNEL.filesBeginWrite, async (_event, window, rootId, relative, options) => {
       const root = await rootFor(window, rootId);
       return root ? disk.beginWrite(root, relative, options) : fail('inactive');
     });
-    ctx.handle(CHANNEL.filesWriteChunk, async (_event, window, writeId, data) => {
+    handle(CHANNEL.filesWriteChunk, async (_event, window, writeId, data) => {
       fromMain(window);
       if (appLockGate.locked) return fail('inactive');
       return disk.writeChunk(writeId, data);
     });
-    ctx.handle(CHANNEL.filesCommitWrite, async (_event, window, writeId) => {
+    handle(CHANNEL.filesCommitWrite, async (_event, window, writeId) => {
       fromMain(window);
       if (appLockGate.locked) {
         await disk.abortWrite(writeId);
@@ -401,34 +427,34 @@ export const filesFoldersFeature: Feature = {
       }
       return disk.commitWrite(writeId);
     });
-    ctx.handle(CHANNEL.filesAbortWrite, async (_event, window, writeId) => {
+    handle(CHANNEL.filesAbortWrite, async (_event, window, writeId) => {
       fromMain(window);
       await disk.abortWrite(writeId);
     });
 
-    ctx.handle(CHANNEL.filesMkdir, async (_event, window, rootId, relative) => {
+    handle(CHANNEL.filesMkdir, async (_event, window, rootId, relative) => {
       const root = await rootFor(window, rootId);
       return root ? disk.mkdir(root, relative) : fail('inactive');
     });
-    ctx.handle(CHANNEL.filesMove, async (_event, window, rootId, from, to, expect) => {
+    handle(CHANNEL.filesMove, async (_event, window, rootId, from, to, expect) => {
       const root = await rootFor(window, rootId);
       return root ? disk.move(root, from, to, expect) : fail('inactive');
     });
-    ctx.handle(CHANNEL.filesRemove, async (_event, window, rootId, relative, expect) => {
+    handle(CHANNEL.filesRemove, async (_event, window, rootId, relative, expect) => {
       const root = await rootFor(window, rootId);
       return root ? disk.remove(root, relative, expect) : fail('inactive');
     });
 
     // A rejection, not null, while locked: null would read as "never synced", and a first sync
     // over a full folder is all conflicts.
-    ctx.handle(CHANNEL.filesLoadState, async (_event, window, rootId) => {
+    handle(CHANNEL.filesLoadState, async (_event, window, rootId) => {
       fromMain(window);
       await loaded;
       if (appLockGate.locked) throw new Error('Locked');
       if (!validRootId(rootId) || !filesRegistry.get(rootId)) return null;
       return store.loadState(rootId);
     });
-    ctx.handle(CHANNEL.filesSaveState, async (_event, window, rootId, state) => {
+    handle(CHANNEL.filesSaveState, async (_event, window, rootId, state) => {
       fromMain(window);
       await loaded;
       if (appLockGate.locked) throw new Error('Locked');
@@ -437,7 +463,7 @@ export const filesFoldersFeature: Feature = {
       await store.saveState(rootId, state);
     });
 
-    ctx.handle(CHANNEL.filesShowInFolder, async (_event, window, rootId, relative) => {
+    handle(CHANNEL.filesShowInFolder, async (_event, window, rootId, relative) => {
       const root = await rootFor(window, rootId);
       if (!root) return false;
       const found = await disk.resolve(root, relative ?? '', true);
@@ -448,15 +474,10 @@ export const filesFoldersFeature: Feature = {
       return true;
     });
 
-    const sweep = setInterval(() => {
-      void disk.abortIdle(IDLE_WRITE_MS);
-      grants.sweep();
-      for (const entry of filesRegistry.list()) if (!entry.root.paused) cleanOnce(entry);
-    }, SWEEP_MS);
-    sweep.unref?.();
+    sweep.arm();
 
     app.on('will-quit', () => {
-      clearInterval(sweep);
+      sweep.stop();
       for (const watcher of watchers.values()) watcher.stop();
       // The temporary files go now, or at the next start.
       void disk.abortWrites();

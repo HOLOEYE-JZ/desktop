@@ -46,6 +46,8 @@ await build({ ...common, entryPoints: ['src/preload/welcome.ts'], outfile: 'dist
 await build({ ...common, entryPoints: ['src/preload/dialog.ts'], outfile: 'dist/dialog-preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/preload/print.ts'], outfile: 'dist/print-preload.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/server/host.ts'], outfile: 'dist/server-host.cjs', format: 'cjs' });
+// Run at package time only (scripts/server-archive.mjs), and left out of app.asar.
+await build({ ...common, entryPoints: ['src/server/code-cache-gen.ts'], outfile: 'dist/code-cache-gen.cjs', format: 'cjs' });
 await build({ ...common, entryPoints: ['src/main/import-worker.ts'], outfile: 'dist/import-worker.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/main/recent-files-worker.ts'], outfile: 'dist/recent-files-worker.cjs', format: 'cjs', external: ['electron'] });
 await build({ ...common, entryPoints: ['src/main/crash-scrub-host.ts'], outfile: 'dist/crash-scrub-host.cjs', format: 'cjs', external: ['electron'] });
