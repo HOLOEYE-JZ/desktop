@@ -4,9 +4,13 @@
  * on Windows), and macOS and Linux get the same bare dialog. So every Print in the app
  * comes here first: settings on the left, the pages as they will come out on the right.
  *
- * What it shows (a source): a page of the app as its print CSS lays it out (File > Print,
- * the calendar and contacts print copies), a print window the page opened hidden (one
- * message, a plugin's page), or a PDF (the file viewer, a plugin's PDF). The preview is
+ * What it shows (a source): a print window the page opened hidden (one message, a plugin's
+ * page, and in a current webmail the print copies of mail, calendar and contacts), a PDF
+ * (the file viewer, a plugin's PDF), or a page of the app as its print CSS lays it out (File >
+ * Print on a page that doesn't take it itself, an older webmail). Laying out a page that is
+ * on screen moves it: at the sheet's width its width breakpoints match for a moment, and the
+ * mail sidebar folded and unfolded at every change in the preview. So the webmail hands over
+ * copies in hidden windows, and a page is the fallback only. The preview is
  * webContents.printToPDF of that source with the chosen options, shown in Chromium's own
  * PDF viewer inside the window's page. Print is webContents.print of the same source, silent,
  * with the same options; Save as PDF writes the PDF; "Print using system dialog…" is the
