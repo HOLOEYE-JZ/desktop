@@ -135,6 +135,10 @@ function loadNext(serverDir: string): LoadedNext {
   process.cwd = () => serverDir;
   process.env.NODE_ENV = 'production';
   const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
+  // One user, one window: Next's default of loading every route at start (admin, setup, every
+  // API route) costs the first page ~0.4 s of server time and keeps routes nobody opens in
+  // memory. Each route loads when it's first asked for instead, from the code cache.
+  config.experimental = { ...config.experimental, preloadEntriesOnStart: false };
   process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(config);
   // Before the first server file loads: Next and the webmail compile from the package's cache.
   const codeCache = useCodeCache(serverDir);

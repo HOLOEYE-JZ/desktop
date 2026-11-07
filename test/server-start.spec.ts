@@ -12,7 +12,7 @@ import { launch, removeProfile, tempProfile } from './helpers';
 function fakeServer(dir: string, prepare: 'slow' | 'fails'): string {
   mkdirSync(path.join(dir, '.next'), { recursive: true });
   mkdirSync(path.join(dir, 'node_modules', 'next'), { recursive: true });
-  writeFileSync(path.join(dir, '.next', 'required-server-files.json'), JSON.stringify({ config: {} }));
+  writeFileSync(path.join(dir, '.next', 'required-server-files.json'), JSON.stringify({ config: { experimental: { preloadEntriesOnStart: true } } }));
   writeFileSync(path.join(dir, 'server.js'), '');
   writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'fake-webmail', version: '0.0.0' }));
   const marker = JSON.stringify(path.join(dir, 'prepared.txt'));
@@ -22,13 +22,16 @@ function fakeServer(dir: string, prepare: 'slow' | 'fails'): string {
       : `new Promise((_resolve, reject) => setTimeout(() => reject(new Error('fake next failed to load')), 1500))`;
   writeFileSync(
     path.join(dir, 'node_modules', 'next', 'index.js'),
-    `module.exports = () => ({
+    `module.exports = (options) => {
+  require('fs').writeFileSync(${JSON.stringify(path.join(dir, 'options.json'))}, JSON.stringify({ conf: options.conf, env: JSON.parse(process.env.__NEXT_PRIVATE_STANDALONE_CONFIG || '{}') }));
+  return {
   prepare: () => ${body},
   getRequestHandler: () => (req, res) => {
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<!doctype html><html><head><title>Fake</title><style>:root { --titlebar-right-inset: 0px }</style></head><body><p id="fake">held and answered</p></body></html>');
   },
-});`,
+  };
+};`,
   );
   return dir;
 }
@@ -56,6 +59,10 @@ test('the main window is there before Next has loaded, and its first request get
     // The prepare takes 4 s: a window made after it would come after the marker.
     expect(windowAt).toBeLessThan(preparedAt);
     expect(new URL(page.url()).origin).toBe('https://app.bulwark.localhost');
+    // Routes load when first asked for, not all at start (Next's preloadEntriesOnStart).
+    const options = JSON.parse(readFileSync(path.join(server, 'options.json'), 'utf8'));
+    expect(options.conf.experimental.preloadEntriesOnStart).toBe(false);
+    expect(options.env.experimental.preloadEntriesOnStart).toBe(false);
   } finally {
     await app.close();
     removeProfile(profile);
