@@ -95,8 +95,13 @@ function launchSecretMatches(given: string | string[] | undefined, secret: Buffe
 
 /**
  * Chromium doesn't end a utilityProcess when main is killed or crashes, and this
- * one holds a listening port and the user's data open. So it watches for itself.
+ * one holds a listening port and the user's data open. So it watches for itself, every
+ * ten seconds: the only timer an idle server has, and nothing can reach it meanwhile (a
+ * new start has its own port and secret). A message port's close doesn't come when
+ * main is killed, so it can't replace this.
  */
+export const PARENT_CHECK_MS = 10_000;
+
 function exitWithParent(pid: number): void {
   const timer = setInterval(() => {
     try {
@@ -104,7 +109,7 @@ function exitWithParent(pid: number): void {
     } catch {
       process.exit(0);
     }
-  }, 1000);
+  }, PARENT_CHECK_MS);
   timer.unref();
 }
 
