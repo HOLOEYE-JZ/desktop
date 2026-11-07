@@ -3,7 +3,7 @@
  * listener in browser-sign-in.ts: the result of a redirect, and the password form for a
  * server without OAuth.
  *
- * They look like the webmail's sign-in card in its standard theme, light or dark as the
+ * They look like the webmail's sign-in page in its standard theme, light or dark as the
  * browser is, with the app icon's mark in the brand colour. They speak the browser's
  * language (Accept-Language), in the app's 30 languages, from sign-in-strings.json.
  *
@@ -74,33 +74,37 @@ function fill(text: string, values: Record<string, string>): string {
 const hashOf = (text: string) => `'sha256-${createHash('sha256').update(text, 'utf8').digest('base64')}'`;
 
 /**
- * The webmail's standard theme (app/globals.css: :root and .dark), and its sign-in card
- * (app/(main)/[locale]/login/page.tsx), as the shell's welcome page has them.
+ * The webmail's standard theme (app/globals.css: :root and .dark), and its sign-in frame
+ * (app/login.css, components/auth/login-frame.tsx): the sidebar colour with a faint wash
+ * of the brand colour, a card drawn like the app's dialogs, and the app's own field and
+ * button sizes.
  */
 const STYLE = [
-  ':root{color-scheme:light dark;--background:#ffffff;--foreground:#0f172a;--muted:#f1f5f9;--muted-foreground:#59687c;--border:#e2e8f0;--ring:#2563eb;--primary:#185aea;--primary-foreground:#ffffff;--destructive:#dc2626;--info:#3b82f6;--logo:#db2d54;--shadow:rgb(0 0 0/.05);--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif}',
-  '@media (prefers-color-scheme:dark){:root{--background:#0a0a0a;--foreground:#fafafa;--muted:#262626;--muted-foreground:#adadad;--border:rgba(128,128,128,.3);--ring:#d4d4d4;--primary:#fafafa;--primary-foreground:#171717;--destructive:#ef4444;--info:#60a5fa;--shadow:rgb(0 0 0/.2)}}',
+  ':root{color-scheme:light dark;--background:#ffffff;--foreground:#0f172a;--card:#ffffff;--sidebar:#f8fafc;--muted-foreground:#59687c;--border:#e2e8f0;--input:#e2e8f0;--ring:#2563eb;--primary:#185aea;--primary-foreground:#ffffff;--destructive:#dc2626;--info:#3b82f6;--logo:#db2d54;--shadow:0 10px 30px -12px rgb(15 23 42/.18),0 2px 6px -2px rgb(15 23 42/.08);--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"Noto Sans Thai","Leelawadee UI",Tahoma,sans-serif}',
+  '@media (prefers-color-scheme:dark){:root{--background:#0a0a0a;--foreground:#fafafa;--card:#141414;--sidebar:#0a0a0a;--muted-foreground:#adadad;--border:rgba(128,128,128,.3);--input:#262626;--ring:#d4d4d4;--primary:#fafafa;--primary-foreground:#171717;--destructive:#ef4444;--info:#60a5fa;--shadow:0 10px 30px -12px rgb(0 0 0/.6)}}',
   'html,body{margin:0}',
-  'body{box-sizing:border-box;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;font:15px/1.5 var(--font);color:var(--foreground);background:linear-gradient(to bottom right,var(--background),color-mix(in srgb,var(--muted) 10%,var(--background)),color-mix(in srgb,var(--muted) 30%,var(--background)));-webkit-font-smoothing:antialiased}',
-  '.card{box-sizing:border-box;width:100%;max-width:440px;padding:32px;border:1px solid color-mix(in srgb,var(--border) 60%,transparent);border-radius:16px;background:color-mix(in srgb,var(--background) 80%,transparent);box-shadow:0 20px 25px -5px var(--shadow),0 8px 10px -6px var(--shadow)}',
+  'body{box-sizing:border-box;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:64px 16px;font:15px/1.5 var(--font);color:var(--foreground);background:linear-gradient(180deg,color-mix(in oklab,var(--primary) 8%,var(--sidebar)) 0%,var(--sidebar) 65%) fixed;-webkit-font-smoothing:antialiased}',
+  '@media (prefers-contrast:more){body{background:var(--sidebar)}}',
+  '.card{box-sizing:border-box;width:100%;max-width:400px;padding:32px;border:1px solid var(--border);border-radius:8px;background:var(--card);box-shadow:var(--shadow)}',
   '.logo{display:block;width:64px;height:64px;margin:8px auto 20px;fill:var(--logo)}',
   'h1{margin:0;text-align:center;font-size:1.5rem;line-height:2rem;font-weight:600;letter-spacing:-.025em}',
   '.lead{margin:6px 0 0;text-align:center;font-size:.875rem;line-height:1.25rem;color:var(--muted-foreground);overflow-wrap:anywhere}',
-  '.notice{--tone:var(--destructive);display:flex;align-items:flex-start;gap:12px;margin-top:20px;padding:12px;border:1px solid color-mix(in srgb,var(--tone) 20%,transparent);border-radius:12px;background:color-mix(in srgb,var(--tone) 5%,transparent)}',
+  '.notice{--tone:var(--destructive);display:flex;align-items:flex-start;gap:12px;margin-top:20px;padding:12px;border:1px solid color-mix(in srgb,var(--tone) 20%,transparent);border-radius:6px;background:color-mix(in srgb,var(--tone) 5%,transparent)}',
   '.notice.info{--tone:var(--info)}',
   '.notice-icon{flex:none;display:flex;align-items:center;justify-content:center;width:40px;height:40px;border-radius:50%;color:var(--tone);background:color-mix(in srgb,var(--tone) 15%,transparent)}',
   '.notice-icon svg{width:20px;height:20px}',
   '.notice p{align-self:center;margin:0;font-size:.875rem;line-height:1.43;color:var(--tone)}',
   '.close{margin:20px 0 0;text-align:center;font-size:.875rem;line-height:1.25rem;color:var(--muted-foreground)}',
-  '.button{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:100%;height:44px;margin-top:20px;padding:0 16px;border:1px solid transparent;border-radius:12px;font:inherit;font-size:.9375rem;font-weight:500;text-decoration:none;cursor:pointer;color:var(--primary-foreground);background:var(--primary);box-shadow:0 4px 6px -1px color-mix(in srgb,var(--primary) 15%,transparent);outline:none;transition:background-color .2s,box-shadow .2s}',
-  '.button:hover{background:color-mix(in srgb,var(--primary) 90%,transparent)}',
-  '.button:focus-visible{box-shadow:0 0 0 2px var(--background),0 0 0 4px var(--ring)}',
+  '.button{display:flex;align-items:center;justify-content:center;box-sizing:border-box;width:100%;height:40px;margin-top:20px;padding:0 16px;border:1px solid transparent;border-radius:6px;font:inherit;font-size:1rem;font-weight:500;text-decoration:none;cursor:pointer;color:var(--primary-foreground);background:var(--primary);box-shadow:0 1px 2px 0 rgb(0 0 0/.05);outline:none;transition:background-color .2s,box-shadow .2s}',
+  '.button:hover{background:color-mix(in srgb,var(--primary) 90%,transparent);box-shadow:0 1px 3px 0 rgb(0 0 0/.1),0 1px 2px -1px rgb(0 0 0/.1)}',
+  '.button:focus-visible{outline:2px solid var(--ring);outline-offset:2px}',
   'form{margin-top:24px}',
   'label{display:block;margin:16px 0 6px;font-size:.875rem;font-weight:500}',
   'label:first-of-type{margin-top:0}',
-  'input:not([type=hidden]){display:block;box-sizing:border-box;width:100%;height:44px;padding:0 14px;font:inherit;font-size:.9375rem;color:var(--foreground);background:color-mix(in srgb,var(--muted) 40%,transparent);border:1px solid color-mix(in srgb,var(--border) 60%,transparent);border-radius:12px;outline:none;transition:background-color .2s,border-color .2s,box-shadow .2s}',
-  'input:focus{background:var(--background);border-color:color-mix(in srgb,var(--primary) 50%,transparent);box-shadow:0 0 0 3px color-mix(in srgb,var(--ring) 20%,transparent)}',
-  '@media (forced-colors:active){.card{border-color:CanvasText}.logo{fill:CanvasText}}',
+  'input:not([type=hidden]){display:block;box-sizing:border-box;width:100%;height:40px;padding:8px 12px;font:inherit;font-size:.875rem;color:var(--foreground);background:var(--background);border:1px solid var(--input);border-radius:6px;outline:none;transition:border-color .2s,box-shadow .2s}',
+  'input:not([type=hidden]):hover{border-color:var(--muted-foreground)}',
+  'input:focus-visible{border-color:var(--ring);outline:2px solid var(--ring);outline-offset:2px}',
+  '@media (forced-colors:active){.card{border-color:CanvasText}.logo{fill:CanvasText}.button:focus-visible,input:focus-visible{outline-color:Highlight}}',
 ].join('');
 
 /** Takes code and state out of the address bar, so they stay out of history and screenshots. */

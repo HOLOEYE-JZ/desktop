@@ -267,7 +267,7 @@ test.describe('in a browser', () => {
     return { server, url: `http://127.0.0.1:${(server.address() as AddressInfo).port}${CALLBACK_PATH}?code=c&state=s` };
   }
 
-  test('light and dark: the theme\'s colours reach the card and the button', async () => {
+  test('light and dark: the theme\'s colours reach the card and the button, sized like the app\'s', async () => {
     const colours: Record<string, Record<string, string>> = {};
     for (const scheme of ['light', 'dark'] as const) {
       const { server, url } = await serve(outcomePage('en', 'done'), true);
@@ -276,13 +276,19 @@ test.describe('in a browser', () => {
       await tab.goto(url);
       colours[scheme] = await tab.evaluate(() => {
         const style = (selector: string) => getComputedStyle(document.querySelector(selector)!);
-        return { text: style('h1').color, button: style('.button').backgroundColor, buttonText: style('.button').color, logo: style('.logo').fill };
+        return {
+          text: style('h1').color, button: style('.button').backgroundColor, buttonText: style('.button').color, logo: style('.logo').fill,
+          // A solid card like the app's dialogs, and the app's 40px, slightly rounded button.
+          card: style('.card').backgroundColor, cardRadius: style('.card').borderRadius,
+          buttonHeight: style('.button').height, buttonRadius: style('.button').borderRadius,
+        };
       });
       await context.close();
       server.close();
     }
-    expect(colours.light).toEqual({ text: 'rgb(15, 23, 42)', button: 'rgb(24, 90, 234)', buttonText: 'rgb(255, 255, 255)', logo: 'rgb(219, 45, 84)' });
-    expect(colours.dark).toEqual({ text: 'rgb(250, 250, 250)', button: 'rgb(250, 250, 250)', buttonText: 'rgb(23, 23, 23)', logo: 'rgb(219, 45, 84)' });
+    const shape = { cardRadius: '8px', buttonHeight: '40px', buttonRadius: '6px' };
+    expect(colours.light).toEqual({ text: 'rgb(15, 23, 42)', button: 'rgb(24, 90, 234)', buttonText: 'rgb(255, 255, 255)', logo: 'rgb(219, 45, 84)', card: 'rgb(255, 255, 255)', ...shape });
+    expect(colours.dark).toEqual({ text: 'rgb(250, 250, 250)', button: 'rgb(250, 250, 250)', buttonText: 'rgb(23, 23, 23)', logo: 'rgb(219, 45, 84)', card: 'rgb(20, 20, 20)', ...shape });
   });
 
   test('pictures of each page, light and dark', async () => {
