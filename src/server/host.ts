@@ -13,6 +13,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:https';
+import { connect } from 'node:net';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
@@ -95,22 +96,41 @@ function launchSecretMatches(given: string | string[] | undefined, secret: Buffe
 
 /**
  * Chromium doesn't end a utilityProcess when main is killed or crashes, and this
- * one holds a listening port and the user's data open. So it watches for itself, every
- * ten seconds: the only timer an idle server has, and nothing can reach it meanwhile (a
- * new start has its own port and secret). A message port's close doesn't come when
- * main is killed, so it can't replace this.
+ * one holds a listening port and the user's data open. So it holds a connection to main's
+ * lifeline (src/main/server-process.ts), which the OS closes the moment main goes, killed or
+ * not: no timer, so an idle server doesn't wake up for this. Only when that connection can't
+ * be made does it fall back to checking main's pid every ten seconds.
  */
 export const PARENT_CHECK_MS = 10_000;
 
-function exitWithParent(pid: number): void {
-  const timer = setInterval(() => {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      process.exit(0);
-    }
-  }, PARENT_CHECK_MS);
-  timer.unref();
+function exitWithParent(pid: number, lifeline: string | undefined): void {
+  const poll = () => {
+    const timer = setInterval(() => {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        process.exit(0);
+      }
+    }, PARENT_CHECK_MS);
+    timer.unref();
+  };
+  if (!lifeline) {
+    poll();
+    return;
+  }
+  let connected = false;
+  const socket = connect(lifeline);
+  socket.on('connect', () => {
+    connected = true;
+  });
+  socket.on('data', () => {});
+  socket.on('error', () => {});
+  socket.on('close', () => {
+    if (connected) process.exit(0);
+    else poll();
+  });
+  // Not what keeps the process alive: the server is.
+  socket.unref();
 }
 
 const SERVER_ROOT_SWITCH = '--server-root=';
@@ -148,7 +168,7 @@ function loadNext(serverDir: string): LoadedNext {
 }
 
 async function start(init: InitMessage): Promise<void> {
-  exitWithParent(init.parentPid);
+  exitWithParent(init.parentPid, init.lifeline);
   const { serverDir } = init;
   process.cwd = () => serverDir;
   setSecrets(init.secrets);

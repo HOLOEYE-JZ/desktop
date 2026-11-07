@@ -94,3 +94,34 @@ test('Next failing after the port listens shows the error page, and no window is
     removeProfile(server);
   }
 });
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+test('the mail service ends at once when the app is killed, with no timer of its own', async () => {
+  const profile = tempProfile('start-kill');
+  const server = fakeServer(tempProfile('fake-next'), 'slow');
+  const app = await launch(profile, '--standalone', `--bulwark-server-dir=${server}`);
+  try {
+    const page = await app.firstWindow({ timeout: 60_000 });
+    await expect(page.locator('#fake')).toHaveText('held and answered', { timeout: 60_000 });
+    const serverPid = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().find((m) => m.type === 'Utility' && m.name === 'Bulwark mail service')?.pid ?? 0);
+    expect(serverPid).toBeGreaterThan(0);
+    // The browser process itself (the launcher Playwright started may be another one), killed:
+    // TerminateProcess on Windows, SIGKILL elsewhere. Nothing of main's runs after this.
+    const mainPid = await app.evaluate(() => process.pid);
+    process.kill(mainPid, 'SIGKILL');
+    await expect.poll(() => alive(mainPid), { timeout: 5000, intervals: [100] }).toBe(false);
+    await expect.poll(() => alive(serverPid), { timeout: 3000, intervals: [100] }).toBe(false);
+  } finally {
+    await app.close().catch(() => {});
+    removeProfile(profile);
+    removeProfile(server);
+  }
+});

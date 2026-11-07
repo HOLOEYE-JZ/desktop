@@ -40,6 +40,8 @@ export interface InitMessage {
   port: number;
   /** Main's pid, to go down with it (host.ts). */
   parentPid: number;
+  /** Main's lifeline: a local socket the host stays connected to, closed by the OS when main goes. */
+  lifeline?: string;
   launchSecret: string;
   mainSecret: string;
   tls: { key: string; cert: string };

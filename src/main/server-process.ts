@@ -4,12 +4,47 @@
  * app: Chromium kills its utility processes on exit, and we kill it on will-quit.
  */
 
-import { createWriteStream, mkdirSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { createWriteStream, mkdirSync, rmSync } from 'node:fs';
+import { createServer, type Server, type Socket } from 'node:net';
 import path from 'node:path';
 import { app, utilityProcess, type UtilityProcess } from 'electron';
 import type { HostEvent, InitMessage, MainErrorMessage, PrivacyMessage } from '../server/protocol';
+import { lifelinePath } from '../server/lifeline';
 
 const READY_TIMEOUT_MS = 90_000;
+
+let lifelineServer: { server: Server; path: string; sockets: Set<Socket> } | null = null;
+
+
+/**
+ * The servers' lifeline: a local socket main listens on and every server process connects to.
+ * Nothing goes over it. When main ends, however it ends, the OS closes main's side, and the
+ * server sees its connection close and exits (src/server/host.ts). Resolves to null if it
+ * can't listen; the host then checks main's pid on a timer as before.
+ */
+export function lifeline(): Promise<string | null> {
+  if (lifelineServer) return Promise.resolve(lifelineServer.path);
+  const where = lifelinePath(process.platform, randomBytes(12).toString('hex'));
+  const sockets = new Set<Socket>();
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('data', () => {});
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+  });
+  return new Promise((resolve) => {
+    server.once('error', () => resolve(null));
+    server.listen(where, () => {
+      lifelineServer = { server, path: where, sockets };
+      app.once('will-quit', () => {
+        server.close();
+        if (process.platform === 'darwin') rmSync(where, { force: true });
+      });
+      resolve(where);
+    });
+  });
+}
 
 export interface ServerProcessOptions {
   hostScript: string;
@@ -89,7 +124,7 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
     });
   });
 
-  child.once('spawn', () => void Promise.resolve(options.init).then((init) => child.postMessage(init)).catch(() => {}));
+  child.once('spawn', () => void Promise.all([options.init, lifeline()]).then(([init, line]) => child.postMessage(line ? { ...init, lifeline: line } : init)).catch(() => {}));
 
   let stopped = false;
   const stop = () => {
