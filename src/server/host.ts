@@ -117,7 +117,6 @@ async function start(init: InitMessage): Promise<void> {
   setSecrets(init.secrets);
   process.env.NODE_ENV = 'production';
 
-  const ca = useSystemCertificates();
   setTrusted(init.trustedOrigins);
   setPrivacy(init.privacy);
   setPolicy(init.policy);
@@ -164,6 +163,9 @@ async function start(init: InitMessage): Promise<void> {
   });
   if (!(await listening)) return;
   send({ type: 'listening' });
+  // After the port, before anything can go out: reading the OS store takes tens of ms, and main
+  // opens the window on `listening`. Synchronous, so no request is handled before it's done.
+  const ca = useSystemCertificates();
 
   // Before the first server file loads: Next and the webmail compile from the package's cache.
   const codeCache = useCodeCache(serverDir);
