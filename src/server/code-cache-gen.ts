@@ -76,7 +76,7 @@ async function main(): Promise<void> {
     const cached = script.createCachedData();
     const file = `${sha256(key).slice(0, 32)}.bin`;
     writeFileSync(path.join(out, file), cached);
-    manifest.files[key] = { sha256: sha256(content), data: file };
+    manifest.files[key] = { sha256: sha256(content), length: content.length, data: file };
     bytes += cached.length;
   }
   writeFileSync(path.join(out, MANIFEST), JSON.stringify(manifest));

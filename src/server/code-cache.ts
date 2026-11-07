@@ -26,7 +26,7 @@ export interface CacheManifest {
   /** process.versions.v8 of the binary that made it. */
   v8: string;
   /** By path relative to the server's root, with forward slashes. */
-  files: Record<string, { sha256: string; data: string }>;
+  files: Record<string, { sha256: string; length: number; data: string }>;
 }
 
 export interface CodeCacheStats {
@@ -38,6 +38,10 @@ export interface CodeCacheStats {
 
 export function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
+}
+
+export function inAsar(dir: string): boolean {
+  return /\.asar([\\/]|$)/i.test(dir);
 }
 
 export function relativeKey(root: string, filename: string): string | null {
@@ -111,13 +115,17 @@ export function useCodeCache(serverDir: string): { stats: CodeCacheStats; stop: 
   const cacheDir = path.join(serverDir, CACHE_FOLDER);
   const manifest = readManifest(cacheDir);
   if (!manifest) return null;
+  // Inside an asar the cache and the sources are one file, made together and checked together by
+  // ASAR integrity (or root's alone, in /opt), so they can't drift apart; hashing 30 MB of source
+  // there would cost the start ~150 ms for nothing. A plain folder (a development server) is checked.
+  const verify = !inAsar(serverDir);
   const stats: CodeCacheStats = { used: 0, rejected: 0, compiled: 0 };
   const proto = (Module as unknown as ModuleInternals).prototype;
   const original = proto._compile;
   const compileFromCache = function compileFromCache(this: NodeJS.Module, content: string, filename: string, ...rest: unknown[]) {
     const key = relativeKey(serverDir, filename);
     const entry = key ? manifest.files[key] : undefined;
-    if (!entry || !wrappable(content, rest) || sha256(content) !== entry.sha256) {
+    if (!entry || !wrappable(content, rest) || content.length !== entry.length || (verify && sha256(content) !== entry.sha256)) {
       if (key) stats.compiled += 1;
       return original.call(this, content, filename, ...rest);
     }
@@ -129,8 +137,9 @@ export function useCodeCache(serverDir: string): { stats: CodeCacheStats; stop: 
       return original.call(this, content, filename, ...rest);
     }
     const { script, run } = compileWrapped(content, filename, data);
-    if (script.cachedDataRejected) stats.rejected += 1;
-    else stats.used += 1;
+    // V8 says whether it took the data; a refusal compiled from the source already, as before.
+    if (script.cachedDataRejected === false) stats.used += 1;
+    else stats.rejected += 1;
     return run(this);
   };
   proto._compile = compileFromCache;
