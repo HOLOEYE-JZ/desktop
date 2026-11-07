@@ -1,0 +1,6 @@
+{
+  "startMedianMs": 10000,
+  "shellMedianMs": 2500,
+  "idlePssMb": 800,
+  "idleWakeupsPerMinute": 12000
+}
