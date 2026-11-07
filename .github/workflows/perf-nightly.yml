@@ -1,0 +1,97 @@
+name: Start-up and idle check
+
+# Every night, and by hand: a Linux test package of main, built with the webmail's main, signed
+# in to a throwaway Stalwart (the webmail's integration server, its test account alice) with a
+# few hundred messages, started cold ten times under xvfb, then left alone for five minutes.
+# scripts/perf-check.mjs measures the time to the first mail row, the shell's share of it
+# (to the page's navigation start), and idle memory (PSS), CPU and wake-ups of all processes.
+# Over a budget in test/perf-budgets.json fails the run. The numbers are a hosted runner's:
+# compare them with earlier runs of this job, never with a bench machine. Builds and publishes
+# nothing else, and holds no token beyond reading.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-nightly
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check out the webmail's test server
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: bulwarkmail/webmail
+          path: webmail-src
+          sparse-checkout: integration
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the webmail
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: node scripts/fetch-webmail.mjs --ref main
+
+      - name: Pack a test build
+        env:
+          BULWARK_TEST_PACK: "1"
+        run: |
+          node build.mjs --test
+          npx electron-builder --linux deb --x64 --publish never -c.directories.output=release-test
+
+      - name: Install it, and a headless desktop
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb dbus-x11 gnome-keyring ./release-test/*.deb
+
+      - name: Start the test server
+        working-directory: webmail-src/integration
+        run: |
+          cp .env.example .env
+          bash stalwart/prepare-stalwart-cli.sh
+          docker compose --env-file .env up -d --build --wait --wait-timeout 300 stalwart
+          echo "BULWARK_PERF_PASSWORD=$(sed -n 's/^TEST_ACCOUNT_PASSWORD=//p' .env)" >> "$GITHUB_ENV"
+
+      - name: Fill the Inbox
+        env:
+          BULWARK_PERF_SERVER: http://localhost:8025
+          BULWARK_PERF_USER: alice@example.org
+        run: node scripts/perf-seed.mjs --count 400
+
+      - name: Start-up and idle
+        env:
+          BULWARK_PERF_SERVER: http://localhost:8025
+          BULWARK_PERF_USER: alice@example.org
+        run: |
+          export DISPLAY=:99
+          Xvfb "$DISPLAY" -screen 0 1440x900x24 &
+          eval "$(dbus-launch --sh-syntax)"
+          eval "$(printf 'ci\n' | gnome-keyring-daemon --unlock --components=secrets)"
+          export XDG_CURRENT_DESKTOP=GNOME
+          node scripts/perf-check.mjs --app /opt/Bulwark/bulwark --runs 10 --idle-minutes 5 --idle-window 120 --out perf-result.json --budget test/perf-budgets.json
+
+      - name: Keep the numbers
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: perf-result
+          path: perf-result.json
+          if-no-files-found: ignore
