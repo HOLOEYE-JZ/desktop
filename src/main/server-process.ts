@@ -49,7 +49,8 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
   mkdirSync(options.logDir, { recursive: true });
   const log = createWriteStream(path.join(options.logDir, 'server.log'), { flags: options.append ? 'a' : 'w' });
 
-  const child = utilityProcess.fork(options.hostScript, [], {
+  // The folder only, so the host can load Next before init comes; everything secret goes by message.
+  const child = utilityProcess.fork(options.hostScript, [`--server-root=${options.serverDir}`], {
     serviceName: 'Bulwark mail service',
     // A real folder, whatever serverDir is: an asar can't be a working directory. host.ts
     // makes process.cwd() answer serverDir.

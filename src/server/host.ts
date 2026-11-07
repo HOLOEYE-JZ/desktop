@@ -108,11 +108,39 @@ function exitWithParent(pid: number): void {
   timer.unref();
 }
 
+const SERVER_ROOT_SWITCH = '--server-root=';
+
+interface LoadedNext {
+  serverDir: string;
+  config: Record<string, unknown>;
+  next: (options: Record<string, unknown>) => { prepare: () => Promise<void>; getRequestHandler: () => (req: IncomingMessage, res: ServerResponse) => unknown };
+  codeCache: ReturnType<typeof useCodeCache>;
+}
+
+let loaded: LoadedNext | null = null;
+
+/**
+ * Next's code, loaded once. Nothing secret is needed for it, so it starts as soon as this
+ * process does, while main is still on its way to the init message.
+ */
+function loadNext(serverDir: string): LoadedNext {
+  if (loaded?.serverDir === serverDir) return loaded;
+  // Next and the webmail read their files relative to the working directory, and an asar
+  // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
+  process.cwd = () => serverDir;
+  process.env.NODE_ENV = 'production';
+  const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
+  process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(config);
+  // Before the first server file loads: Next and the webmail compile from the package's cache.
+  const codeCache = useCodeCache(serverDir);
+  const next = createRequire(path.join(serverDir, 'server.js'))('next');
+  loaded = { serverDir, config, next, codeCache };
+  return loaded;
+}
+
 async function start(init: InitMessage): Promise<void> {
   exitWithParent(init.parentPid);
   const { serverDir } = init;
-  // Next and the webmail read their files relative to the working directory, and an asar
-  // can't be one (chdir goes to the OS). Electron's fs layer serves paths inside it.
   process.cwd = () => serverDir;
   setSecrets(init.secrets);
   process.env.NODE_ENV = 'production';
@@ -120,9 +148,6 @@ async function start(init: InitMessage): Promise<void> {
   setTrusted(init.trustedOrigins);
   setPrivacy(init.privacy);
   setPolicy(init.policy);
-
-  const { config } = JSON.parse(readFileSync(path.join(serverDir, '.next', 'required-server-files.json'), 'utf8'));
-  process.env.__NEXT_PRIVATE_STANDALONE_CONFIG = JSON.stringify(config);
 
   const pages = new HeldRequests();
   const secret = Buffer.from(init.launchSecret);
@@ -167,11 +192,10 @@ async function start(init: InitMessage): Promise<void> {
   // opens the window on `listening`. Synchronous, so no request is handled before it's done.
   const ca = useSystemCertificates();
 
-  // Before the first server file loads: Next and the webmail compile from the package's cache.
-  const codeCache = useCodeCache(serverDir);
+  let codeCache: LoadedNext['codeCache'] = null;
   try {
-    const requireFromServer = createRequire(path.join(serverDir, 'server.js'));
-    const next = requireFromServer('next');
+    const { config, next, codeCache: cache } = loadNext(serverDir);
+    codeCache = cache;
     const app = next({ dev: false, dir: serverDir, hostname: APP_HOST, port: 443, quiet: true, conf: config });
     await app.prepare();
     pages.open(app.getRequestHandler());
@@ -180,7 +204,11 @@ async function start(init: InitMessage): Promise<void> {
     throw error;
   }
   send({ type: 'ready', systemCertificates: ca.added, caError: ca.error });
-  if (codeCache) send({ type: 'log', level: 'info', message: `code cache: ${codeCache.stats.used} used, ${codeCache.stats.rejected} rejected, ${codeCache.stats.compiled} compiled` });
+  const report = (when: string) => {
+    if (codeCache) send({ type: 'log', level: 'info', message: `code cache ${when}: ${codeCache.stats.used} used, ${codeCache.stats.rejected} rejected, ${codeCache.stats.compiled} compiled` });
+  };
+  report('at ready');
+  setTimeout(() => report('a minute later'), 60_000).unref();
 }
 
 process.on('uncaughtException', (error) => {
@@ -191,6 +219,17 @@ process.on('unhandledRejection', (error) => {
   send({ type: 'log', level: 'error', message: String(error instanceof Error ? error.stack : error) });
   hostError(error, 'unhandledrejection');
 });
+
+// Main names the server's folder on the command line, so Next loads before the init message is
+// here. A failure here is left for start(), which loads again and reports it as before.
+const early = process.argv.find((arg) => arg.startsWith(SERVER_ROOT_SWITCH))?.slice(SERVER_ROOT_SWITCH.length);
+if (early) {
+  try {
+    loadNext(early);
+  } catch {
+    loaded = null;
+  }
+}
 
 process.parentPort.on('message', (event: { data: HostMessage }) => {
   const message = event.data;
