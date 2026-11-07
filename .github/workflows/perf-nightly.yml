@@ -5,9 +5,10 @@ name: Start-up and idle check
 # few hundred messages, started cold ten times under xvfb, then left alone for five minutes.
 # scripts/perf-check.mjs measures the time to the first mail row, the shell's share of it
 # (to the page's navigation start), and idle memory (PSS), CPU and wake-ups of all processes.
-# Over a budget in test/perf-budgets.json fails the run. The numbers are a hosted runner's:
-# compare them with earlier runs of this job, never with a bench machine. Builds and publishes
-# nothing else, and holds no token beyond reading.
+# Over a budget in test/perf-budgets.json fails the run, and so does a package whose server
+# code cache went unused. The budgets come from a bench machine with a margin (the file says
+# how); compare this job's numbers with its earlier runs. Builds and publishes nothing else,
+# and holds no token beyond reading.
 
 on:
   schedule:

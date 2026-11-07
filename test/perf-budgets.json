@@ -1,6 +1,14 @@
 {
-  "startMedianMs": 10000,
-  "shellMedianMs": 2500,
-  "idlePssMb": 800,
-  "idleWakeupsPerMinute": 12000
+  "_why": [
+    "From a bench machine on 2026-11-07 (Linux test deb under Xvfb, signed in to a real server, settled profile), with a margin for run-to-run spread:",
+    "startMedianMs: first mail row 3906 ms median over 24 cold starts (p75 4030); about 25 % over.",
+    "shellMedianMs: start to the page's navigation 999 ms median (p75 1030); about 30 % over.",
+    "idlePssMb: all processes 520 MB after five idle minutes; about 30 % over.",
+    "idleWakeupsPerMinute: voluntary context switches of all threads, 500 a minute over a 120 s window (1000 in 120 s); about 30 % over.",
+    "A runner slower than that machine needs these raised in step, never a lone retry."
+  ],
+  "startMedianMs": 4900,
+  "shellMedianMs": 1300,
+  "idlePssMb": 680,
+  "idleWakeupsPerMinute": 650
 }

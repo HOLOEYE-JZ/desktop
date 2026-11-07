@@ -15,13 +15,16 @@
 //
 // --budget names a JSON file such as {"startMedianMs": 9000, "shellMedianMs": 2500,
 // "idlePssMb": 700, "idleWakeupsPerMinute": 400}: the check fails when a measured value is
-// over its budget. A run that times out is an error and fails the check, never a number.
+// over its budget; keys starting with "_" are notes. A run that times out is an error and
+// fails the check, never a number. So does a package that carries the server's code cache
+// when the server used none of it.
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium } from 'playwright-core';
+import { asarHasCodeCache, codeCacheUsed, serverAsarFor } from './perf-code-cache.mjs';
 
 const ROW = '[data-testid="email-list-item"]';
 const APP_ORIGIN = 'https://app.bulwark.localhost';
@@ -247,6 +250,18 @@ try {
   await signIn(profile);
   // One start to warm the disk cache and the profile, not counted.
   await stop((await coldStart(profile)).child);
+  // A build that carries the server's code cache has to use it: none used starts as slowly as
+  // a build without one (another V8, a damaged cache).
+  const carried = asarHasCodeCache(serverAsarFor(app));
+  let used = null;
+  try {
+    used = codeCacheUsed(readFileSync(path.join(profile, 'logs', 'server.log'), 'utf8'));
+  } catch {
+    // No log: counted as none used below.
+  }
+  result.codeCache = { carried, used };
+  console.log(`code cache: ${carried ? 'in the package' : 'not in the package'}, ${used ?? 'no'} files used at ready`);
+  if (carried && !used) result.errors.push('the package carries a code cache and the server used none of it');
   for (let i = 0; i < runs; i += 1) {
     try {
       const run = await coldStart(profile);
@@ -285,6 +300,8 @@ if (budgetFile) {
   const budget = JSON.parse(readFileSync(budgetFile, 'utf8'));
   const measured = { startMedianMs: result.startMedianMs, shellMedianMs: result.shellMedianMs, idlePssMb: result.idle?.pssMb, idleWakeupsPerMinute: result.idle?.wakeupsPerMinute };
   for (const [key, limit] of Object.entries(budget)) {
+    // "_why" and the like: notes, not budgets.
+    if (key.startsWith('_')) continue;
     if (measured[key] === undefined || Number.isNaN(measured[key])) over.push(`${key}: not measured`);
     else if (measured[key] > limit) over.push(`${key}: ${measured[key]} over the budget of ${limit}`);
   }
