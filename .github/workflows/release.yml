@@ -602,6 +602,40 @@ jobs:
             fi
           } > "$RUNNER_TEMP/notes.md"
 
+          # The asset list is long. This gives one row per system with only the files people
+          # install, linked from the files that were built, so a missing build drops its link.
+          base="https://github.com/$GH_REPO/releases/download/v$VERSION"
+          link() {
+            for file in release/$2; do
+              if [ -e "$file" ]; then printf '[%s](%s/%s)' "$1" "$base" "${file#release/}"; fi
+              break
+            done
+          }
+          # row <system> <link text> <AMD64 file> <ARM64 file>; a text with its own brackets
+          # (the universal Mac image) gets no architecture added.
+          row() {
+            case "$2" in
+              *"("*) amd="$(link "$2" "$3")"; arm="$(link "$2" "$4")" ;;
+              *) amd="$(link "$2 (AMD64)" "$3")"; arm="$(link "$2 (ARM64)" "$4")" ;;
+            esac
+            if [ -n "$amd$arm" ]; then echo "| $1 | $amd | $arm |"; fi
+          }
+          {
+            echo
+            echo "## Download"
+            echo
+            echo "| System | AMD64 (Intel and AMD) | ARM64 |"
+            echo "| --- | --- | --- |"
+            row "Windows" "Installer" "*-x64.exe" "*-arm64.exe"
+            row "macOS" "Disk image (universal)" "*.dmg" "*.dmg"
+            row "Debian, Ubuntu" ".deb" "*_amd64.deb" "*_arm64.deb"
+            row "Fedora, openSUSE" ".rpm" "*.x86_64.rpm" "*.aarch64.rpm"
+            row "Other Linux" "AppImage" "*-x86_64.AppImage" "*-arm64.AppImage"
+            row "Windows for IT" "MSI" "*-x64.msi" "*-arm64.msi"
+            echo
+            echo "Most Windows PCs need the AMD64 installer, and Macs with Apple silicon or Intel both use the same disk image. The other files under Assets are for the built-in updater and for checking a download."
+          } >> "$RUNNER_TEMP/notes.md"
+
       # A tag this job creates with GITHUB_TOKEN starts no workflow, so a beta can't set off
       # another run. A prerelease is never Latest, which is what stable installs ask for.
       - name: Publish
