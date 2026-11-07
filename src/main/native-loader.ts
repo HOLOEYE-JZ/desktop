@@ -216,6 +216,7 @@ export interface NativeSystemModule {
   driveLetterRemove(letter: string): Promise<void>;
   fileSetPin(path: string, pin: PinState): Promise<void>;
   codeSignatureCheck(path: string): Promise<CodeSignature>;
+  windowToFront(hwnd: Buffer): boolean;
 }
 
 /** A file's embedded Authenticode signature, from WinVerifyTrust. */
@@ -454,6 +455,8 @@ export interface NativeHelper {
     setPin(file: string, pin: PinState): Promise<boolean>;
     /** An update installer's signature. Null: the helper can't say. */
     codeSignature(file: string): Promise<CodeSignature | null>;
+    /** This process's window in front, where Windows wouldn't let a focus do it. True when it is. */
+    windowToFront(windowHandle: Buffer): boolean;
   };
 }
 
@@ -674,6 +677,15 @@ export function wrapHelper(
         } catch (error) {
           warn(`A signature check: ${(error as Error)?.message ?? error}`);
           return null;
+        }
+      },
+      windowToFront: (windowHandle) => {
+        if (platform !== 'win32' || typeof native?.windowToFront !== 'function') return false;
+        try {
+          return native.windowToFront(windowHandle);
+        } catch (error) {
+          warn(`A window to the front: ${(error as Error)?.message ?? error}`);
+          return false;
         }
       },
     },

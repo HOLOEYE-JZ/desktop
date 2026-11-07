@@ -17,7 +17,8 @@ use windows::Storage::Streams::IBuffer;
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::Security::Cryptography::*;
 use windows::Win32::System::WinRT::IUserConsentVerifierInterop;
-use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetWindow, IsWindow, PostMessageW, SetForegroundWindow, GW_OWNER, WM_CLOSE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT, INPUT_MOUSE};
+use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetClassNameW, GetForegroundWindow, GetWindow, IsWindow, PostMessageW, SetForegroundWindow, GW_OWNER, WM_CLOSE};
 use windows_future::{AsyncStatus, IAsyncOperation};
 
 use crate::der::Curve;
@@ -66,6 +67,22 @@ fn window_from(bytes: &[u8]) -> Option<HWND> {
     };
     let window = HWND(value as *mut core::ffi::c_void);
     unsafe { IsWindow(Some(window)) }.as_bool().then_some(window)
+}
+
+/// Puts one of this process's windows in front, as a click on its toast asks. Windows lets only
+/// the process that had the last input take the foreground, and a toast's click launches a new
+/// process the shell gives no such right. An empty mouse input from here makes this process
+/// the last one, so SetForegroundWindow works instead of flashing the taskbar button.
+pub fn window_to_front(bytes: &[u8]) -> bool {
+    let Some(window) = window_from(bytes) else { return false };
+    unsafe {
+        if GetForegroundWindow() == window {
+            return true;
+        }
+        let input = [INPUT { r#type: INPUT_MOUSE, ..Default::default() }];
+        SendInput(&input, std::mem::size_of::<INPUT>() as i32);
+        SetForegroundWindow(window).as_bool()
+    }
 }
 
 /// The Windows Security dialog's window class. Not documented, so if a later Windows

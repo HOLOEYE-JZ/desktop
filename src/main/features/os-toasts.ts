@@ -127,6 +127,11 @@ export function setupToasts(hub: OsHub, attention: () => void): ToastHandle {
 
   const onActivation = (action: string, context: string, reply?: string) => hub.toastAction(action, context, reply);
   hub.copyText = (value) => clipboard.writeText(value);
+  hub.toFront = () => {
+    const main = hub.ctx.windows.mainWindow();
+    // A window that is still opening comes up in front by itself.
+    if (win32 && main && !main.isDestroyed() && main.isVisible()) native().system.windowToFront(main.getNativeWindowHandle());
+  };
 
   if (win32) {
     Notification.handleActivation((details) => {

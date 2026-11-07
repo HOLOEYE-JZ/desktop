@@ -50,3 +50,9 @@ pub fn agree(_id: &str, _peer: &PeerKey, _hwnd: Option<&[u8]>) -> Result<Vec<u8>
 pub fn policy_is_forced(_key: &str) -> bool {
     false
 }
+
+
+/// Windows only.
+pub fn window_to_front(_hwnd: &[u8]) -> bool {
+    false
+}

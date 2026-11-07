@@ -46,4 +46,5 @@ export const EXPORTS = [
   'registryDeleteValue',
   'registryRead',
   'registrySetString',
+  'windowToFront',
 ];

@@ -52,6 +52,7 @@ This is the whole surface. `test/native.spec.ts` fails if the binary exports any
 - `driveLetterAdd(letter, target)`: promise. Maps a free letter to an existing folder, as `subst X: <folder>`.
 - `driveLetterRemove(letter)`: promise. Takes a letter's mapping to a folder away, as `subst X: /D`. Refused for anything that isn't a mapped folder.
 - `fileSetPin(path, pin)`: promise. The pin attributes, `pinned`, `unpinned` or `unspecified`, as `attrib +P -U`, `-P +U` and `-P -U` set them.
+- `windowToFront(hwnd)`: puts one of this process's windows in front, as a click on its toast asks, where SetForegroundWindow alone would only flash its taskbar button: an empty mouse input first makes this process the one with the last input. True when the window is in front. False elsewhere.
 - `codeSignatureCheck(path)`: promise of `{ status, code, subject? }`: a file's embedded Authenticode signature through WinVerifyTrust (`valid`, `unsigned` or `invalid`, with Windows' code) and its signer as .NET's X509Certificate.Subject shows it. No revocation check over the network. For an update's installer, where electron-updater would start PowerShell's Get-AuthenticodeSignature.
 <!-- /exports -->
 

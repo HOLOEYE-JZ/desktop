@@ -228,3 +228,9 @@ pub fn policy_is_forced(key: &str) -> bool {
     let key = CFString::new(key);
     unsafe { CFPreferencesAppValueIsForced(key.as_concrete_TypeRef(), kCFPreferencesCurrentApplication) != 0 }
 }
+
+
+/// Windows only.
+pub fn window_to_front(_hwnd: &[u8]) -> bool {
+    false
+}

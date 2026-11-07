@@ -57,6 +57,34 @@ test.describe('the helper\'s Windows calls, wrapped', () => {
     ]);
   });
 
+  test("a window to the front: the helper's answer on Windows, false when it throws, is missing or off Windows", () => {
+    const handles: Buffer[] = [];
+    const handle = Buffer.from([1, 2, 3, 4, 0, 0, 0, 0]);
+    const front = (hwnd: Buffer) => {
+      handles.push(hwnd);
+      return true;
+    };
+    expect(wrapHelper(helper({ windowToFront: front }), { platform: 'win32', warn: quiet }).system.windowToFront(handle)).toBe(true);
+    expect(handles).toEqual([handle]);
+
+    const warned: string[] = [];
+    const throwing = () => {
+      throw new Error('boom');
+    };
+    expect(wrapHelper(helper({ windowToFront: throwing }), { platform: 'win32', warn: (message) => warned.push(message) }).system.windowToFront(handle)).toBe(false);
+    expect(warned.join('\n')).toContain('boom');
+
+    for (const [native, platform] of [
+      [helper({}), 'win32'],
+      [null, 'win32'],
+      [helper({ windowToFront: front }), 'darwin'],
+      [helper({ windowToFront: front }), 'linux'],
+    ] as const) {
+      expect(wrapHelper(native, { platform, warn: quiet }).system.windowToFront(handle)).toBe(false);
+    }
+    expect(handles).toHaveLength(1);
+  });
+
   test('answer what the tool\'s failure gave when a call fails', async () => {
     const warned: string[] = [];
     const fail = async () => {

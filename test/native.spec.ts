@@ -138,6 +138,15 @@ test.describe('policy', () => {
   });
 });
 
+test.describe('a window to the front', () => {
+  test('a handle that is no window is refused, and nothing else moves', () => {
+    const native = load() as NativeModule & { windowToFront(hwnd: Buffer): boolean };
+    expect(native.windowToFront(Buffer.alloc(8))).toBe(false);
+    expect(native.windowToFront(Buffer.alloc(3, 1))).toBe(false);
+    expect(native.windowToFront(Buffer.alloc(0))).toBe(false);
+  });
+});
+
 test('before anything has been listed, no id works', () => {
   // Runs before the block below in this worker, so this process hasn't listed yet.
   expect(() => load().keystoreSign('a'.repeat(64), sha('sha256'), { scheme: 'rsa-pkcs1', hash: 'SHA-256' })).toThrow(/keystore:not-found/);

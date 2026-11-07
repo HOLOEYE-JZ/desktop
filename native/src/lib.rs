@@ -420,6 +420,15 @@ pub fn policy_is_forced(key: String) -> Result<bool> {
     Ok(os::policy_is_forced(&key))
 }
 
+// ─── Window to the front ─────────────────────────────────────
+
+/// Windows: puts this process's window in front, as a click on its toast asks. True when it
+/// is. False elsewhere.
+#[napi]
+pub fn window_to_front(hwnd: Buffer) -> bool {
+    os::window_to_front(&hwnd)
+}
+
 // ─── Files drive (Windows Cloud Files) ───────────────────────
 //
 // Main decides what to place and fetch, and checks every path against its root first. These

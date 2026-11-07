@@ -42,6 +42,12 @@ export class OsHub extends EventEmitter<{
   quickComposeStatus: QuickComposeStatus | undefined;
   /** Writes to the clipboard, for a toast's copy button: os-toasts.ts. */
   copyText: ((text: string) => void) | null = null;
+  /**
+   * Puts the main window in front when Windows wouldn't, for a toast's click: os-toasts.ts.
+   * The click starts a second process, and Windows gives neither it nor this one the
+   * foreground, so a plain focus only flashes the taskbar button.
+   */
+  toFront: (() => void) | null = null;
   /** Any web page can fire `bulwark://new` in a loop, and each would take the focus. */
   private readonly newMessageLimit = new LinkRateLimit();
 
@@ -187,7 +193,7 @@ export class OsHub extends EventEmitter<{
       // the tray or not: asking for it would win over a start in the tray. A click, or a lock
       // that's real, brings it up.
       const starting = !this.lockIsReal && !this.ctx.windows.mainWindow();
-      if (!starting || action === 'open' || action === 'reply') this.ctx.showMain();
+      if (!starting || action === 'open' || action === 'reply') this.showForClick();
       return;
     }
     if (action.startsWith('copy:')) {
@@ -195,8 +201,15 @@ export class OsHub extends EventEmitter<{
       if (text !== null) this.copyText?.(text);
       return;
     }
-    if (action === 'open' || action === 'reply') this.dispatch({ type: 'notification', action, context, reply });
-    else this.dispatch({ type: 'notification', action, context }, { show: false });
+    if (action === 'open' || action === 'reply') {
+      this.dispatch({ type: 'notification', action, context, reply });
+      this.toFront?.();
+    } else this.dispatch({ type: 'notification', action, context }, { show: false });
+  }
+
+  private showForClick(): void {
+    this.ctx.showMain();
+    this.toFront?.();
   }
 
   /** The main window's page says it listens. Only that page: pop-outs don't act on these. */

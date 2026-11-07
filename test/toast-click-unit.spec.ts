@@ -102,6 +102,31 @@ test.describe('a toast action reaching the hub', () => {
     expect(locked.shows).toEqual(['show']);
   });
 
+  test('a click puts the window in front after showing it; a button that leaves the window alone does not', () => {
+    // Windows gives the process a toast's click starts no right to the foreground, so the
+    // focus alone only flashed the taskbar button.
+    const unlocked = setup(true);
+    const order: unknown[] = unlocked.shows;
+    unlocked.os.toFront = () => order.push('front');
+    unlocked.os.subscribe(unlocked.contents as never);
+    unlocked.os.setLockedByPage(false, unlocked.contents as never);
+    unlocked.os.toastAction('open', '{"emailId":"e1"}');
+    unlocked.os.toastAction('reply', '{"emailId":"e1"}', 'thanks');
+    expect(order).toEqual(['show', 'front', 'show', 'front']);
+    order.length = 0;
+    unlocked.os.toastAction('archive', '{"emailId":"e1"}');
+    unlocked.os.copyText = () => {};
+    unlocked.os.toastAction('copy:177945', '{}');
+    expect(order).toEqual([]);
+
+    // Behind the lock a click brings the lock screen to the front.
+    const locked = setup(true);
+    locked.os.toFront = () => locked.shows.push('front');
+    locked.os.setLockedByMain(true);
+    locked.os.toastAction('open', '{}');
+    expect(locked.shows).toEqual(['show', 'front']);
+  });
+
   test("Copy code puts the code on the clipboard and leaves the window and the page alone; behind the lock it copies nothing", () => {
     const unlocked = setup(true);
     const copied: string[] = [];
