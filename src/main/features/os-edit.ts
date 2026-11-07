@@ -321,6 +321,12 @@ export function setupEdit(hub: OsHub): EditHandle {
     session.timer = null;
   };
 
+  /** A folder a program still holds: the poll tries it again. */
+  const holdFolder = (folder: string) => {
+    heldFolders.add(folder);
+    startPoll();
+  };
+
   const retryHeldFolders = () => {
     for (const folder of [...heldFolders]) if (removeFolderNow(folder)) heldFolders.delete(folder);
   };
@@ -345,7 +351,7 @@ export function setupEdit(hub: OsHub): EditHandle {
     const folder = folderOf(record);
     const shared = [...sessions.values()].some((other) => folderIdOf(other.record) === folderIdOf(record));
     if (shared) rmSync(recordFileOf(record), { force: true });
-    else if (!removeFolderNow(folder)) heldFolders.add(folder);
+    else if (!removeFolderNow(folder)) holdFolder(folder);
     return true;
   };
 
@@ -537,11 +543,17 @@ export function setupEdit(hub: OsHub): EditHandle {
     session.timer.unref?.();
   }
 
+  // Only while there's something to look after: an idle app with no edited files doesn't wake
+  // up for this. Whatever adds a session or a held folder starts it again.
   const startPoll = () => {
     pollTimer ??= setInterval(() => {
       for (const session of sessions.values()) void check(session);
       retryClosing();
       if (Date.now() - lastExpiryCheck > EXPIRY_CHECK_MS) expire();
+      if (sessions.size === 0 && heldFolders.size === 0 && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
     }, POLL_MS);
     pollTimer.unref?.();
   };
@@ -572,7 +584,7 @@ export function setupEdit(hub: OsHub): EditHandle {
       const folder = path.join(root, name);
       const records = readRecords(folder);
       if (records.length === 0) {
-        if (!removeFolderNow(folder)) heldFolders.add(folder);
+        if (!removeFolderNow(folder)) holdFolder(folder);
         continue;
       }
       for (const record of records) {
@@ -858,7 +870,7 @@ export function setupEdit(hub: OsHub): EditHandle {
     for (const session of [...sessions.values()]) if (!removeSession(session, 'forced')) left.push(session.record.name);
     const stillThere = new Set([...sessions.values()].map(({ record }) => folderIdOf(record)));
     for (const folder of removeAllFolders(root, stillThere)) {
-      heldFolders.add(folder);
+      holdFolder(folder);
       left.push(path.basename(folder));
     }
     announce();
