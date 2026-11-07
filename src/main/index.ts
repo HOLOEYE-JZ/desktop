@@ -46,7 +46,7 @@ import { policyProblems } from '../shared/policy-schema';
 import { deniedEnvironment, deniedSwitches, withoutDeniedSwitches } from './switch-guard';
 import { pluginFeatures, profilePaths, seedProfile, serverEnv } from './profile';
 import { randomSecret, SecretStore, SecretStoreError } from './secrets';
-import { startServerProcess, ServerStartError } from './server-process';
+import { startServerProcess, ServerStartError, type ServerProcess } from './server-process';
 import { ServerRegistry } from './servers';
 import { StateFile } from './state';
 import { strings, uiLanguageNow, unsentDetail } from './strings';
@@ -387,7 +387,23 @@ async function keySafeOnDisk(instance: boolean): Promise<boolean> {
   }
 }
 
+/**
+ * The server spawned before the secrets are read, until it has its init message. A start
+ * that never gets that far (secrets refused, a throw on the way) stops it, or it would stay
+ * up with Next loaded and nothing to serve.
+ */
+let serverAwaitingInit: ServerProcess | null = null;
+
 async function bootStandalone(theme: ThemeController): Promise<void> {
+  try {
+    await bootStandaloneServer(theme);
+  } finally {
+    serverAwaitingInit?.stop();
+    serverAwaitingInit = null;
+  }
+}
+
+async function bootStandaloneServer(theme: ThemeController): Promise<void> {
   const userData = app.getPath('userData');
   const secretsDir = path.join(userData, KEYS_FOLDER);
   mkdirSync(secretsDir, { recursive: true });
@@ -410,6 +426,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   });
   let giveFirstInit: (init: InitMessage) => void = () => {};
   const firstServer = startServerProcess(serverOptions(false, new Promise<InitMessage>((resolve) => (giveFirstInit = resolve))));
+  serverAwaitingInit = firstServer;
 
   let sessionSecret: string;
   let adminPassword: string;
@@ -425,6 +442,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     adminPassword = admin.value;
     tlsPair = await tlsMaterial(secrets, secretsDir);
   } catch (error) {
+    serverAwaitingInit = null;
     firstServer.stop();
     if (error instanceof SecretStoreError) {
       const text = strings();
@@ -465,6 +483,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   // A restart after a crash gets what holds then.
   const spawnServer = (append: boolean) => startServerProcess(serverOptions(append, initMessage()));
   giveFirstInit(initMessage());
+  serverAwaitingInit = null;
   let server = firstServer;
   const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins), isAllowedByPolicy: policies.serverAllowed });
   requestGate(session).add((url) => servers.refusesRequest(url));

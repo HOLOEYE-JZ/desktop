@@ -13,12 +13,12 @@ import { timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:https';
-import { connect } from 'node:net';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import tls from 'node:tls';
 import { useCodeCache } from './code-cache';
 import { HeldRequests } from './held-requests';
+import { PARENT_PID_SWITCH, ParentWatch, SERVER_ROOT_SWITCH, switchValue } from './parent-watch';
 import { forwardJmap, isJmapRoute } from './jmap-proxy';
 import { APP_HOST, LAUNCH_HEADER, MAIN_HEADER, normalizeStack, type HostMessage, type InitMessage, type MainErrorMessage, type PrivacyMessage } from './protocol';
 import { isAdminLogin, isImageOptimizer, sanitizeRequest } from './sanitize';
@@ -94,46 +94,9 @@ function launchSecretMatches(given: string | string[] | undefined, secret: Buffe
   return value.length === secret.length && timingSafeEqual(value, secret);
 }
 
-/**
- * Chromium doesn't end a utilityProcess when main is killed or crashes, and this
- * one holds a listening port and the user's data open. So it holds a connection to main's
- * lifeline (src/main/server-process.ts), which the OS closes the moment main goes, killed or
- * not: no timer, so an idle server doesn't wake up for this. Only when that connection can't
- * be made does it fall back to checking main's pid every ten seconds.
- */
-export const PARENT_CHECK_MS = 10_000;
+// Main's end ends this process (src/server/parent-watch.ts).
+const parentWatch = new ParentWatch();
 
-function exitWithParent(pid: number, lifeline: string | undefined): void {
-  const poll = () => {
-    const timer = setInterval(() => {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        process.exit(0);
-      }
-    }, PARENT_CHECK_MS);
-    timer.unref();
-  };
-  if (!lifeline) {
-    poll();
-    return;
-  }
-  let connected = false;
-  const socket = connect(lifeline);
-  socket.on('connect', () => {
-    connected = true;
-  });
-  socket.on('data', () => {});
-  socket.on('error', () => {});
-  socket.on('close', () => {
-    if (connected) process.exit(0);
-    else poll();
-  });
-  // Not what keeps the process alive: the server is.
-  socket.unref();
-}
-
-const SERVER_ROOT_SWITCH = '--server-root=';
 
 interface LoadedNext {
   serverDir: string;
@@ -168,7 +131,8 @@ function loadNext(serverDir: string): LoadedNext {
 }
 
 async function start(init: InitMessage): Promise<void> {
-  exitWithParent(init.parentPid, init.lifeline);
+  parentWatch.watchPid(init.parentPid);
+  if (init.lifeline) parentWatch.useLifeline(init.lifeline);
   const { serverDir } = init;
   process.cwd = () => serverDir;
   setSecrets(init.secrets);
@@ -251,7 +215,9 @@ process.on('unhandledRejection', (error) => {
 
 // Main names the server's folder on the command line, so Next loads before the init message is
 // here. A failure here is left for start(), which loads again and reports it as before.
-const early = process.argv.find((arg) => arg.startsWith(SERVER_ROOT_SWITCH))?.slice(SERVER_ROOT_SWITCH.length);
+// Watched from the start: main can end (a crash during a keyring prompt) before init comes.
+parentWatch.watchPid(Number(switchValue(process.argv, PARENT_PID_SWITCH)));
+const early = switchValue(process.argv, SERVER_ROOT_SWITCH);
 if (early) {
   try {
     loadNext(early);
