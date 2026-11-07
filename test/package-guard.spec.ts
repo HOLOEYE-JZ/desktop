@@ -717,6 +717,21 @@ test.describe('the server tree per target', () => {
     rmSync(server, { recursive: true, force: true });
   });
 
+  test("what the build's server code names stays, even when it is on the build-only list", () => {
+    const server = tree(['colour', 'sharp-win32-x64']);
+    const next = path.join(server, 'node_modules', 'next');
+    for (const file of ['dist/compiled/next-devtools/index.js', 'dist/compiled/babel/bundle.js']) {
+      mkdirSync(path.dirname(path.join(next, file)), { recursive: true });
+      writeFileSync(path.join(next, file), 'x');
+    }
+    mkdirSync(path.join(server, '.next', 'server', 'chunks'), { recursive: true });
+    writeFileSync(path.join(server, '.next', 'server', 'chunks', '1.js'), 'module.exports = () => require("next/dist/compiled/next-devtools");');
+    trimServer(server, 'win32', 'x64');
+    expect(existsSync(path.join(next, 'dist/compiled/next-devtools/index.js'))).toBe(true);
+    expect(existsSync(path.join(next, 'dist/compiled/babel/bundle.js'))).toBe(false);
+    rmSync(server, { recursive: true, force: true });
+  });
+
   test('a build for an architecture whose sharp is missing fails, instead of shipping broken', () => {
     const server = tree(['colour', 'sharp-win32-x64']);
     expect(() => trimServer(server, 'win32', 'arm64')).toThrow(/no sharp for win32-arm64/);

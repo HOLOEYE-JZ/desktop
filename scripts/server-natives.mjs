@@ -69,6 +69,24 @@ export const NEXT_BUILD_ONLY = [
   'dist/compiled/next-server/pages-turbo.runtime.prod.js',
 ];
 
+/** Which of `needles` the server's own compiled code (.next/server) mentions. */
+function serverCodeNames(server, needles) {
+  const found = new Set();
+  const visit = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) visit(full);
+      else if (/\.(js|cjs|mjs|json)$/.test(entry.name)) {
+        const text = readFileSync(full, 'utf8');
+        for (const needle of needles) if (!found.has(needle) && text.includes(needle)) found.add(needle);
+      }
+    }
+  };
+  visit(path.join(server, '.next', 'server'));
+  return found;
+}
+
 export function trimServer(server, platform, arch) {
   const modules = path.join(server, 'node_modules');
   const targets = sharpTargets(platform, arch);
@@ -80,9 +98,12 @@ export function trimServer(server, platform, arch) {
     const full = path.join(modules, dir);
     if (existsSync(full)) bytes += remove(full, removed);
   }
+  // A build that does name one of them in its server code (a route on the edge runtime, say)
+  // keeps it: the list is what this webmail doesn't use, and a later one might.
+  const named = serverCodeNames(server, NEXT_BUILD_ONLY.map((relative) => `next/${relative.replace(/\.js$/, '')}`));
   for (const relative of NEXT_BUILD_ONLY) {
     const full = path.join(modules, 'next', ...relative.split('/'));
-    if (!existsSync(full)) continue;
+    if (!existsSync(full) || named.has(`next/${relative.replace(/\.js$/, '')}`)) continue;
     bytes += sizeOf(full);
     rmSync(full, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     removed.add(`next/${relative}`);
