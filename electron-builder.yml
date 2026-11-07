@@ -30,6 +30,9 @@ files:
     to: native
     filter:
       - bulwark-native.node
+  # The policy watcher's C++ sources and the headers it was built against: nothing loads them.
+  - '!**/node_modules/node-addon-api/**'
+  - '!**/node_modules/@vscode/policy-watcher/src/**'
   # What node-gyp leaves beside the policy watcher on Windows.
   - '!**/node_modules/@vscode/policy-watcher/build/**/*.{iobj,ipdb,lib,exp,tlog,vcxproj}'
   - '!**/node_modules/@vscode/policy-watcher/build/**/*.tlog/**'
