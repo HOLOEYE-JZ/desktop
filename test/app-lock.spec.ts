@@ -62,6 +62,30 @@ test.describe('the gate, in plain Node', () => {
     expect(gate.locked).toBe(true);
   });
 
+  test('the screen lock only goes off while unlocked, stays off across a restart, and a new lock turns it back on', () => {
+    const gate = new AppLockGate();
+    gate.init(file);
+    expect(gate.locksWithScreen).toBe(true);
+    // No lock yet: nothing to choose.
+    expect(gate.setLocksWithScreen(false)).toBe(false);
+    gate.enroll(proof(1));
+    gate.lock();
+    expect(gate.setLocksWithScreen(false)).toBe(false);
+    expect(gate.locksWithScreen).toBe(true);
+    gate.prove(proof(1));
+    for (const wrong of ['false', 0, null, undefined]) expect(gate.setLocksWithScreen(wrong)).toBe(false);
+    expect(gate.locksWithScreen).toBe(true);
+    expect(gate.setLocksWithScreen(false)).toBe(true);
+    expect(gate.locksWithScreen).toBe(false);
+
+    const again = new AppLockGate();
+    again.init(file);
+    expect(again.locksWithScreen).toBe(false);
+    again.disable(proof(1));
+    again.enroll(proof(2));
+    expect(again.locksWithScreen).toBe(true);
+  });
+
   test('counts PIN guesses across a restart, waits after the free ones, and only the proof clears them', () => {
     const gate = new AppLockGate();
     gate.init(file);
@@ -212,6 +236,24 @@ test.describe('through the real preload and IPC', () => {
       await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { lockScreen(): void } }).__bulwarkAppLock.lockScreen());
       expect(await gateLocked(app)).toBe(true);
       await expect.poll(() => page.evaluate(() => (window as unknown as { __locks: number }).__locks)).toBe(1);
+    });
+  });
+
+  test('with "when I sign out or restart" chosen the screen locking leaves it unlocked, and a frame can\'t choose it', async () => {
+    await run('yes', async (app, page) => {
+      expect(await call(page, 'enroll', 1)).toBe(true);
+      const answer = await page.evaluate(async () => {
+        const bridge = (window as unknown as { bulwarkDesktop: { appLock: { claim(): { setScreenLock?(on: boolean): Promise<boolean> } | null } } }).bulwarkDesktop.appLock;
+        const held = window as unknown as { __controls?: { setScreenLock?(on: boolean): Promise<boolean> } };
+        held.__controls ??= bridge.claim() ?? undefined;
+        return { second: bridge.claim(), set: await held.__controls?.setScreenLock?.(false) };
+      });
+      expect(answer).toEqual({ second: null, set: true });
+      await app.evaluate(() => (globalThis as unknown as { __bulwarkAppLock: { lockScreen(): void } }).__bulwarkAppLock.lockScreen());
+      expect(await gateLocked(app)).toBe(false);
+      // "Lock now" still locks.
+      await call(page, 'lock');
+      await expect.poll(() => gateLocked(app)).toBe(true);
     });
   });
 

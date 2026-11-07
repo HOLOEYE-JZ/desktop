@@ -184,7 +184,11 @@ function setup(ctx: FeatureContext): void {
   // Tells the pages, which save what's open and go to the lock screen.
   appLockGate.on('requested', () => windows.broadcast(CHANNEL.appLockRequest, null));
 
-  powerMonitor.on('lock-screen', () => appLockGate.requestLock());
+  // Unless the user chose "when I sign out or restart". A timeout the organisation sets wins over
+  // that choice, as it does on the page.
+  powerMonitor.on('lock-screen', () => {
+    if (appLockGate.locksWithScreen || policies.snapshot.AppLockTimeoutMinutes.locked) appLockGate.requestLock();
+  });
   // Toasts, the jump list and window titles outlive this run, or come up before the next page does.
   app.on('before-quit', () => {
     if (appLockGate.enrolled) appLockGate.lock();
@@ -202,6 +206,8 @@ function setup(ctx: FeatureContext): void {
       : {}),
   }));
   ctx.on(CHANNEL.appLockLock, () => appLockGate.lock());
+  // Only the page that claimed the controls, and only while unlocked: see the gate.
+  ctx.handle(CHANNEL.appLockScreenLock, (_event, _window, on) => appLockGate.setLocksWithScreen(on));
 
   /** The first button is the yes. A no holds for this run, so nothing can keep asking. */
   const askOnce = (message: string, detail: string, yes: string, no: string, window: BrowserWindow | null) => {

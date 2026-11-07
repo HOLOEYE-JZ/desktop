@@ -273,6 +273,8 @@ if (allowedOrigin && /^https?:$/.test(window.location.protocol) && window.locati
           unwrap: (data: Uint8Array): Promise<Uint8Array | null> => ipcRenderer.invoke(CHANNEL.appLockUnwrap, data),
           pinStep: (data: Uint8Array): Promise<PinStepAnswer> => ipcRenderer.invoke(CHANNEL.appLockPinStep, data),
           replaceRenderer: () => ipcRenderer.send(CHANNEL.appLockReplaceRenderer),
+          // Turning it off makes the app less locked, so a frame can't.
+          setScreenLock: (on: boolean): Promise<boolean> => ipcRenderer.invoke(CHANNEL.appLockScreenLock, on),
           // Here too: a frame could delete what the page can, but not everything else as well.
           localWipe: (request: LocalWipeRequest): Promise<{ failed: string[] }> => ipcRenderer.invoke(CHANNEL.localWipeRun, request),
           finishLocalWipe: (options: { keepLocalStorage: boolean }): Promise<void> => ipcRenderer.invoke(CHANNEL.localWipeFinish, options),

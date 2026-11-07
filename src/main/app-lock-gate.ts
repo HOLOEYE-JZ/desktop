@@ -47,6 +47,8 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   private guesses = 0;
   private blockedUntil = 0;
   private unlockedAt = 0;
+  /** Whether the screen locking locks the app. Only an unlocked page can turn it off. */
+  private screenLock = true;
 
   /** Features start in some order, and whichever asks first reads the profile. */
   initForProfile(userData: string, origin: string): void {
@@ -60,10 +62,12 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
     this.file = file;
     let locked = false;
     try {
-      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { proofHash?: unknown; guesses?: unknown; blockedUntil?: unknown };
+      const parsed = JSON.parse(readFileSync(file, 'utf8')) as { proofHash?: unknown; guesses?: unknown; blockedUntil?: unknown; screenLock?: unknown };
       if (typeof parsed.proofHash === 'string') this.proofHash = parsed.proofHash;
       this.guesses = typeof parsed.guesses === 'number' ? parsed.guesses : 0;
       this.blockedUntil = typeof parsed.blockedUntil === 'number' ? parsed.blockedUntil : 0;
+      // Only a clear "no" turns it off.
+      this.screenLock = parsed.screenLock !== false;
       locked = true;
     } catch (error) {
       // No file: no lock here. Anything else: it can't be told, so locked.
@@ -78,6 +82,23 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
 
   get enrolled(): boolean {
     return this.proofHash !== null;
+  }
+
+  get locksWithScreen(): boolean {
+    return this.screenLock;
+  }
+
+  /**
+   * The user's "Lock after" choice: off for "when I sign out or restart". Turning it off makes
+   * the app less locked, so only while unlocked, which only the PIN or a passkey gets to.
+   */
+  setLocksWithScreen(on: unknown): boolean {
+    if (typeof on !== 'boolean' || !this.enrolled || this.lockedNow) return false;
+    if (on !== this.screenLock) {
+      this.screenLock = on;
+      this.write();
+    }
+    return true;
   }
 
   private set(locked: boolean): void {
@@ -114,6 +135,7 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
     this.proofHash = digest(proof);
     this.guesses = 0;
     this.blockedUntil = 0;
+    this.screenLock = true;
     this.write();
     this.set(false);
     this.emit('enrolled', true);
@@ -149,7 +171,8 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
   private write(): void {
     if (!this.file || !this.proofHash) return;
     mkdirSync(path.dirname(this.file), { recursive: true });
-    writeFileSync(this.file, JSON.stringify({ proofHash: this.proofHash, guesses: this.guesses, blockedUntil: this.blockedUntil }), { mode: 0o600 });
+    const record = { proofHash: this.proofHash, guesses: this.guesses, blockedUntil: this.blockedUntil, ...(this.screenLock ? {} : { screenLock: false }) };
+    writeFileSync(this.file, JSON.stringify(record), { mode: 0o600 });
   }
 
   /** For main's own checks: Windows Hello or Touch ID said yes. */
@@ -169,6 +192,7 @@ export class AppLockGate extends EventEmitter<{ locked: [boolean]; enrolled: [bo
     this.proofHash = null;
     this.guesses = 0;
     this.blockedUntil = 0;
+    this.screenLock = true;
     this.set(false);
     this.emit('enrolled', false);
   }

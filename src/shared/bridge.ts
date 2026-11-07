@@ -1081,6 +1081,7 @@ export const CHANNEL = {
   appLockWrap: 'bulwark:appLock.wrap',
   appLockPinStep: 'bulwark:appLock.pinStep',
   appLockReplaceRenderer: 'bulwark:appLock.replaceRenderer',
+  appLockScreenLock: 'bulwark:appLock.screenLock',
   httpCacheClear: 'bulwark:httpCache.clear',
   localWipeRun: 'bulwark:localWipe.run',
   localWipeFinish: 'bulwark:localWipe.finish',
