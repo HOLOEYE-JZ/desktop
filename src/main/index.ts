@@ -14,7 +14,7 @@ import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, screen, session as electronSession, shell } from 'electron';
-import { APP_HOST, APP_ORIGIN } from '../server/protocol';
+import { APP_HOST, APP_ORIGIN, type InitMessage } from '../server/protocol';
 import { CHANNEL, type Mode } from '../shared/bridge';
 import { jmapServerAllowed, parseInstanceUrl } from '../shared/policy-schema';
 import { firstPageUrl, parseWelcomeAddress, parseWelcomeEmail, welcomeLinkUrl } from '../shared/welcome-address';
@@ -394,6 +394,23 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   const secrets = new SecretStore(secretsDir);
   const profile = profilePaths(userData);
 
+  // The server's process starts now and loads Next's code while the secrets are read. They,
+  // and everything else it needs, go to it by message once they're here.
+  const serverOptions = (append: boolean, init: InitMessage | Promise<InitMessage>) => ({
+    hostScript: SERVER_HOST,
+    serverDir: serverDirectory(),
+    env: {
+      ...serverEnv(profile, process.env, process.platform),
+      // Only a test build: the local stand-in for the collector needs it.
+      ...(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE === '1' ? { BULWARK_TELEMETRY_ALLOW_PRIVATE: '1' } : {}),
+    },
+    logDir: path.join(userData, 'logs'),
+    append,
+    init,
+  });
+  let giveFirstInit: (init: InitMessage) => void = () => {};
+  const firstServer = startServerProcess(serverOptions(false, new Promise<InitMessage>((resolve) => (giveFirstInit = resolve))));
+
   let sessionSecret: string;
   let adminPassword: string;
   let tlsPair: Awaited<ReturnType<typeof tlsMaterial>>;
@@ -408,6 +425,7 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
     adminPassword = admin.value;
     tlsPair = await tlsMaterial(secrets, secretsDir);
   } catch (error) {
+    firstServer.stop();
     if (error instanceof SecretStoreError) {
       const text = strings();
       if (error.code === 'missing') await showErrorPage(text.errorSecretMissingTitle, text.errorSecretMissingBody(secretsDir));
@@ -431,32 +449,23 @@ async function bootStandalone(theme: ThemeController): Promise<void> {
   applyPermissionPolicy(session, APP_ORIGIN);
 
   const cors = new CorsInjector(session, APP_ORIGIN);
-  const spawnServer = (append: boolean) =>
-    startServerProcess({
-      hostScript: SERVER_HOST,
-      serverDir: serverDirectory(),
-      env: {
-        ...serverEnv(profile, process.env, process.platform),
-        // Only a test build: the local stand-in for the collector needs it.
-        ...(__BULWARK_TEST_BUILD__ && process.env.BULWARK_TELEMETRY_ALLOW_PRIVATE === '1' ? { BULWARK_TELEMETRY_ALLOW_PRIVATE: '1' } : {}),
-      },
-      logDir: path.join(userData, 'logs'),
-      append,
-      init: {
-        type: 'init',
-        serverDir: serverDirectory(),
-        port: SERVER_PORT,
-        parentPid: process.pid,
-        launchSecret,
-        mainSecret,
-        tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
-        secrets: { sessionSecret, adminPassword },
-        trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
-        policy: policies.serverPolicy(),
-        privacy: privacy.serverView('standalone'),
-      },
-    });
-  let server = spawnServer(false);
+  const initMessage = (): InitMessage => ({
+    type: 'init',
+    serverDir: serverDirectory(),
+    port: SERVER_PORT,
+    parentPid: process.pid,
+    launchSecret,
+    mainSecret,
+    tls: { key: tlsPair.keyPem, cert: tlsPair.certPem },
+    secrets: { sessionSecret, adminPassword },
+    trustedOrigins: stateFile.data.approvedServers.map((s) => s.origin).filter((origin) => policies.serverAllowed(origin)),
+    policy: policies.serverPolicy(),
+    privacy: privacy.serverView('standalone'),
+  });
+  // A restart after a crash gets what holds then.
+  const spawnServer = (append: boolean) => startServerProcess(serverOptions(append, initMessage()));
+  giveFirstInit(initMessage());
+  let server = firstServer;
   const servers = new ServerRegistry({ state: stateFile, cors, sendTrusted: (origins) => server.sendTrusted(origins), isAllowedByPolicy: policies.serverAllowed });
   requestGate(session).add((url) => servers.refusesRequest(url));
   // config-manager notices the changed file by itself, within seconds.

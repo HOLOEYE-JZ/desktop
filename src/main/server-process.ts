@@ -15,7 +15,8 @@ export interface ServerProcessOptions {
   hostScript: string;
   serverDir: string;
   env: Record<string, string>;
-  init: InitMessage;
+  /** Sent once the process is up; a promise lets it start before the secrets are read. */
+  init: InitMessage | Promise<InitMessage>;
   logDir: string;
   /** Keeps the log of the run before a restart. */
   append?: boolean;
@@ -88,7 +89,7 @@ export function startServerProcess(options: ServerProcessOptions): ServerProcess
     });
   });
 
-  child.once('spawn', () => child.postMessage(options.init));
+  child.once('spawn', () => void Promise.resolve(options.init).then((init) => child.postMessage(init)).catch(() => {}));
 
   let stopped = false;
   const stop = () => {
