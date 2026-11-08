@@ -26,8 +26,11 @@ export function isSsoStart(url: URL, origin: string): boolean {
   return false;
 }
 
-/** A plugin's sign-in path on the instance, with or without the webmail's locale in front. */
-const PLUGIN_CALLBACK_PATH = /^(?:\/[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*)?\/plugins\/oauth\/callback\/?$/;
+/**
+ * A plugin's sign-in path on the instance: the webmail's locale and its base path may stand in
+ * front (main knows the instance's origin, not its path). The webmail vouches for the rest.
+ */
+const PLUGIN_CALLBACK_PATH = /^(?:\/[^/]+)*\/plugins\/oauth\/callback\/?$/;
 
 /**
  * A plugin's OAuth request, as the webmail hands it over: an https page elsewhere whose one
