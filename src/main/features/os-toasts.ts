@@ -5,9 +5,10 @@
  * needs nothing from us beyond a stable CLSID. It writes a Start Menu shortcut and
  * HKCU\Software\Classes\CLSID\{...}\LocalServer32 itself, and once this process has
  * shown a toast it answers COM: a typed reply reaches Notification.handleActivation.
- * Started by COM for a toast from before, it never answered, so click and buttons go by
- * protocol (buildToastXml). Left to itself the CLSID changes every run, and each run
- * would leave another key behind.
+ * Started by COM for a toast from before, it never answered, so buttons go by protocol, and
+ * so does a click until this process has shown a toast (buildToastXml). After that a click
+ * goes through the activator, the only way Windows lets the window come to the front.
+ * Left to itself the CLSID changes every run, and each run would leave another key behind.
  */
 
 import { execFile } from 'node:child_process';

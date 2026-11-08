@@ -467,11 +467,24 @@ test.describe('toast', () => {
     expect(xml).toContain('<audio silent="true"/>');
   });
 
-  test('buttons and the click work with the app closed; only the reply needs the activator', () => {
+  test('buttons work with the app closed; the click and the reply go to the activator once it answers', () => {
     const xml = buildToastXml(toast, SECRET, true);
-    expect(xml).toMatch(/<toast launch="bulwark:\/\/toast\/open[^"]*" activationType="protocol">/);
+    expect(xml).toMatch(/<toast launch="bulwark:open:[^"]*" activationType="foreground">/);
     expect(xml).toMatch(/content="Archive" activationType="protocol" arguments="bulwark:\/\/toast\/archive/);
     expect(xml).toMatch(/content="Reply" hint-inputId="reply" activationType="foreground" arguments="bulwark:reply:/);
+  });
+
+  test('the click comes back from the activator as an open of the same message', () => {
+    const launch = /<toast launch="([^"]*)"/.exec(buildToastXml(toast, SECRET, true))?.[1] ?? '';
+    const decoded = launch.replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code))).replace(/&amp;/g, '&');
+    expect(parseToastArguments(decoded)).toEqual({ action: 'open', context: toast.context });
+  });
+
+  test('where the activator isn\'t known to answer, the click is a signed link that works with the app closed', () => {
+    const xml = buildToastXml(toast, SECRET, false);
+    const launch = /<toast launch="([^"]*)" activationType="protocol">/.exec(xml)?.[1] ?? '';
+    const decoded = launch.replace(/&#(\d+);/g, (_, code: string) => String.fromCharCode(Number(code))).replace(/&amp;/g, '&');
+    expect(parseToastUrl(decoded, SECRET)).toEqual({ action: 'open', context: toast.context });
   });
 
   test('a page can link to a toast URL, and it does nothing without this install\'s key', () => {

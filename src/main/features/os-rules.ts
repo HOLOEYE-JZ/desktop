@@ -555,17 +555,19 @@ export interface ToastContent {
  * The Windows toast. Electron's own `actions` only know a button's index, which is
  * nothing to go on after a restart.
  *
- * Click and buttons are protocol activations, because that also works when the app isn't
- * running: Electron's activator only answers once this process has shown a toast, and
- * COM gave up on a cold start here (decisions, OS integration).
+ * Buttons are protocol activations, because that also works when the app isn't running:
+ * Electron's activator only answers once this process has shown a toast, and COM gave up on
+ * a cold start here (decisions, OS integration).
  *
- * Typed text only travels through the activator, so the field is only there when that's
- * known to answer: `inlineReply`, after this process has shown a toast. Otherwise Reply is a
- * button that opens the composer, so nothing typed can be lost.
+ * The click and typed text go through the activator when it's known to answer:
+ * `activatorAnswers`, after this process has shown a toast. Windows lets only the activator
+ * take the foreground from the notification shell; a process started for a protocol link
+ * gets no such right, so a click by protocol leaves the window behind. Otherwise the click is
+ * a protocol link and Reply a button that opens the composer, so nothing typed can be lost.
  */
-export function buildToastXml(toast: ToastContent, secret: string, inlineReply: boolean): string {
+export function buildToastXml(toast: ToastContent, secret: string, activatorAnswers: boolean): string {
   let reply = '';
-  if (toast.reply && inlineReply) {
+  if (toast.reply && activatorAnswers) {
     reply = `<input id="${REPLY_INPUT}" type="text" placeHolderContent="${xml(toast.reply.placeholder)}"/><action content="${xml(toast.reply.label)}" hint-inputId="${REPLY_INPUT}" activationType="foreground" arguments="${xml(toastArguments('reply', toast.context))}"/>`;
   } else if (toast.reply) {
     reply = `<action content="${xml(toast.reply.label)}" activationType="protocol" arguments="${xml(toastUrl('reply', toast.context, secret))}"/>`;
@@ -577,7 +579,10 @@ export function buildToastXml(toast: ToastContent, secret: string, inlineReply: 
   const actions = reply || buttons ? `<actions>${reply}${buttons}</actions>` : '';
   const audio = toast.silent ? '<audio silent="true"/>' : '';
   const body = toast.body ? `<text>${xml(toast.body)}</text>` : '';
-  return `<toast launch="${xml(toastUrl('open', toast.context, secret))}" activationType="protocol"><visual><binding template="ToastGeneric"><text>${xml(toast.title)}</text>${body}</binding></visual>${actions}${audio}</toast>`;
+  const launch = activatorAnswers
+    ? `launch="${xml(toastArguments('open', toast.context))}" activationType="foreground"`
+    : `launch="${xml(toastUrl('open', toast.context, secret))}" activationType="protocol"`;
+  return `<toast ${launch}><visual><binding template="ToastGeneric"><text>${xml(toast.title)}</text>${body}</binding></visual>${actions}${audio}</toast>`;
 }
 
 export const WINDOWS_APP_NAME = 'Bulwark';
